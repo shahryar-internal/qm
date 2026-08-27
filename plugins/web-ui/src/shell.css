@@ -7052,13 +7052,11 @@ h3.ambient-field-label {
   background: var(--secondary);
 }
 
-/* Per-tab close: an 18px slot, revealed on hover — the cron-row actions pattern. The tab
-   the user is in always reserves it; the rest hand those pixels to their label until
-   hovered, which in a narrow strip is the difference between a title and a syllable. Tab
-   widths come off a fixed basis, so the slot opening resizes nothing but its own label.
-   `margin-left: auto` parks the slot against the chip's trailing edge: a tab is sized by
-   that basis, not by its title, so anchoring the close to the end of the text strands it
-   mid-chip on every title shorter than the tab. */
+/* Per-tab close: an 18px slot, revealed on hover — the cron-row actions pattern. Every
+   tab reserves the slot even while it is transparent, so hovering never changes intrinsic
+   tab width or makes dockview reflow the strip. `margin-left: auto` parks the slot against
+   the chip's trailing edge: a tab is sized by its basis, not by its title, so anchoring the
+   close to the end of the text strands it mid-chip on every short title. */
 .split-tab-close {
   width: 18px;
   height: 18px;
@@ -7066,21 +7064,13 @@ h3.ambient-field-label {
   margin-left: auto;
   border-radius: 5px;
   opacity: 0;
-  transition:
-    opacity 0.12s ease,
-    width 0.12s ease,
-    min-width 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 
 /* When the archive button is present it takes the auto margin; the close button that
    follows sits snug beside it instead of splitting the leftover space. */
 .split-tab-archive + .split-tab-close {
   margin-left: 2px;
-}
-
-.dv-tab:not(.dv-active-tab):not(:hover):not(:focus-within) .split-tab-close {
-  width: 0;
-  min-width: 0;
 }
 
 .dv-tab.dv-active-tab .split-tab-close {
