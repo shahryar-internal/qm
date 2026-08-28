@@ -74,7 +74,9 @@ resource "aws_iam_role_policy" "ceo_canary_db_inventory_broker" {
             "ecs:task-definition" = aws_ecs_task_definition.ceo_canary_db_operator["inventory"].arn
           }
           Bool = {
-            "ecs:auto-assign-public-ip"  = "false"
+            "ecs:auto-assign-public-ip" = "false"
+          }
+          StringEquals = {
             "ecs:enable-execute-command" = "false"
           }
           "ForAllValues:StringEquals" = {

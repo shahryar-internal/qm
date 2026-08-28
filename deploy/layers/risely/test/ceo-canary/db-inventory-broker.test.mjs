@@ -35,7 +35,8 @@ test("broker execution role is source-bound and cannot pass unrelated roles", ()
   assert.match(broker, /"aws:SourceAccount" = var\.account_id/);
   assert.match(broker, /Resource = aws_ecs_task_definition\.ceo_canary_db_operator\["inventory"\]\.arn/);
   assert.match(broker, /"ecs:cluster"\s+= aws_ecs_cluster\.this\.arn/);
-  assert.match(broker, /Bool = \{\s*"ecs:auto-assign-public-ip"\s+= "false"\s*"ecs:enable-execute-command" = "false"/);
+  assert.match(broker, /Bool = \{\s*"ecs:auto-assign-public-ip" = "false"/);
+  assert.match(broker, /StringEquals = \{\s*"ecs:enable-execute-command" = "false"/);
   assert.match(broker, /Null = \{\s*"ecs:subnet" = "false"/);
   assert.match(broker, /aws_iam_role\.ceo_canary_db_operator_task\["inventory"\]\.arn/);
   assert.match(broker, /aws_iam_role\.ceo_canary_db_operator_execution\["inventory"\]\.arn/);
