@@ -53,7 +53,7 @@ function harness(
 
 const member = (id: string) => ({ id, type: "internal" as const });
 
-test("signed scheduled runs delegate slot advancement to the atomic authority while manual runs remain unsigned", async (t) => {
+test("signed scheduled runs delegate slot advancement and reject privileged manual fire", async (t) => {
   const createdAt = Date.parse("2040-08-31T20:00:00.000Z");
   const scheduledAt = Date.parse("2040-09-01T16:00:00.000Z");
   t.mock.method(Date, "now", () => createdAt);
@@ -82,6 +82,7 @@ test("signed scheduled runs delegate slot advancement to the atomic authority wh
     owner: "U1",
     createdBy: "U1",
     ownerScopeId: scopeId("personal", "U1"),
+    unattendedGrants: ["admin.sessions.read"],
     scheduleAuthority: {
       contractVersion: 1,
       authorityRef: "qm:test:scheduler",
@@ -103,14 +104,15 @@ test("signed scheduled runs delegate slot advancement to the atomic authority wh
       receiptLifetimeMs: 300_000,
     },
   });
-  await scheduler.runNow(cron.id);
+  await assert.rejects(scheduler.runNow(cron.id), /authority-managed crons cannot be fired manually/u);
   assert.equal(signed.length, 0);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0);
   await scheduler.tick(scheduledAt + 1_000);
   assert.equal(signed.length, 1);
   assert.equal(signed[0]?.scheduledAt, scheduledAt);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   assert.equal((await crons.get(cron.id))?.nextFireAt, scheduledAt);
+  scheduler.stop();
 });
 
 test("scheduler threads stored unattended grants into owner-mode turns", async () => {

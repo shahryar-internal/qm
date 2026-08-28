@@ -1,4 +1,4 @@
-export const WORKFLOW_ARTIFACT_MIME = "application/vnd.qm.workflow-artifact+json;v=1";
+export { WORKFLOW_ARTIFACT_MIME } from "../../chassis/src/workflow-artifact.ts";
 export const WORKFLOW_ARTIFACT_CARD_RENDERER = "qm.card.v1";
 
 const MAX_DEPTH = 8;

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Conversation, Principal, TurnRequest, TurnResult } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { scopeId } from "../types.ts";
@@ -56,6 +57,25 @@ export function createTurnMethods(
     replayOrphanedRunSignals,
   } = h;
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
+  const privateTurnAcceptance = (input: Parameters<typeof privateTurnObservation>[0]) => {
+    if (!deps.privateTurnObservationOutbox) return null;
+    const observation = privateTurnObservation(input);
+    return observation ? { observation, outbox: deps.privateTurnObservationOutbox.entry(observation) } : null;
+  };
+  const deliverPrivateTurnAcceptance = async (principalId: string, observation: PrivateTurnObservation | undefined) => {
+    if (!observation || !deps.privateTurnObservationOutbox) return;
+    const status = await deps.privateTurnObservationOutbox
+      .deliver(observation.eventRef)
+      .catch(() => "unconfirmed" as const);
+    deps.auditLog.record({
+      at: Date.now(),
+      principalId,
+      action: "private_turn_observation",
+      resource: observation.eventRef,
+      scopeLabel: observation.audienceRef,
+      status,
+    });
+  };
   return {
     async turn(req: TurnRequest, scheduled?: ScheduledTurnContext): Promise<TurnResult> {
       await deps.identity.refresh();
@@ -237,8 +257,7 @@ export function createTurnMethods(
       const origin = resolveTurnOrigin(req);
 
       const acceptedPrivateTurn = (acceptedRunRef: string, acceptedAt: number) => {
-        if (!deps.privateTurnObservationOutbox) return null;
-        const observation = privateTurnObservation({
+        return privateTurnAcceptance({
           surface: req.surface,
           origin,
           actor,
@@ -248,22 +267,10 @@ export function createTurnMethods(
           acceptedAt,
           text: req.text,
         });
-        return observation ? { observation, outbox: deps.privateTurnObservationOutbox.entry(observation) } : null;
       };
 
       const deliverAcceptedPrivateTurn = async (observation: PrivateTurnObservation | undefined) => {
-        if (!observation || !deps.privateTurnObservationOutbox) return;
-        const status = await deps.privateTurnObservationOutbox
-          .deliver(observation.eventRef)
-          .catch(() => "unconfirmed" as const);
-        deps.auditLog.record({
-          at: Date.now(),
-          principalId: actor.id,
-          action: "private_turn_observation",
-          resource: observation.eventRef,
-          scopeLabel: observation.audienceRef,
-          status,
-        });
+        await deliverPrivateTurnAcceptance(actor.id, observation);
       };
 
       const input = {
@@ -637,7 +644,22 @@ export function createTurnMethods(
       if (signal.kind === "steer" && !signal.text?.trim()) {
         return { accepted: false, reason: "text_required" };
       }
-      await deps.signals.send(runId, signal);
+      const acceptedAt = Date.now();
+      const acceptedSteer =
+        viewer && signal.kind === "steer" && signal.text
+          ? privateTurnAcceptance({
+              surface: run.request.surface ?? "",
+              origin: { kind: "human" },
+              actor: deps.identity.classify(viewer),
+              conversation: run.request.conversation,
+              workspaceRef: scopeId("org", orgIdOf()),
+              acceptedRunRef: `${runId}:signal:${randomUUID()}`,
+              acceptedAt,
+              text: signal.text,
+            })
+          : null;
+      await deps.signals.send(runId, signal, acceptedSteer?.outbox);
+      await deliverPrivateTurnAcceptance(viewer ?? run.request.actor.id, acceptedSteer?.observation);
       const after = await deps.runs.get(runId);
       if (!after || isTerminal(after.status)) {
         await replayOrphanedRunSignals(runId);

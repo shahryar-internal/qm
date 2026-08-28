@@ -172,9 +172,20 @@ test("production private-turn observer signing authority is isolated from every 
       new RegExp(`PRIVATE_TURN_OBSERVER_SIGNING_SECRET must differ from ${authorityName}$`, "u"),
     );
   }
+  assert.throws(
+    () =>
+      loadConfig({
+        ...productionEnv,
+        PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns",
+        PRIVATE_TURN_OBSERVER_SIGNING_SECRET: shared,
+      }),
+    /production private-turn observer requires DATABASE_URL and RUN_STORE=postgres/u,
+  );
   assert.doesNotThrow(() =>
     loadConfig({
       ...productionEnv,
+      DATABASE_URL: "postgres://qm:test@localhost/qm",
+      RUN_STORE: "postgres",
       PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns",
       PRIVATE_TURN_OBSERVER_SIGNING_SECRET: shared,
     }),

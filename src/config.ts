@@ -759,6 +759,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   let runStore: "memory" | "postgres" = env.SESSION_STORE === "postgres" ? "postgres" : "memory";
   if (env.RUN_STORE === "memory" || env.RUN_STORE === "postgres") runStore = env.RUN_STORE;
+  if (env.NODE_ENV === "production" && privateTurnObserverUrl && (!env.DATABASE_URL || runStore !== "postgres")) {
+    throw new Error("production private-turn observer requires DATABASE_URL and RUN_STORE=postgres");
+  }
   const scheduleAuthorityValues = [
     env.SCHEDULE_AUTHORITY_REF?.trim(),
     env.SCHEDULE_AUTHORITY_ISSUER_REF?.trim(),

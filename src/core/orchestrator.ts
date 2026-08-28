@@ -500,6 +500,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
         return session;
       };
+      const assertScheduleEffectCurrent = input.scheduleAuthority
+        ? async () => {
+            await input.scheduleAuthority!.assertCurrent(input);
+          }
+        : undefined;
       let participantHistorySeqs: Set<number> | undefined;
       let participantHistoryMaxSeq = -1;
       const filterHistory = (entries: SessionEntry[]): SessionEntry[] =>
@@ -1839,6 +1844,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
         const tools = createToolContext({
           sandbox: deps.sandbox,
+          ...(assertScheduleEffectCurrent ? { assertEffectCurrent: assertScheduleEffectCurrent } : {}),
           provision,
           provisionScratch,
           ...(provisionOwnerAuth ? { provisionOwnerAuth } : {}),
@@ -2336,7 +2342,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const wantsOrgFastMode =
           typeof input.fastMode !== "boolean" && humanTurn && (await deps.config?.getInteractiveFastModeDurable());
         const effectiveFastMode = resolveTurnFastMode(input.fastMode, humanTurn, wantsOrgFastMode === true);
-        const runHarnessTurn = (
+        const runHarnessTurn = async (
           harnessInput: string,
           extras: {
             environment?: string;
@@ -2358,6 +2364,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               ...(tapeRows.fold ? { fold: tapeRows.fold } : {}),
             };
           }
+          await assertScheduleEffectCurrent?.();
           return deps.harness.turns.runTurn({
             session,
             ...(input.runId ? { runId: input.runId } : {}),

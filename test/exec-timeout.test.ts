@@ -94,3 +94,62 @@ test("no timeout and no signal → no opts override leaks; a signal alone still 
   await ctx.execute("echo hi", { signal });
   assert.deepEqual(lastOpts(), { signal });
 });
+
+test("expired effect authority rejects before sandbox, credential, MCP, control, or surface delegates", async () => {
+  const calls = { authority: 0, provision: 0, sandbox: 0, credential: 0, mcp: 0, control: 0, surface: 0 };
+  const sandbox = {
+    async run(): Promise<ExecResult> {
+      calls.sandbox += 1;
+      return { stdout: "", stderr: "", code: 0, timedOut: false };
+    },
+  } as unknown as Sandbox;
+  const ctx = ctxFor(sandbox, {
+    assertEffectCurrent: async () => {
+      calls.authority += 1;
+      throw new Error("schedule-fire receipt is not current");
+    },
+    provision: async () => {
+      calls.provision += 1;
+      return handle;
+    },
+    credentialExec: async () => {
+      calls.credential += 1;
+      return { stdout: "", stderr: "", code: 0, timedOut: false };
+    },
+    mcp: {
+      toolDefs: () => [],
+      async call() {
+        calls.mcp += 1;
+        return "unreachable";
+      },
+    } as never,
+    control: {
+      async listCrons() {
+        calls.control += 1;
+        return { crons: [], visible: [] };
+      },
+    } as never,
+    controlClaims: {} as never,
+    surface: {
+      async post() {
+        calls.surface += 1;
+        return { ok: true, message: "unreachable" };
+      },
+    } as never,
+  });
+
+  await assert.rejects(ctx.execute("echo no"), /receipt is not current/u);
+  await assert.rejects(ctx.credentialExec!("aws", []), /receipt is not current/u);
+  await assert.rejects(ctx.callMcpTool("gmail.search", {}), /receipt is not current/u);
+  await assert.rejects(ctx.cronList(), /receipt is not current/u);
+  await assert.rejects(ctx.post("no"), /receipt is not current/u);
+  assert.deepEqual(calls, {
+    authority: 5,
+    provision: 0,
+    sandbox: 0,
+    credential: 0,
+    mcp: 0,
+    control: 0,
+    surface: 0,
+  });
+});
