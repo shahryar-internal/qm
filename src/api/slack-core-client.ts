@@ -29,6 +29,7 @@ import { resolveRuntimeChoiceDurable, type RuntimeChoice } from "../harness/harn
 import { modelDisplayName, resolveModel } from "../model/pi-models.ts";
 
 interface SlackRunHooks {
+  onDelta?(delta: string): void;
   onFirstBlock?(text: string): void;
   onSurfacePosted?(): void;
   onTasks?(tasks: Array<{ id: string; title: string; status: TaskStatus }>): void | Promise<void>;
@@ -201,6 +202,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
     },
 
     async waitRun(runId, hooks = {}) {
+      let streamedChars = 0;
       let firstBlockSignaled = false;
       let surfaceSignaled = false;
       const signalFirstBlock = (text: string): void => {
@@ -213,12 +215,20 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
         surfaceSignaled = true;
         hooks.onSurfacePosted?.();
       };
+      const signalDelta = (delta: string): void => {
+        if (!delta) return;
+        streamedChars += delta.length;
+        hooks.onDelta?.(delta);
+      };
       const waiters = terminalWaiters.get(runId) ?? new Set();
       terminalWaiters.set(runId, waiters);
       const unsubscribe = deps.turnStream.subscribe(runId, {
+        onDelta: signalDelta,
         onFirstBlock: signalFirstBlock,
         onSurfacePosted: signalSurface,
       });
+      const initialSnapshot = deps.turnStream.snapshot(runId);
+      if (initialSnapshot && streamedChars === 0) signalDelta(initialSnapshot);
       let lastProgressAt = Date.now();
       let lastMark = "";
       let taskSnapshot = "";

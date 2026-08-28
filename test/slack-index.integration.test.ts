@@ -468,6 +468,137 @@ test("a DM becomes one scoped live turn and one Slack reply", async () => {
   }
 });
 
+test("a top-level DM uses the existing app's native agent session and stream when Slack supports it", async () => {
+  const f = await fixture();
+  const statusCalls: any[] = [];
+  const starts: any[] = [];
+  const stops: any[] = [];
+  (f.client as any).apiCall = async (method: string, args: any) => void statusCalls.push({ method, args });
+  (f.client.chat as any).startStream = async (args: any) => {
+    starts.push(args);
+    return { ts: "stream-1" };
+  };
+  (f.client.chat as any).appendStream = async () => ({ ok: true });
+  (f.client.chat as any).stopStream = async (args: any) => void stops.push(args);
+  try {
+    await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" });
+    assert.equal(statusCalls[0].method, "agents.sessions.setStatus");
+    assert.equal(statusCalls[0].args.status, "processing");
+    assert.equal(starts[0].channel, "D1");
+    assert.equal(starts[0].thread_ts, "100.1");
+    assert.equal(stops[0].session_status, "active");
+    assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1:100.1");
+    assert.equal(f.core.turns[0].deliveryTarget, "D1:100.1");
+    assert.equal(f.client.posts.length, 0);
+    assert.equal(f.core.ackPicks.length, 0);
+  } finally {
+    await f.stop();
+  }
+});
+
+test("agent_session_stopped aborts the mapped run and clears native processing state", async () => {
+  const f = await fixture();
+  const statusCalls: any[] = [];
+  (f.client as any).apiCall = async (method: string, args: any) => void statusCalls.push({ method, args });
+  f.core.activeRun = "R-stop";
+  try {
+    await f.app.emitEvent("agent_session_stopped", {
+      channel_id: "D1",
+      thread_ts: "100.1",
+      event_ts: "100.2",
+    });
+    assert.deepEqual(f.core.abortedRuns, ["R-stop"]);
+    assert.equal(statusCalls[0].method, "agents.sessions.setStatus");
+    assert.equal(statusCalls[0].args.status, "active");
+    assert.equal(f.client.posts.at(-1)?.text, "Stopped.");
+    assert.equal(f.client.posts.at(-1)?.thread_ts, "100.1");
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a stopped native run posts one confirmation and suppresses its later result", async () => {
+  const f = await fixture();
+  (f.client as any).apiCall = async () => ({ ok: true });
+  (f.client.chat as any).startStream = async () => ({ ts: "stream-1" });
+  (f.client.chat as any).appendStream = async () => ({ ok: true });
+  (f.client.chat as any).stopStream = async () => ({ ok: true });
+  f.core.holdRun("R-stop");
+  try {
+    const turn = f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "work", ts: "100.1" });
+    await waitFor(() => f.core.polled.length === 1);
+    f.core.activeRun = "R-stop";
+    await f.app.emitEvent("agent_session_stopped", {
+      channel: "D1",
+      thread_ts: "100.1",
+      event_ts: "100.2",
+    });
+    f.core.finishRun({ status: "ok", reply: "late result" });
+    await turn;
+    assert.deepEqual(f.core.abortedRuns, ["R-stop"]);
+    assert.deepEqual(
+      f.client.posts.map((post) => post.text),
+      ["Stopped."],
+    );
+  } finally {
+    await f.stop();
+  }
+});
+
+test("a stop event with no active run does not suppress the next turn in that thread", async () => {
+  const f = await fixture();
+  const stopCalls: any[] = [];
+  (f.client as any).apiCall = async () => ({ ok: true });
+  (f.client.chat as any).startStream = async () => ({ ts: "stream-1" });
+  (f.client.chat as any).appendStream = async () => ({ ok: true });
+  (f.client.chat as any).stopStream = async (args: any) => void stopCalls.push(args);
+  try {
+    await f.app.emitEvent("agent_session_stopped", {
+      channel: "D1",
+      thread_ts: "100.1",
+      event_ts: "100.2",
+    });
+    await f.app.emitMessage({
+      channel: "D1",
+      channel_type: "im",
+      user: "U1",
+      text: "new work",
+      thread_ts: "100.1",
+      ts: "100.3",
+    });
+    assert.deepEqual(
+      f.client.posts.map((post) => post.text),
+      ["Stopped."],
+    );
+    assert.equal(stopCalls.length, 1);
+    assert.equal(stopCalls[0].session_status, "active");
+    assert.equal(f.core.turns.at(-1)?.text, "new work");
+  } finally {
+    await f.stop();
+  }
+});
+
+test("native stream failure after core completion falls back once without failing the handler", async () => {
+  const f = await fixture();
+  const statuses: string[] = [];
+  (f.client as any).apiCall = async (_method: string, args: any) => void statuses.push(args.status);
+  (f.client.chat as any).startStream = async () => {
+    throw new Error("feature_disabled");
+  };
+  (f.client.chat as any).appendStream = async () => ({ ok: true });
+  (f.client.chat as any).stopStream = async () => ({ ok: true });
+  try {
+    await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello", ts: "100.1" });
+    assert.deepEqual(statuses, ["processing", "active"]);
+    assert.deepEqual(
+      f.client.posts.map((post) => post.text),
+      ["agent reply"],
+    );
+  } finally {
+    await f.stop();
+  }
+});
+
 test("a forwarded Slack message reaches the turn with labeled nested content and files", async (t) => {
   const fetchMock = t.mock.method(
     globalThis,
