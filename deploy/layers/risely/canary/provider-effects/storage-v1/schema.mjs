@@ -36,6 +36,15 @@ CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.deployment_profiles (
   UNIQUE (profile_sha256)
 );
 
+CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks (
+  profile_ref text NOT NULL,
+  profile_sha256 text NOT NULL,
+  lock_revision integer NOT NULL CHECK (lock_revision = 1),
+  PRIMARY KEY (profile_ref, profile_sha256),
+  FOREIGN KEY (profile_ref, profile_sha256)
+    REFERENCES ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.deployment_profiles (profile_ref, profile_sha256)
+);
+
 CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states (
   profile_ref text NOT NULL,
   profile_sha256 text NOT NULL,
@@ -50,6 +59,110 @@ CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states (
   FOREIGN KEY (profile_ref, profile_sha256)
     REFERENCES ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.deployment_profiles (profile_ref, profile_sha256)
 );
+
+CREATE FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.register_deployment_profile(p_profile jsonb) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_profile_ref text := p_profile->>'profileRef';
+  v_profile_sha256 text := p_profile->>'profileSha256';
+  v_policy_ref text := p_profile->>'providerEffectPolicyRef';
+  v_policy_sha256 text := p_profile->>'providerEffectPolicySha256';
+BEGIN
+  IF jsonb_typeof(p_profile) <> 'object'
+    OR v_profile_ref IS NULL
+    OR v_profile_sha256 !~ '^[0-9a-f]{64}$'
+    OR v_policy_ref IS NULL
+    OR v_policy_sha256 !~ '^[0-9a-f]{64}$'
+    OR p_profile->'providerExecutionAllowed' <> 'false'::jsonb THEN
+    RAISE EXCEPTION 'provider_effect_profile_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.deployment_profiles
+    (profile_ref, profile_sha256, policy_ref, policy_sha256, profile_json, provider_execution_allowed)
+  VALUES (v_profile_ref, v_profile_sha256, v_policy_ref, v_policy_sha256, p_profile, false);
+
+  INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks
+    (profile_ref, profile_sha256, lock_revision)
+  VALUES (v_profile_ref, v_profile_sha256, 1);
+END;
+$$;
+
+CREATE FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch(
+  p_profile_ref text,
+  p_profile_sha256 text,
+  p_expected_previous_revision bigint,
+  p_proof jsonb
+) RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_current_revision bigint;
+  v_revision bigint;
+  v_engaged boolean;
+  v_checked_at timestamptz;
+  v_state_sha256 text;
+BEGIN
+  PERFORM 1
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks
+  WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'provider_effect_profile_lock_unavailable' USING ERRCODE = '55000';
+  END IF;
+
+  SELECT max(revision) INTO v_current_revision
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states
+  WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256;
+
+  IF COALESCE(v_current_revision, 0) <> p_expected_previous_revision THEN
+    RAISE EXCEPTION 'provider_effect_kill_switch_head_conflict' USING ERRCODE = '40001';
+  END IF;
+
+  IF jsonb_typeof(p_proof) <> 'object'
+    OR (SELECT count(*) FROM jsonb_object_keys(p_proof)) <> 9
+    OR jsonb_typeof(p_proof->'profileRef') <> 'string'
+    OR p_proof->>'profileRef' <> p_profile_ref
+    OR jsonb_typeof(p_proof->'profileSha256') <> 'string'
+    OR p_proof->>'profileSha256' <> p_profile_sha256
+    OR jsonb_typeof(p_proof->'revision') <> 'number'
+    OR jsonb_typeof(p_proof->'engaged') <> 'boolean'
+    OR jsonb_typeof(p_proof->'checkedAt') <> 'string'
+    OR p_proof->>'stateSha256' IS NULL
+    OR jsonb_typeof(p_proof->'stateSha256') <> 'string'
+    OR p_proof->>'stateSha256' !~ '^[0-9a-f]{64}$'
+    OR jsonb_typeof(p_proof->'keyId') <> 'string'
+    OR jsonb_typeof(p_proof->'issuerRef') <> 'string'
+    OR jsonb_typeof(p_proof->'signature') <> 'string' THEN
+    RAISE EXCEPTION 'provider_effect_kill_switch_proof_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  BEGIN
+    v_revision := (p_proof->>'revision')::bigint;
+    v_engaged := (p_proof->>'engaged')::boolean;
+    v_checked_at := (p_proof->>'checkedAt')::timestamptz;
+    v_state_sha256 := p_proof->>'stateSha256';
+  EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'provider_effect_kill_switch_proof_invalid' USING ERRCODE = '22023';
+  END;
+
+  IF v_revision <> p_expected_previous_revision + 1 THEN
+    RAISE EXCEPTION 'provider_effect_kill_switch_revision_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states
+    (profile_ref, profile_sha256, revision, engaged, checked_at, state_sha256, proof_json)
+  VALUES (p_profile_ref, p_profile_sha256, v_revision, v_engaged, v_checked_at, v_state_sha256, p_proof);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.register_deployment_profile(jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch(text, text, bigint, jsonb) FROM PUBLIC;
 
 CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.evaluation_releases (
   profile_ref text NOT NULL,
@@ -350,6 +463,7 @@ ON ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_leases
 ${[
   "schema_versions",
   "deployment_profiles",
+  "profile_serialization_locks",
   "kill_switch_states",
   "evaluation_releases",
   "provider_identities",

@@ -43,8 +43,11 @@ test("future schema is one-shot, append-only, proof-linked, and fail-closed", ()
   assert.match(sql, /status IN \('verified', 'failed', 'outcome_unknown'\)/u);
   assert.match(sql, /mode = 'read_only_status_lookup'/u);
   assert.match(sql, /provider_effect_authority_append_only/u);
+  assert.match(sql, /profile_serialization_locks/u);
+  assert.match(sql, /append_kill_switch/u);
+  assert.match(sql, /FOR UPDATE/u);
   assert.match(sql, /REVOKE ALL ON SCHEMA .* FROM PUBLIC/u);
-  assert.equal((sql.match(/BEFORE UPDATE OR DELETE/gu) ?? []).length, 14);
+  assert.equal((sql.match(/BEFORE UPDATE OR DELETE/gu) ?? []).length, 15);
 });
 
 test("store exposes no adapter, provider credential, or network construction surface", () => {
@@ -57,6 +60,8 @@ test("store exposes no adapter, provider credential, or network construction sur
   assert.match(storeSource, /attempts !== 0/u);
   assert.match(storeSource, /provider_kill_switch_changed_after_reservation/u);
   assert.match(storeSource, /provider_attempt_lease_expired/u);
+  assert.match(storeSource, /profile_serialization_locks/u);
   assert.match(storeSource, /read_only_status_lookup/u);
   assert.match(storeSource, /receiptAuthority/u);
+  assert.doesNotMatch(storeSource, /Date\.now/u);
 });

@@ -71,8 +71,11 @@ test(
   async (t) => {
     const containerName = `risely-provider-authority-${process.pid}`;
     const password = `provider-authority-${process.pid}`;
+    const writerPassword = `provider-effect-writer-${process.pid}`;
     let pool;
+    let writerPool;
     t.after(async () => {
+      if (writerPool) await writerPool.end().catch(() => {});
       if (pool) await pool.end().catch(() => {});
       await docker(["rm", "--force", containerName]);
     });
@@ -116,6 +119,22 @@ test(
       await pool.query("ROLLBACK");
       throw error;
     }
+    await pool.query(`CREATE ROLE provider_effect_writer LOGIN PASSWORD '${writerPassword}'`);
+    await pool.query(`GRANT USAGE ON SCHEMA ${PROVIDER_EFFECT_AUTHORITY_SCHEMA} TO provider_effect_writer`);
+    await pool.query(
+      `GRANT EXECUTE ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.register_deployment_profile(jsonb),
+         ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch(text, text, bigint, jsonb)
+       TO provider_effect_writer`,
+    );
+    writerPool = new Pool({
+      host: "127.0.0.1",
+      port,
+      database: "postgres",
+      user: "provider_effect_writer",
+      password: writerPassword,
+      max: 4,
+    });
+    const databaseNow = async () => (await pool.query("SELECT clock_timestamp() AS now")).rows[0].now.toISOString();
 
     const ceoScope = createRuntimeScope(ceoDeploymentProfile);
     const syntheticScope = createRuntimeScope(syntheticDeploymentProfile);
@@ -281,8 +300,8 @@ test(
       });
     };
 
-    const insertKillSwitch = async (scope, revision, checkedAt, engaged = false) => {
-      const killSwitch = signProof(
+    const killSwitchProof = (scope, revision, checkedAt, engaged = false) =>
+      signProof(
         scope,
         {
           profileRef: scope.profileRef,
@@ -295,20 +314,19 @@ test(
         "stateSha256",
         "kill_switch",
       );
-      await pool.query(
-        `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states
-           (profile_ref, profile_sha256, revision, engaged, checked_at, state_sha256, proof_json)
-         VALUES ($1, $2, $3, $4, $5::timestamptz, $6, $7::jsonb)`,
-        [
-          scope.profileRef,
-          scope.profileSha256,
-          revision,
-          engaged,
-          checkedAt,
-          killSwitch.stateSha256,
-          canonicalJson(killSwitch),
-        ],
-      );
+
+    const appendKillSwitch = async (client, scope, killSwitch) => {
+      await client.query(`SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch($1, $2, $3, $4::jsonb)`, [
+        scope.profileRef,
+        scope.profileSha256,
+        killSwitch.revision - 1,
+        canonicalJson(killSwitch),
+      ]);
+    };
+
+    const insertKillSwitch = async (scope, revision, checkedAt, engaged = false) => {
+      const killSwitch = killSwitchProof(scope, revision, checkedAt, engaged);
+      await appendKillSwitch(writerPool, scope, killSwitch);
       return killSwitch;
     };
 
@@ -422,13 +440,6 @@ test(
         resourceOwnership,
         approval: approvalProof,
       };
-      await pool.query(
-        `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.deployment_profiles
-           (profile_ref, profile_sha256, policy_ref, policy_sha256, profile_json, provider_execution_allowed)
-         VALUES ($1, $2, $3, $4, $5::jsonb, false)
-         ON CONFLICT DO NOTHING`,
-        [scope.profileRef, scope.profileSha256, policy.policyRef, policy.policySha256, canonicalJson(scope.profile)],
-      );
       await pool.query(
         `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.evaluation_releases
            (profile_ref, profile_sha256, release_sha256, proposal_hash, intent_sha256,
@@ -578,26 +589,24 @@ test(
       });
     };
 
-    const now = Date.now();
+    const now = Date.parse(await databaseNow());
     const baseCreated = iso(now - 5_000);
     const baseExpires = iso(now + 120_000);
-    await pool.query(
-      `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.deployment_profiles
-         (profile_ref, profile_sha256, policy_ref, policy_sha256, profile_json, provider_execution_allowed)
-       VALUES ($1, $2, $3, $4, $5::jsonb, false), ($6, $7, $8, $9, $10::jsonb, false)`,
-      [
-        ceoScope.profileRef,
-        ceoScope.profileSha256,
-        ceoScope.profile.providerEffectPolicyRef,
-        ceoScope.profile.providerEffectPolicySha256,
-        canonicalJson(ceoScope.profile),
-        syntheticScope.profileRef,
-        syntheticScope.profileSha256,
-        syntheticScope.profile.providerEffectPolicyRef,
-        syntheticScope.profile.providerEffectPolicySha256,
-        canonicalJson(syntheticScope.profile),
-      ],
-    );
+    await writerPool.query(`SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.register_deployment_profile($1::jsonb)`, [
+      canonicalJson(ceoScope.profile),
+    ]);
+    await writerPool.query(`SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.register_deployment_profile($1::jsonb)`, [
+      canonicalJson(syntheticScope.profile),
+    ]);
+    const writerBypass = await writerPool
+      .query(
+        `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states
+           (profile_ref, profile_sha256, revision, engaged, checked_at, state_sha256, proof_json)
+         VALUES ('tamper', $1, 1, false, clock_timestamp(), $1, '{}'::jsonb)`,
+        ["f".repeat(64)],
+      )
+      .catch((error) => error);
+    assert.equal(writerBypass.code, "42501");
 
     const crossCheckedAt = iso(now - 1_000);
     const ceoKillOne = await insertKillSwitch(ceoScope, 1, crossCheckedAt);
@@ -661,6 +670,88 @@ test(
     assert.equal((await syntheticAuthority.execute(sharedProposalId)).status, "verified");
     assert.equal(crossProfileCalls, 2);
 
+    const interleavedProposal = draftProposal(
+      syntheticScope,
+      "proposal:kill-switch-linearization-pg16",
+      baseCreated,
+      baseExpires,
+      "kill-switch-linearization",
+    );
+    const interleavedAuthorization = await installAuthorization({
+      scope: syntheticScope,
+      proposal: interleavedProposal,
+      killSwitch: syntheticKillOne,
+    });
+    const killSwitchClient = await writerPool.connect();
+    try {
+      await killSwitchClient.query("BEGIN");
+      const engagedRevisionTwo = killSwitchProof(syntheticScope, 2, await databaseNow(), true);
+      await appendKillSwitch(killSwitchClient, syntheticScope, engagedRevisionTwo);
+      const blockedReservation = syntheticStore.reserveAttempt(requestFor(syntheticScope, interleavedAuthorization));
+      let observedLockWait = false;
+      for (let probe = 0; probe < 80; probe += 1) {
+        const waiting = await pool.query(
+          `SELECT count(*)::integer AS count
+           FROM pg_catalog.pg_stat_activity
+           WHERE usename = 'postgres'
+             AND wait_event_type = 'Lock'
+             AND query LIKE '%profile_serialization_locks%'`,
+        );
+        if (waiting.rows[0].count > 0) {
+          observedLockWait = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(observedLockWait, true);
+      await killSwitchClient.query("COMMIT");
+      await assert.rejects(blockedReservation, { code: "provider_effect_kill_switch_engaged" });
+    } finally {
+      await killSwitchClient.query("ROLLBACK").catch(() => {});
+      killSwitchClient.release();
+    }
+
+    const digestTamperSource = killSwitchProof(syntheticScope, 3, await databaseNow());
+    const digestTamper = {
+      ...digestTamperSource,
+      checkedAt: iso(Date.parse(digestTamperSource.checkedAt) + 1_000),
+    };
+    await appendKillSwitch(writerPool, syntheticScope, digestTamper);
+    const digestTamperProposal = draftProposal(
+      syntheticScope,
+      "proposal:unsigned-kill-switch-field-tamper-pg16",
+      baseCreated,
+      baseExpires,
+      "unsigned-kill-switch-field-tamper",
+    );
+    await installAuthorization({
+      scope: syntheticScope,
+      proposal: digestTamperProposal,
+      killSwitch: digestTamper,
+    });
+    await assert.rejects(() => syntheticStore.readAuthorization(digestTamperProposal.proposalId), {
+      code: "provider_effect_store_corrupt",
+    });
+
+    const signatureTamper = { ...killSwitchProof(syntheticScope, 4, await databaseNow()), signature: "AA" };
+    await appendKillSwitch(writerPool, syntheticScope, signatureTamper);
+    const signatureTamperProposal = draftProposal(
+      syntheticScope,
+      "proposal:unsigned-kill-switch-signature-tamper-pg16",
+      baseCreated,
+      baseExpires,
+      "unsigned-kill-switch-signature-tamper",
+    );
+    await installAuthorization({
+      scope: syntheticScope,
+      proposal: signatureTamperProposal,
+      killSwitch: signatureTamper,
+    });
+    await assert.rejects(() => syntheticAuthority.execute(signatureTamperProposal.proposalId), {
+      code: "provider_effect_kill_switch_invalid",
+    });
+    assert.equal(crossProfileCalls, 2);
+
     const raceCheckedAt = iso(now);
     const raceKill = await insertKillSwitch(ceoScope, 2, raceCheckedAt);
     const raceProposalOne = draftProposal(
@@ -702,7 +793,32 @@ test(
     );
     assert.equal(semanticReservations.rows[0].count, 1);
 
-    const approvalCheckedAt = iso(Date.now());
+    const clockSkewProposal = draftProposal(
+      ceoScope,
+      "proposal:database-clock-authority-pg16",
+      baseCreated,
+      baseExpires,
+      "database-clock-authority",
+    );
+    const clockSkewAuthorization = await installAuthorization({
+      scope: ceoScope,
+      proposal: clockSkewProposal,
+      killSwitch: raceKill,
+    });
+    const dateNowDescriptor = Object.getOwnPropertyDescriptor(Date, "now");
+    Object.defineProperty(Date, "now", {
+      ...dateNowDescriptor,
+      value: () => Date.parse(baseExpires) + 86_400_000,
+    });
+    let clockSkewAttempt;
+    try {
+      clockSkewAttempt = await ceoStore.reserveAttempt(requestFor(ceoScope, clockSkewAuthorization));
+    } finally {
+      Object.defineProperty(Date, "now", dateNowDescriptor);
+    }
+    assert.equal(Date.parse(clockSkewAttempt.attemptedAt) < Date.parse(baseExpires), true);
+
+    const approvalCheckedAt = await databaseNow();
     const approvalKill = await insertKillSwitch(ceoScope, 3, approvalCheckedAt);
     const approvalProposal = sendProposal(ceoScope, "proposal:approval-once-pg16", baseCreated, baseExpires);
     const approvalAuthorization = await installAuthorization({
@@ -723,7 +839,7 @@ test(
     );
     assert.equal(consumptions.rows[0].count, 1);
 
-    const staleCheckedAt = iso(Date.now());
+    const staleCheckedAt = await databaseNow();
     const staleKill = await insertKillSwitch(ceoScope, 4, staleCheckedAt);
     const approvalUnknown = await ceoStore.completeAttempt({
       attempt: approvalAttempt,
@@ -754,7 +870,7 @@ test(
       killSwitch: staleKill,
     });
     const staleRead = await ceoStore.readAuthorization(staleProposal.proposalId);
-    await insertKillSwitch(ceoScope, 5, iso(Date.now()));
+    await insertKillSwitch(ceoScope, 5, await databaseNow());
     await assert.rejects(() => ceoStore.reserveAttempt(requestFor(ceoScope, staleRead)), {
       code: "provider_effect_attempt_conflict",
     });
@@ -780,7 +896,7 @@ test(
       code: "provider_effect_authorization_expired",
     });
 
-    const unknownStart = Date.now();
+    const unknownStart = Date.parse(await databaseNow());
     const unknownCreated = iso(unknownStart - 1_000);
     const unknownExpires = iso(unknownStart + 1_500);
     const unknownCheckedAt = iso(unknownStart);
@@ -809,9 +925,10 @@ test(
       [ceoScope.profileRef, ceoScope.profileSha256, unknownProposal.proposalId],
     );
     const unknownAttempt = unknownAttemptResult.rows[0];
-    const waitMs = Math.max(0, Date.parse(unknownAttempt.lease_expires_at) - Date.now() + 1_000);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-    const reconciliationNow = iso(Date.now());
+    while (Date.parse(await databaseNow()) <= Date.parse(unknownAttempt.lease_expires_at.toISOString())) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const reconciliationNow = await databaseNow();
     const reconciliationKill = await insertKillSwitch(ceoScope, 8, reconciliationNow);
     const reconciliationIdentity = signProof(
       ceoScope,
@@ -824,7 +941,7 @@ test(
         reconcilerPrincipalRef: reconcilerRef(unknownAttempt.capability),
         authenticationSha256: "",
         authenticatedAt: reconciliationNow,
-        expiresAt: iso(Date.now() + 120_000),
+        expiresAt: iso(Date.parse(reconciliationNow) + 120_000),
       },
       "authenticationSha256",
       "reconciliation_identity",
@@ -939,7 +1056,7 @@ test(
       .catch((error) => error);
     assert.equal(tamper.code, "55000");
 
-    const rollbackNow = Date.now();
+    const rollbackNow = Date.parse(await databaseNow());
     const rollbackCheckedAt = iso(rollbackNow);
     const rollbackKill = await insertKillSwitch(ceoScope, 9, rollbackCheckedAt);
     const rollbackProposal = draftProposal(
@@ -984,6 +1101,38 @@ test(
     );
     assert.equal(rolledBackReceipts.rows[0].count, 0);
 
+    const driftProposal = draftProposal(
+      ceoScope,
+      "proposal:post-network-authority-drift-pg16",
+      iso(rollbackNow - 1_000),
+      iso(rollbackNow + 120_000),
+      "post-network-authority-drift",
+    );
+    await installAuthorization({ scope: ceoScope, proposal: driftProposal, killSwitch: rollbackKill });
+    let driftProviderCalls = 0;
+    const driftAuthority = authorityFor(ceoScope, ceoStore, async ({ attempt }) => {
+      driftProviderCalls += 1;
+      await insertKillSwitch(ceoScope, 10, await databaseNow());
+      return {
+        status: "verified",
+        provider: attempt.provider,
+        operation: attempt.operation,
+        providerOwnerRef: attempt.providerOwnerRef,
+        providerResourceRef: "gmail-draft:post-network-authority-drift-pg16",
+        responseSha256: "6".repeat(64),
+        errorCode: null,
+        observationMode: "effect_execution",
+        providerMutationCount: 1,
+      };
+    });
+    const driftReceipt = await driftAuthority.execute(driftProposal.proposalId);
+    assert.equal(driftReceipt.status, "outcome_unknown");
+    assert.equal(driftReceipt.completedAt, null);
+    assert.equal(driftReceipt.providerResourceRef, null);
+    assert.equal(driftReceipt.errorCode, "provider_kill_switch_changed_after_reservation");
+    await assert.rejects(() => driftAuthority.execute(driftProposal.proposalId));
+    assert.equal(driftProviderCalls, 1);
+
     const catalog = await pool.query(
       `SELECT
          count(*) FILTER (WHERE relation.relkind = 'r')::integer AS tables,
@@ -995,7 +1144,7 @@ test(
        WHERE namespace.nspname = $1`,
       [PROVIDER_EFFECT_AUTHORITY_SCHEMA],
     );
-    assert.equal(catalog.rows[0].tables, 14);
-    assert.equal(catalog.rows[0].triggers, 14);
+    assert.equal(catalog.rows[0].tables, 15);
+    assert.equal(catalog.rows[0].triggers, 15);
   },
 );

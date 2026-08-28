@@ -331,6 +331,16 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     if (active.isActive() !== true) fail("provider_effect_store_unavailable");
   };
 
+  const assertProofDigest = (proof, digestField) => {
+    if (!proof || typeof proof !== "object" || Array.isArray(proof)) fail("provider_effect_store_corrupt");
+    const projection = clone(proof);
+    delete projection[digestField];
+    delete projection.signature;
+    if (proof[digestField] !== scope.contracts.PrincipalBinding.hash(projection)) {
+      fail("provider_effect_store_corrupt");
+    }
+  };
+
   const assertSchema = async (client) => {
     const result = await client.query(
       `SELECT version, migration_sha256
@@ -350,7 +360,9 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     ensureActive();
     const client = await pool.connect();
     try {
-      await client.query(`BEGIN ISOLATION LEVEL SERIALIZABLE${readOnly ? " READ ONLY" : ""}`);
+      await client.query(
+        readOnly ? "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY" : "BEGIN ISOLATION LEVEL READ COMMITTED",
+      );
       await client.query("SET LOCAL search_path = pg_catalog");
       await client.query("SET LOCAL statement_timeout = '10s'");
       await assertSchema(client);
@@ -380,6 +392,7 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     );
     if (result.rowCount !== 1) fail("provider_effect_kill_switch_unavailable");
     const row = result.rows[0];
+    assertProofDigest(row.proof_json, "stateSha256");
     if (
       row.proof_json.profileRef !== scope.profileRef ||
       row.proof_json.profileSha256 !== scope.profileSha256 ||
@@ -391,6 +404,19 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       fail("provider_effect_store_corrupt");
     }
     return row;
+  };
+
+  const lockProfile = async (client) => {
+    const result = await client.query(
+      `SELECT lock_revision
+       FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks
+       WHERE profile_ref = $1 AND profile_sha256 = $2
+       FOR UPDATE`,
+      [scope.profileRef, scope.profileSha256],
+    );
+    if (result.rowCount !== 1 || result.rows[0].lock_revision !== 1) {
+      fail("provider_effect_profile_lock_unavailable");
+    }
   };
 
   const selectAuthorization = async (client, proposalId, lock = false) => {
@@ -405,22 +431,31 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
          release.proposal_hash AS release_proposal_hash,
          release.intent_sha256 AS release_intent_sha256,
          release.policy_sha256 AS release_policy_sha256,
+         release.passed AS release_passed,
+         release.provider_release_eligible AS release_provider_eligible,
+         release.evaluated_at AS release_evaluated_at,
          release.expires_at AS release_expires_at,
          release.proof_json AS evaluation_release_json,
          identity.provider AS identity_provider,
          identity.provider_owner_ref AS identity_provider_owner_ref,
-         identity.provider_account_ref,
+         identity.provider_account_ref AS identity_provider_account_ref,
+         identity.credential_owner_ref AS identity_credential_owner_ref,
+         identity.verified_at AS identity_verified_at,
          identity.expires_at AS identity_expires_at,
          identity.proof_json AS provider_identity_json,
          ownership.provider AS ownership_provider,
          ownership.provider_owner_ref AS ownership_provider_owner_ref,
          ownership.provider_account_ref AS ownership_provider_account_ref,
+         ownership.target_class AS ownership_target_class,
+         ownership.resource_key AS ownership_resource_key,
          ownership.provider_resource_ref,
+         ownership.verified_at AS ownership_verified_at,
          ownership.expires_at AS ownership_expires_at,
          ownership.proof_json AS resource_ownership_json,
          approval.proposal_id AS approval_proposal_id,
          approval.proposal_hash AS approval_proposal_hash,
          approval.intent_sha256 AS approval_intent_sha256,
+         approval.decided_at AS approval_decided_at,
          approval.expires_at AS approval_expires_at,
          approval.proof_json AS approval_json,
          (
@@ -465,6 +500,36 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     const authorizedAt = databaseInstant(row.authorized_at, "provider_effect_store_corrupt");
     const createdAt = databaseInstant(row.proposal_created_at, "provider_effect_store_corrupt");
     const expiresAt = databaseInstant(row.proposal_expires_at, "provider_effect_store_corrupt");
+    const releaseEvaluatedAt = databaseInstant(row.release_evaluated_at, "provider_effect_store_corrupt");
+    const releaseExpiresAt = databaseInstant(row.release_expires_at, "provider_effect_store_corrupt");
+    const identityVerifiedAt = databaseInstant(row.identity_verified_at, "provider_effect_store_corrupt");
+    const identityExpiresAt = databaseInstant(row.identity_expires_at, "provider_effect_store_corrupt");
+    const ownershipVerifiedAt = databaseInstant(row.ownership_verified_at, "provider_effect_store_corrupt");
+    const ownershipExpiresAt = databaseInstant(row.ownership_expires_at, "provider_effect_store_corrupt");
+    const approvalDecidedAt =
+      row.approval_decided_at === null
+        ? null
+        : databaseInstant(row.approval_decided_at, "provider_effect_store_corrupt");
+    const approvalExpiresAt =
+      row.approval_expires_at === null
+        ? null
+        : databaseInstant(row.approval_expires_at, "provider_effect_store_corrupt");
+    assertProofDigest(row.kill_switch_json, "stateSha256");
+    assertProofDigest(row.evaluation_release_json, "releaseSha256");
+    assertProofDigest(row.provider_identity_json, "receiptSha256");
+    assertProofDigest(row.resource_ownership_json, "receiptSha256");
+    if (row.approval_json !== null) assertProofDigest(row.approval_json, "approvalSha256");
+    let checked;
+    try {
+      checked = suite.assertProposal(row.proposal_json);
+    } catch {
+      fail("provider_effect_store_corrupt");
+    }
+    const expectedResourceKey = scope.contracts.PrincipalBinding.hash({
+      digestRevision: "ProviderEffectTargetBinding.sha256.v1",
+      targetClass: checked.policy.targetClass,
+      target: row.proposal_json.target,
+    });
     if (
       row.profile_policy_ref !== row.policy_ref ||
       row.profile_policy_sha256 !== row.policy_sha256 ||
@@ -480,21 +545,73 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       row.kill_switch_json.checkedAt !== databaseInstant(row.kill_switch_checked_at, "provider_effect_store_corrupt") ||
       row.kill_switch_json.checkedAt !== authorizedAt ||
       row.evaluation_release_json.releaseSha256 !== row.evaluation_release_sha256 ||
+      row.evaluation_release_json.profileRef !== row.profile_ref ||
+      row.evaluation_release_json.profileSha256 !== row.profile_sha256 ||
       row.release_proposal_hash !== row.proposal_hash ||
+      row.evaluation_release_json.proposalHash !== row.release_proposal_hash ||
       row.release_intent_sha256 !== row.intent_sha256 ||
+      row.evaluation_release_json.intentSha256 !== row.release_intent_sha256 ||
       row.release_policy_sha256 !== row.policy_sha256 ||
+      row.evaluation_release_json.policySha256 !== row.release_policy_sha256 ||
+      row.release_passed !== true ||
+      row.evaluation_release_json.passed !== row.release_passed ||
+      row.release_provider_eligible !== true ||
+      row.evaluation_release_json.providerReleaseEligible !== row.release_provider_eligible ||
+      row.evaluation_release_json.evaluatedAt !== releaseEvaluatedAt ||
+      row.evaluation_release_json.expiresAt !== releaseExpiresAt ||
       row.provider_identity_json.receiptSha256 !== row.provider_identity_receipt_sha256 ||
+      row.provider_identity_json.profileRef !== row.profile_ref ||
+      row.provider_identity_json.profileSha256 !== row.profile_sha256 ||
       row.identity_provider !== row.provider ||
+      row.provider_identity_json.provider !== row.identity_provider ||
       row.identity_provider_owner_ref !== row.provider_owner_ref ||
+      row.provider_identity_json.providerOwnerRef !== row.identity_provider_owner_ref ||
+      row.identity_provider_account_ref !== row.provider_account_ref ||
+      row.provider_identity_json.providerAccountRef !== row.identity_provider_account_ref ||
+      row.provider_identity_json.credentialOwnerRef !== row.identity_credential_owner_ref ||
+      row.identity_credential_owner_ref !== row.proposal_json.actor.credentialOwnerRef ||
+      row.provider_identity_json.verifiedAt !== identityVerifiedAt ||
+      row.provider_identity_json.expiresAt !== identityExpiresAt ||
       row.resource_ownership_json.receiptSha256 !== row.resource_ownership_receipt_sha256 ||
+      row.resource_ownership_json.profileRef !== row.profile_ref ||
+      row.resource_ownership_json.profileSha256 !== row.profile_sha256 ||
       row.ownership_provider !== row.provider ||
+      row.resource_ownership_json.provider !== row.ownership_provider ||
       row.ownership_provider_owner_ref !== row.provider_owner_ref ||
+      row.resource_ownership_json.providerOwnerRef !== row.ownership_provider_owner_ref ||
       row.ownership_provider_account_ref !== row.provider_account_ref ||
+      row.resource_ownership_json.providerAccountRef !== row.ownership_provider_account_ref ||
+      row.resource_ownership_json.targetClass !== row.ownership_target_class ||
+      row.ownership_target_class !== checked.policy.targetClass ||
+      row.resource_ownership_json.resourceKey !== row.ownership_resource_key ||
+      row.ownership_resource_key !== expectedResourceKey ||
+      row.resource_ownership_json.providerResourceRef !== row.provider_resource_ref ||
+      row.resource_ownership_json.verifiedAt !== ownershipVerifiedAt ||
+      row.resource_ownership_json.expiresAt !== ownershipExpiresAt ||
+      checked.intent.intentSha256 !== row.intent_sha256 ||
+      checked.intent.prospectiveEffectKey !== row.prospective_effect_key ||
+      checked.policy.policyRef !== row.policy_ref ||
+      checked.policy.policySha256 !== row.policy_sha256 ||
+      checked.policy.capability !== row.capability ||
+      checked.policy.capabilityVersion !== row.capability_version ||
+      checked.policy.provider !== row.provider ||
+      checked.policy.operation !== row.operation ||
+      checked.policy.providerOwnerRef !== row.provider_owner_ref ||
+      checked.policy.authorizationMode !== row.authorization_mode ||
       (row.authorization_mode === "approval-once" &&
         (row.approval_json?.approvalSha256 !== row.approval_sha256 ||
           row.approval_proposal_id !== row.proposal_id ||
+          row.approval_json.proposalId !== row.approval_proposal_id ||
           row.approval_proposal_hash !== row.proposal_hash ||
+          row.approval_json.proposalHash !== row.approval_proposal_hash ||
           row.approval_intent_sha256 !== row.intent_sha256)) ||
+      (row.authorization_mode === "approval-once" &&
+        (row.approval_json.intentSha256 !== row.approval_intent_sha256 ||
+          row.approval_json.approverPrincipalRef !== row.proposal_json.actor.principalRef ||
+          row.approval_json.decision !== "approve_once" ||
+          row.approval_json.decidedAt !== approvalDecidedAt ||
+          row.approval_json.expiresAt !== approvalExpiresAt ||
+          row.approval_json.consumedAt !== null)) ||
       (row.authorization_mode === "automatic" && row.approval_json !== null)
     ) {
       fail("provider_effect_store_corrupt");
@@ -561,6 +678,7 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       fail("provider_effect_attempt_request_invalid");
     }
     return transaction(async (client) => {
+      await lockProfile(client);
       const { authorization, row } = await selectAuthorization(client, request.proposalId, true);
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `${scope.profileRef}\n${scope.profileSha256}\n${authorization.prospectiveEffectKey}`,
@@ -694,18 +812,62 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     return { attempt: attemptFromRow(scope, result.rows[0]), row: result.rows[0] };
   };
 
-  const existingReceipt = async (client, attemptRef, kind, submittedResultSha256) => {
+  const existingReceipt = async (client, attempt, kind, submittedResultSha256) => {
     const result = await client.query(
-      `SELECT receipt_json, submitted_result_sha256
+      `SELECT *
        FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts
        WHERE profile_ref = $1 AND profile_sha256 = $2 AND attempt_ref = $3 AND receipt_kind = $4`,
-      [scope.profileRef, scope.profileSha256, attemptRef, kind],
+      [scope.profileRef, scope.profileSha256, attempt.attemptRef, kind],
     );
     if (result.rowCount === 0) return null;
-    if (result.rows[0].submitted_result_sha256 !== submittedResultSha256) {
+    const row = result.rows[0];
+    if (row.submitted_result_sha256 !== submittedResultSha256) {
       fail("provider_effect_receipt_result_conflict");
     }
-    return freeze(scope, result.rows[0].receipt_json);
+    const receipt = row.receipt_json;
+    const storedResult = assertResult(
+      scope,
+      {
+        status: receipt.status,
+        provider: receipt.provider,
+        operation: receipt.operation,
+        providerOwnerRef: receipt.providerOwnerRef,
+        providerResourceRef: receipt.providerResourceRef,
+        responseSha256: receipt.responseSha256,
+        errorCode: receipt.errorCode,
+        observationMode: receipt.observationMode,
+        providerMutationCount: receipt.providerMutationCount,
+      },
+      attempt,
+      kind === "reconciliation",
+    );
+    const completedAt =
+      row.completed_at === null ? null : databaseInstant(row.completed_at, "provider_effect_store_corrupt");
+    const validated = assertReceipt(
+      scope,
+      signer,
+      receipt,
+      receiptSemantic({
+        attempt,
+        result: storedResult,
+        completedAt,
+        reconciliationRef: row.reconciliation_ref,
+        priorReceiptSha256: row.prior_receipt_sha256,
+      }),
+    );
+    if (
+      row.receipt_id !== validated.receiptId ||
+      row.receipt_sha256 !== validated.receiptSha256 ||
+      row.status !== validated.status ||
+      row.provider_resource_ref !== validated.providerResourceRef ||
+      databaseInstant(row.attempted_at, "provider_effect_store_corrupt") !== validated.attemptedAt ||
+      completedAt !== validated.completedAt ||
+      row.reconciliation_ref !== validated.reconciliationRef ||
+      row.prior_receipt_sha256 !== validated.priorReceiptSha256
+    ) {
+      fail("provider_effect_store_corrupt");
+    }
+    return validated;
   };
 
   const issueReceipt = async (semantic) => {
@@ -793,11 +955,12 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     const suppliedAttempt = exact(input.attempt, attemptFields, "provider_effect_attempt_invalid");
     identifier(suppliedAttempt.attemptRef, "provider_effect_attempt_invalid");
     return transaction(async (client) => {
+      await lockProfile(client);
       const selected = await selectAttempt(client, suppliedAttempt.attemptRef, true);
       if (!compare(selected.attempt, suppliedAttempt)) fail("provider_effect_attempt_conflict");
       const submitted = assertResult(scope, input.result, selected.attempt, false);
       const submittedResultSha256 = scope.contracts.PrincipalBinding.hash(submitted);
-      const prior = await existingReceipt(client, selected.attempt.attemptRef, "execution", submittedResultSha256);
+      const prior = await existingReceipt(client, selected.attempt, "execution", submittedResultSha256);
       if (prior) return prior;
       const killSwitch = await currentKillSwitch(client, true);
       const nowResult = await client.query("SELECT clock_timestamp() AS now");
@@ -834,9 +997,24 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
          reconciliation.database_now,
          reconciliation.revision AS reconciliation_revision,
          auth.proposal_json,
-         identity.provider_account_ref,
-         ownership.provider_resource_ref,
+         identity.provider AS identity_provider,
+         identity.provider_owner_ref AS identity_provider_owner_ref,
+         identity.provider_account_ref AS identity_provider_account_ref,
+         identity.credential_owner_ref AS identity_credential_owner_ref,
+         identity.verified_at AS identity_verified_at,
+         identity.expires_at AS provider_identity_expires_at,
+         identity.proof_json AS provider_identity_json,
+         ownership.provider AS ownership_provider,
+         ownership.provider_owner_ref AS ownership_provider_owner_ref,
+         ownership.provider_account_ref AS ownership_provider_account_ref,
+         ownership.target_class AS ownership_target_class,
+         ownership.resource_key AS ownership_resource_key,
+         ownership.provider_resource_ref AS ownership_provider_resource_ref,
+         ownership.verified_at AS ownership_verified_at,
+         ownership.expires_at AS ownership_expires_at,
+         ownership.proof_json AS resource_ownership_json,
          execution_receipt.receipt_sha256 AS prior_receipt_digest,
+         execution_receipt.submitted_result_sha256 AS execution_submitted_result_sha256,
          execution_receipt.receipt_json AS prior_receipt_json,
          kill_switch.engaged AS kill_switch_engaged,
          kill_switch.checked_at AS kill_switch_checked_at,
@@ -896,17 +1074,83 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     if (result.rowCount !== 1) fail("provider_effect_reconciliation_unavailable");
     const row = result.rows[0];
     const attempt = attemptFromRow(scope, row);
+    const reconciliationDatabaseNow = databaseInstant(row.database_now, "provider_effect_store_corrupt");
+    const killSwitchCheckedAt = databaseInstant(row.kill_switch_checked_at, "provider_effect_store_corrupt");
+    const identityAuthenticatedAt = databaseInstant(row.authenticated_at, "provider_effect_store_corrupt");
+    const identityExpiresAt = databaseInstant(row.identity_expires_at, "provider_effect_store_corrupt");
+    const providerIdentityVerifiedAt = databaseInstant(row.identity_verified_at, "provider_effect_store_corrupt");
+    const providerIdentityExpiresAt = databaseInstant(
+      row.provider_identity_expires_at,
+      "provider_effect_store_corrupt",
+    );
+    const ownershipVerifiedAt = databaseInstant(row.ownership_verified_at, "provider_effect_store_corrupt");
+    const ownershipExpiresAt = databaseInstant(row.ownership_expires_at, "provider_effect_store_corrupt");
+    let checked;
+    try {
+      checked = suite.assertProposal(row.proposal_json);
+    } catch {
+      fail("provider_effect_store_corrupt");
+    }
+    const expectedResourceKey = scope.contracts.PrincipalBinding.hash({
+      digestRevision: "ProviderEffectTargetBinding.sha256.v1",
+      targetClass: checked.policy.targetClass,
+      target: row.proposal_json.target,
+    });
+    const priorReceipt = await existingReceipt(client, attempt, "execution", row.execution_submitted_result_sha256);
+    assertProofDigest(row.kill_switch_json, "stateSha256");
+    assertProofDigest(row.reconciliation_identity_json, "authenticationSha256");
+    assertProofDigest(row.provider_identity_json, "receiptSha256");
+    assertProofDigest(row.resource_ownership_json, "receiptSha256");
     if (
       row.reconciliation_prior_receipt_sha256 !== row.prior_receipt_digest ||
+      !compare(priorReceipt, row.prior_receipt_json) ||
       row.prior_receipt_json.receiptSha256 !== row.prior_receipt_digest ||
+      row.prior_receipt_json.status !== "outcome_unknown" ||
+      row.prior_receipt_json.attemptRef !== row.attempt_ref ||
       row.kill_switch_json.stateSha256 !== row.state_sha256 ||
+      row.kill_switch_json.profileRef !== row.profile_ref ||
+      row.kill_switch_json.profileSha256 !== row.profile_sha256 ||
+      row.kill_switch_json.engaged !== row.kill_switch_engaged ||
       row.kill_switch_json.revision !== Number(row.reconciliation_kill_switch_revision) ||
-      row.kill_switch_json.checkedAt !== databaseInstant(row.database_now, "provider_effect_store_corrupt") ||
-      row.kill_switch_json.checkedAt !== databaseInstant(row.kill_switch_checked_at, "provider_effect_store_corrupt") ||
+      row.kill_switch_json.checkedAt !== reconciliationDatabaseNow ||
+      row.kill_switch_json.checkedAt !== killSwitchCheckedAt ||
+      row.provider_identity_json.receiptSha256 !== row.provider_identity_receipt_sha256 ||
+      row.provider_identity_json.profileRef !== row.profile_ref ||
+      row.provider_identity_json.profileSha256 !== row.profile_sha256 ||
+      row.provider_identity_json.provider !== row.identity_provider ||
+      row.identity_provider !== row.provider ||
+      row.provider_identity_json.providerOwnerRef !== row.identity_provider_owner_ref ||
+      row.identity_provider_owner_ref !== row.provider_owner_ref ||
+      row.provider_identity_json.providerAccountRef !== row.identity_provider_account_ref ||
+      row.provider_identity_json.credentialOwnerRef !== row.identity_credential_owner_ref ||
+      row.identity_credential_owner_ref !== row.proposal_json.actor.credentialOwnerRef ||
+      row.provider_identity_json.verifiedAt !== providerIdentityVerifiedAt ||
+      row.provider_identity_json.expiresAt !== providerIdentityExpiresAt ||
+      row.resource_ownership_json.receiptSha256 !== row.resource_ownership_receipt_sha256 ||
+      row.resource_ownership_json.profileRef !== row.profile_ref ||
+      row.resource_ownership_json.profileSha256 !== row.profile_sha256 ||
+      row.resource_ownership_json.provider !== row.ownership_provider ||
+      row.ownership_provider !== row.provider ||
+      row.resource_ownership_json.providerOwnerRef !== row.ownership_provider_owner_ref ||
+      row.ownership_provider_owner_ref !== row.provider_owner_ref ||
+      row.resource_ownership_json.providerAccountRef !== row.ownership_provider_account_ref ||
+      row.ownership_provider_account_ref !== row.identity_provider_account_ref ||
+      row.resource_ownership_json.targetClass !== row.ownership_target_class ||
+      row.ownership_target_class !== checked.policy.targetClass ||
+      row.resource_ownership_json.resourceKey !== row.ownership_resource_key ||
+      row.ownership_resource_key !== expectedResourceKey ||
+      row.resource_ownership_json.providerResourceRef !== row.ownership_provider_resource_ref ||
+      row.resource_ownership_json.verifiedAt !== ownershipVerifiedAt ||
+      row.resource_ownership_json.expiresAt !== ownershipExpiresAt ||
       row.reconciliation_identity_json.authenticationSha256 !== row.reconciliation_authentication_sha256 ||
+      row.reconciliation_identity_json.profileRef !== row.profile_ref ||
+      row.reconciliation_identity_json.profileSha256 !== row.profile_sha256 ||
+      row.reconciliation_identity_json.capability !== row.capability ||
       row.reconciliation_identity_json.attemptRef !== row.attempt_ref ||
       row.reconciliation_identity_json.priorReceiptSha256 !== row.reconciliation_prior_receipt_sha256 ||
-      row.reconciliation_identity_json.reconcilerPrincipalRef !== row.reconciler_principal_ref
+      row.reconciliation_identity_json.reconcilerPrincipalRef !== row.reconciler_principal_ref ||
+      row.reconciliation_identity_json.authenticatedAt !== identityAuthenticatedAt ||
+      row.reconciliation_identity_json.expiresAt !== identityExpiresAt
     ) {
       fail("provider_effect_store_corrupt");
     }
@@ -922,15 +1166,15 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       provider: attempt.provider,
       operation: attempt.operation,
       providerOwnerRef: attempt.providerOwnerRef,
-      providerAccountRef: row.provider_account_ref,
-      providerResourceRef: row.provider_resource_ref,
+      providerAccountRef: row.identity_provider_account_ref,
+      providerResourceRef: row.ownership_provider_resource_ref,
       attemptRef: attempt.attemptRef,
       attemptNumber: 1,
       attemptedAt: attempt.attemptedAt,
       attemptLeaseExpiresAt: attempt.leaseExpiresAt,
       priorStatus: "outcome_unknown",
       priorReceiptSha256: row.reconciliation_prior_receipt_sha256,
-      databaseNow: databaseInstant(row.database_now, "provider_effect_store_corrupt"),
+      databaseNow: reconciliationDatabaseNow,
       killSwitch: row.kill_switch_json,
       reconciliationIdentity: row.reconciliation_identity_json,
       revision: Number(row.reconciliation_revision),
@@ -986,6 +1230,7 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       fail("provider_effect_reconciliation_request_invalid");
     }
     return transaction(async (client) => {
+      await lockProfile(client);
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `${scope.profileRef}\n${scope.profileSha256}\n${request.attemptRef}\nreconciliation`,
       ]);
@@ -1092,6 +1337,7 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     const suppliedLease = exact(input.lease, leaseFields, "provider_effect_reconciliation_lease_invalid");
     identifier(suppliedLease.reconciliationRef, "provider_effect_reconciliation_lease_invalid");
     return transaction(async (client) => {
+      await lockProfile(client);
       const leaseResult = await client.query(
         `SELECT *
          FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_leases
@@ -1107,7 +1353,7 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       }
       const result = assertResult(scope, input.result, selected.attempt, true);
       const submittedResultSha256 = scope.contracts.PrincipalBinding.hash(result);
-      const prior = await existingReceipt(client, selected.attempt.attemptRef, "reconciliation", submittedResultSha256);
+      const prior = await existingReceipt(client, selected.attempt, "reconciliation", submittedResultSha256);
       if (prior) return prior;
       const current = await currentKillSwitch(client, true);
       const nowResult = await client.query("SELECT clock_timestamp() AS now");

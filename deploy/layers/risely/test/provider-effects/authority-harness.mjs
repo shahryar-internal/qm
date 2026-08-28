@@ -840,6 +840,35 @@ const unknownResult = (state, attempt, code) =>
     providerMutationCount: null,
   });
 
+const completionResult = (state, value, attempt, attemptedResult) => {
+  const receipt = snapshot(state.scope, value, receiptFields, "provider_effect_receipt_invalid");
+  if (receipt.status === attemptedResult.status) return attemptedResult;
+  if (
+    attemptedResult.status === "outcome_unknown" ||
+    receipt.status !== "outcome_unknown" ||
+    !["provider_kill_switch_changed_after_reservation", "provider_attempt_lease_expired"].includes(receipt.errorCode)
+  ) {
+    fail("provider_effect_receipt_invalid");
+  }
+  return assertAdapterResult(
+    state,
+    {
+      status: receipt.status,
+      provider: receipt.provider,
+      operation: receipt.operation,
+      providerOwnerRef: receipt.providerOwnerRef,
+      providerResourceRef: receipt.providerResourceRef,
+      responseSha256: receipt.responseSha256,
+      errorCode: receipt.errorCode,
+      observationMode: receipt.observationMode,
+      providerMutationCount: receipt.providerMutationCount,
+    },
+    attempt,
+    true,
+    "effect_execution",
+  );
+};
+
 const assertReceipt = (state, value, attempt, result, reconciliation = null) => {
   const { scope } = state;
   const input = snapshot(scope, value, receiptFields, "provider_effect_receipt_invalid");
@@ -943,7 +972,8 @@ const execute = async (authority, proposalId) => {
     result = unknownResult(state, attempt, "provider_transport_indeterminate");
   }
   const persisted = await storeCall(state, "completeAttempt", { attempt, result });
-  return assertReceipt(state, persisted, { ...attempt, proposal: authorization.proposal }, result);
+  const persistedResult = completionResult(state, persisted, attempt, result);
+  return assertReceipt(state, persisted, { ...attempt, proposal: authorization.proposal }, persistedResult);
 };
 
 const assertReconciliation = (state, value) => {
