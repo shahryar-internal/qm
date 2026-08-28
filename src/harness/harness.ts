@@ -49,6 +49,7 @@ interface HarnessSecurityScreenInput {
 export interface HarnessTurnInput {
   session: Session;
   runId?: string;
+  acceptRunSignals?: boolean;
   cancel?: AbortSignal;
   input: string;
   triggerTs?: string;

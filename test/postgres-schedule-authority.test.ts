@@ -21,6 +21,8 @@ import {
 } from "../src/cron/schedule-authority.ts";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
+import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
+import { startSignalPoll } from "../src/runs/run-signal-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { createApp, type AppDeps } from "../src/api/app.ts";
 import { createScheduler } from "../src/cron/scheduler.ts";
@@ -39,6 +41,7 @@ import { createModelGateway } from "../src/model/model-gateway.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { createRateLimiter } from "../src/ratelimit/rate-limiter.ts";
 import { createMockHarness } from "../src/harness/mock-harness.ts";
+import type { Harness } from "../src/harness/harness.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
@@ -66,7 +69,7 @@ const signer = createScheduleAuthoritySigner({
   privateKey,
 });
 
-function scheduleOrchestrator(sessions: SessionStore): Orchestrator {
+function scheduleOrchestrator(sessions: SessionStore, harness: Harness = createMockHarness()): Orchestrator {
   const config = createMemoryConfigStore("default-org");
   const acl = createAclStore();
   const auditLog = createAuditLog();
@@ -103,7 +106,7 @@ function scheduleOrchestrator(sessions: SessionStore): Orchestrator {
     modelGateway: createModelGateway(),
     auditLog,
     rateLimiter: createRateLimiter({ maxPerWindow: 1_000, windowMs: 60_000 }),
-    harness: createMockHarness(),
+    harness,
     memory: createMemoryService(workspace),
     deploy,
     acl,
@@ -615,9 +618,39 @@ test(
     const sessions = createPostgresSessionStore(TEST_URL!);
     const runtime = createPostgresRunStore(TEST_URL!);
     const authority = createPostgresScheduleAuthority({ connectionString: TEST_URL!, signer });
+    const runSignals = createPostgresRunSignalStore(TEST_URL!);
     const identity = createIdentityService();
     let observedAuthority = false;
-    const coreOrchestrator = scheduleOrchestrator(sessions);
+    const handledSignals: string[] = [];
+    const baseHarness = createMockHarness();
+    const signalHarness: Harness = {
+      ...baseHarness,
+      turns: {
+        async runTurn(turn) {
+          assert.equal(turn.acceptRunSignals, false);
+          assert.ok(turn.runId);
+          const stopSignals = startSignalPoll(
+            runSignals,
+            turn.runId,
+            {
+              onSteer: async (text) => {
+                handledSignals.push(text);
+              },
+              onAbort: async () => {
+                handledSignals.push("abort");
+              },
+            },
+            { intervalMs: 60_000, discard: turn.acceptRunSignals === false },
+          );
+          try {
+            return await baseHarness.turns.runTurn(turn);
+          } finally {
+            await stopSignals();
+          }
+        },
+      },
+    };
+    const coreOrchestrator = scheduleOrchestrator(sessions, signalHarness);
     const orchestrator: Orchestrator = {
       ...coreOrchestrator,
       async handleTurn(input) {
@@ -645,6 +678,7 @@ test(
       leaseTtlMs: 30_000,
       maxAttempts: 3,
       scheduleAuthority: authority,
+      signals: runSignals,
       config: createMemoryConfigStore("default-org"),
     } as unknown as AppDeps);
     const scheduler = createScheduler({
@@ -744,6 +778,22 @@ test(
       const scheduled = queued.find((run) => run.dedupKey === `cron:${cron.id}:${scheduledAt}`);
       assert.ok(scheduled?.durableSessionId);
       await assert.rejects(rows("DELETE FROM sessions WHERE id=$1", [scheduled.durableSessionId]), /foreign key/u);
+      await runSignals.send(scheduled.id, { kind: "steer", text: "requestless provider write" });
+      await runSignals.send(scheduled.id, {
+        kind: "steer",
+        text: "request-bearing provider write",
+        request: {
+          surface: "slack",
+          actor: { externalId: "U1" },
+          conversation: { kind: "dm", threadRef: scheduled.sessionId, audience: [{ externalId: "U1" }] },
+          text: "request-bearing provider write",
+          triggered: true,
+          ownerKeychainUnion: true,
+          unattendedGrants: ["admin.sessions.read"],
+          surfaceTools: true,
+        },
+      });
+      await runSignals.send(scheduled.id, { kind: "abort" });
       worker = createWorker({
         runs: runtime.runs,
         sessions,
@@ -758,8 +808,11 @@ test(
       assert.equal(finished.status, "done");
       assert.equal(finished.result?.sessionId, scheduled.durableSessionId);
       assert.equal(observedAuthority, true);
+      assert.deepEqual(handledSignals, []);
+      assert.deepEqual(await runSignals.takePending(scheduled.id), []);
     } finally {
       await worker?.stop();
+      await runSignals.close?.();
       await runtime.close();
       await authority.close();
       await maps.pool.close();

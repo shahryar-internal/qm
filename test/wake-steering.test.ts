@@ -386,6 +386,8 @@ test("an addressed message cannot steer or abort a signed scheduled run", async 
     },
   });
 
+  assert.deepEqual(await built.app.withdrawRun(run.id), { withdrawn: false, reason: "scheduled_run" });
+  assert.ok(await built.runs.get(run.id));
   const follow = await built.app.turn(mention("stop", channel, root));
   assert.notEqual(follow.runId, run.id);
   assert.equal((await built.signals.takePending(run.id)).length, 0);
@@ -758,6 +760,34 @@ test("signalRun and terminal replay reject every signal for a signed scheduled r
     accepted: true,
   });
   assert.equal((await built.signals.takePending(ordinary.runId!))[0]?.text, "ordinary steer");
+});
+
+test("terminal replay drops a request-bearing signal when source provenance is missing", async () => {
+  const built = freshApp();
+  const missingRunId = "missing-signed-source";
+  const before = (await built.runs.list()).map((run) => run.id);
+  await built.signals.send(missingRunId, {
+    kind: "steer",
+    text: "replay provider write",
+    request: {
+      surface: "slack",
+      actor: { externalId: "U-owner" },
+      conversation: { kind: "dm", threadRef: "missing-source", audience: [{ externalId: "U-owner" }] },
+      text: "replay provider write",
+      triggered: true,
+      ownerKeychainUnion: true,
+      unattendedGrants: ["admin.sessions.read"],
+      surfaceTools: true,
+    },
+  });
+
+  await built.app.replayOrphanedRunSignals(missingRunId);
+
+  assert.equal((await built.signals.takePending(missingRunId)).length, 0);
+  assert.deepEqual(
+    (await built.runs.list()).map((run) => run.id),
+    before,
+  );
 });
 
 function completeOnSend(built: ReturnType<typeof freshApp>): void {
