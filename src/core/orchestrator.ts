@@ -4,6 +4,7 @@ import type {
   Destination,
   EntryType,
   ScopeId,
+  Session,
   SessionEntry,
   SessionType,
   TurnResult,
@@ -473,6 +474,32 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
       const resolution = await deps.resolution.resolve(conversation, actor);
       const scopeId = deps.resolution.scopeFor(conversation, actor);
+      const sessionForTurn = async (type: SessionType): Promise<Session> => {
+        if (!input.scheduleAuthority) {
+          return deps.sessions.getOrCreateByThread(
+            conversation.threadRef,
+            type,
+            scopeId,
+            conversation.channelName,
+            input.surface,
+          );
+        }
+        const trusted = await input.scheduleAuthority.assertCurrent(input);
+        const session = await deps.sessions.get(trusted.authority.sessionId);
+        if (
+          !session ||
+          trusted.authority.runId !== input.runId ||
+          session.id !== trusted.authority.sessionId ||
+          session.threadRef !== trusted.authority.threadRef ||
+          session.threadRef !== conversation.threadRef ||
+          session.type !== type ||
+          session.scopeId !== scopeId ||
+          session.surface !== "cron"
+        ) {
+          throw new NonRetryableTurnError("scheduled run preallocated session is unavailable or changed");
+        }
+        return session;
+      };
       let participantHistorySeqs: Set<number> | undefined;
       let participantHistoryMaxSeq = -1;
       const filterHistory = (entries: SessionEntry[]): SessionEntry[] =>
@@ -688,13 +715,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let type: SessionType = "channel";
         if (conversation.kind === "dm") type = "dm";
         else if (conversation.kind === "group") type = "group";
-        const session = await deps.sessions.getOrCreateByThread(
-          conversation.threadRef,
-          type,
-          scopeId,
-          conversation.channelName,
-          input.surface,
-        );
+        const session = await sessionForTurn(type);
         screenSession.id = session.id;
         if (!input.sessionParticipantIds?.length && !automatedTurn)
           await deps.sessions.addParticipant(session.id, actor.id);
@@ -964,13 +985,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let leaseMs = 0;
       const perf = { credsMs: 0 };
       const sessionStart = Date.now();
-      const session = await deps.sessions.getOrCreateByThread(
-        conversation.threadRef,
-        type,
-        scopeId,
-        conversation.channelName,
-        input.surface,
-      );
+      const session = await sessionForTurn(type);
       screenSession.id = session.id;
       leaseMs += Date.now() - sessionStart;
       if (!input.sessionParticipantIds?.length && !automatedTurn)

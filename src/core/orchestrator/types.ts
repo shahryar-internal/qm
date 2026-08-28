@@ -60,6 +60,7 @@ import type { DeployService } from "../../deploy/deploy-service.ts";
 import type { AclStore } from "../../acl/acl-store.ts";
 import type { ChannelPolicyStore } from "../../surface-cache/channel-policy-store.ts";
 import type { SurfaceCache } from "../../surface-cache/types.ts";
+import type { CurrentScheduleRunInvocation } from "../../cron/postgres-schedule-authority.ts";
 
 export interface OrchestratorInput extends Omit<
   TurnRequest,
@@ -90,6 +91,7 @@ export interface OrchestratorInput extends Omit<
   queueMs?: number;
   sessionParticipantIds?: readonly string[];
   scopeVersion?: string;
+  scheduleAuthority?: CurrentScheduleRunInvocation;
 }
 
 export interface OrchestratorDeps {
