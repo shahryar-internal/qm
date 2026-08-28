@@ -309,6 +309,8 @@ const assertSignedProof = (state, input, proofClass, capability, digestField, co
   identifier(input.keyId, code);
   identifier(input.issuerRef, code);
   if (typeof input.signature !== "string" || !base64urlPattern.test(input.signature)) fail(code);
+  const signatureBytes = Buffer.from(input.signature, "base64url");
+  if (signatureBytes.length !== 64 || signatureBytes.toString("base64url") !== input.signature) fail(code);
   const issuer = state.proofIssuers.get(`${proofClass}\n${input.keyId}`);
   if (!issuer || issuer.issuerRef !== input.issuerRef || !issuer.capabilities.includes(capability)) fail(code);
   const hashProjection = { ...input };
@@ -840,6 +842,39 @@ const unknownResult = (state, attempt, code) =>
     providerMutationCount: null,
   });
 
+const completionResult = (state, value, attempt, attemptedResult) => {
+  const receipt = snapshot(state.scope, value, receiptFields, "provider_effect_receipt_invalid");
+  if (receipt.status === attemptedResult.status) return attemptedResult;
+  if (
+    attemptedResult.status === "outcome_unknown" ||
+    receipt.status !== "outcome_unknown" ||
+    ![
+      "provider_kill_switch_changed_after_reservation",
+      "provider_attempt_lease_expired",
+      "provider_completion_unavailable",
+    ].includes(receipt.errorCode)
+  ) {
+    fail("provider_effect_receipt_invalid");
+  }
+  return assertAdapterResult(
+    state,
+    {
+      status: receipt.status,
+      provider: receipt.provider,
+      operation: receipt.operation,
+      providerOwnerRef: receipt.providerOwnerRef,
+      providerResourceRef: receipt.providerResourceRef,
+      responseSha256: receipt.responseSha256,
+      errorCode: receipt.errorCode,
+      observationMode: receipt.observationMode,
+      providerMutationCount: receipt.providerMutationCount,
+    },
+    attempt,
+    true,
+    "effect_execution",
+  );
+};
+
 const assertReceipt = (state, value, attempt, result, reconciliation = null) => {
   const { scope } = state;
   const input = snapshot(scope, value, receiptFields, "provider_effect_receipt_invalid");
@@ -943,7 +978,8 @@ const execute = async (authority, proposalId) => {
     result = unknownResult(state, attempt, "provider_transport_indeterminate");
   }
   const persisted = await storeCall(state, "completeAttempt", { attempt, result });
-  return assertReceipt(state, persisted, { ...attempt, proposal: authorization.proposal }, result);
+  const persistedResult = completionResult(state, persisted, attempt, result);
+  return assertReceipt(state, persisted, { ...attempt, proposal: authorization.proposal }, persistedResult);
 };
 
 const assertReconciliation = (state, value) => {
@@ -982,7 +1018,9 @@ const assertReconciliation = (state, value) => {
     fail("provider_effect_reconciliation_invalid");
   }
   const killSwitch = assertKillSwitch(state, input.killSwitch, input.profileRef, input.profileSha256, input.capability);
-  if (killSwitch.checkedAt !== input.databaseNow) fail("provider_effect_reconciliation_invalid");
+  if (Date.parse(killSwitch.checkedAt) > Date.parse(input.databaseNow)) {
+    fail("provider_effect_reconciliation_invalid");
+  }
   const identity = snapshot(
     scope,
     input.reconciliationIdentity,
