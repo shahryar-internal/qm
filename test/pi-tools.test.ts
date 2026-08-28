@@ -1,9 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPiTools, pauseStampAfterToolCall, type ToolContextRef } from "../src/harness/pi-tools.ts";
+import {
+  createPiTools,
+  pauseStampAfterToolCall,
+  WORKFLOW_ARTIFACT_SEND_GUIDANCE,
+  type ToolContextRef,
+} from "../src/harness/pi-tools.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
 import { CommandDenied, NeedsApproval, type ToolContext } from "../src/tools/primitives.ts";
 import type { EntryType, SessionEntry } from "../src/types.ts";
+
+test("workflow artifact producer guidance names the renderable file contract and keeps approvals native", () => {
+  assert.match(WORKFLOW_ARTIFACT_SEND_GUIDANCE, /\*\.workflow\.json/);
+  assert.match(WORKFLOW_ARTIFACT_SEND_GUIDANCE, /qm\.card\.v1/);
+  assert.match(WORKFLOW_ARTIFACT_SEND_GUIDANCE, /real approval\/tool flow/);
+});
 
 function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute"]>[1] }): ToolContext {
   return {

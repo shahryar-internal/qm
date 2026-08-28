@@ -97,6 +97,9 @@ function isFirstPartyToolResult(summary: Record<string, unknown>): boolean {
 const MAX_TOOL_RESULT_CHARS = 100_000;
 const TRUNCATED_TAIL_CHARS = 10_000;
 
+export const WORKFLOW_ARTIFACT_SEND_GUIDANCE =
+  'For a polished structured result, write a `*.workflow.json` UTF-8 file containing exactly `{"version":1,"renderer":"qm.card.v1","fallbackText":"...","payload":{"heading":"...","summary":"...","status":{"label":"...","tone":"neutral|info|success|warning|danger"},"sections":[{"key":"...","label":"...","items":[{"label":"...","value":"...","href":"https://..."}]}],"links":[{"label":"...","href":"https://..."}]}}`, omitting optional fields instead of adding new ones, then deliver that file normally. Use the real approval/tool flow for actions; never put approval or action controls in the artifact. ';
+
 function capResultText(t: string): string {
   if (t.length <= MAX_TOOL_RESULT_CHARS) return t;
   const notice =
@@ -624,7 +627,8 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   const SCOPED_EPHEMERAL_ERROR =
     '[error] the scoped computer is always durable today — re-run with durable:true (or omit `durable`), or use scope:"scratch" for a run that leaves no trace.';
   const FILE_SEND_GUIDANCE =
-    "The read/write/publish/background tools always use the scoped computer. To send a file, attach it — name its workspace path in the surface `post` action's `files` — so it lands where your message lands (in a channel/group this is the ONLY way, since a file needs a thread). Only in a one-on-one DM can a foreground command instead copy a file into \"$AGENT_OUTBOX\"/ (an absolute, turn-private path) to hand it over on its own; never use a workspace-relative ./outbox for that. A background job's $AGENT_OUTBOX belongs to the turn that launched it and is collected when that turn ends: write its result to the workspace, then attach it from a live turn. ";
+    "The read/write/publish/background tools always use the scoped computer. To send a file, attach it — name its workspace path in the surface `post` action's `files` — so it lands where your message lands (in a channel/group this is the ONLY way, since a file needs a thread). Only in a one-on-one DM can a foreground command instead copy a file into \"$AGENT_OUTBOX\"/ (an absolute, turn-private path) to hand it over on its own; never use a workspace-relative ./outbox for that. A background job's $AGENT_OUTBOX belongs to the turn that launched it and is collected when that turn ends: write its result to the workspace, then attach it from a live turn. " +
+    WORKFLOW_ARTIFACT_SEND_GUIDANCE;
   const DURABLE_PARAM_DESC =
     "Must this command's writes/installs/logins survive future turns? Scoped is durable; scratch and owner are invocation-only.";
 
