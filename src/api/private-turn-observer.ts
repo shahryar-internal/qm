@@ -14,7 +14,10 @@ export interface PrivateTurnObservation {
 }
 
 export interface PrivateTurnObservationSink {
-  observe(input: PrivateTurnObservation): Promise<"accepted" | "duplicate" | "unconfirmed">;
+  observe(
+    input: PrivateTurnObservation,
+    options?: { signal?: AbortSignal },
+  ): Promise<"accepted" | "duplicate" | "unconfirmed">;
 }
 
 const OBSERVATION_FIELDS = [
@@ -138,13 +141,17 @@ export async function observePrivateTurn(
   observation: PrivateTurnObservation,
   timeoutMs: number,
 ): Promise<"accepted" | "duplicate" | "unconfirmed"> {
+  const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const pending = Promise.resolve()
-    .then(() => sink.observe(observation))
+    .then(() => sink.observe(observation, { signal: controller.signal }))
     .then((outcome) => (outcome === "accepted" || outcome === "duplicate" ? outcome : ("unconfirmed" as const)))
     .catch(() => "unconfirmed" as const);
   const deadline = new Promise<"unconfirmed">((resolve) => {
-    timeout = setTimeout(() => resolve("unconfirmed"), timeoutMs);
+    timeout = setTimeout(() => {
+      controller.abort();
+      resolve("unconfirmed");
+    }, timeoutMs);
     timeout.unref?.();
   });
   try {
