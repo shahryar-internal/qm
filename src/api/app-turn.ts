@@ -24,6 +24,7 @@ import { unscreenedNotice } from "../security/security-posture.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
 import { privateTurnObservation, type PrivateTurnObservation } from "./private-turn-observer.ts";
+import type { PersistedScheduleRunRequest, ScheduledTurnContext } from "../cron/schedule-authority.ts";
 
 export function createTurnMethods(
   deps: AppDeps,
@@ -56,7 +57,7 @@ export function createTurnMethods(
   } = h;
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
   return {
-    async turn(req: TurnRequest): Promise<TurnResult> {
+    async turn(req: TurnRequest, scheduled?: ScheduledTurnContext): Promise<TurnResult> {
       await deps.identity.refresh();
       const actor: Principal = deps.identity.resolve(req.actor);
       if (!deps.identity.isInternal(actor)) {
@@ -328,7 +329,9 @@ export function createTurnMethods(
       let dedupKey: string | undefined;
       if (req.idempotencyKey) {
         dedupKey =
-          projectVersion === undefined ? req.idempotencyKey : `${req.idempotencyKey}:project-${projectVersion}`;
+          scheduled || projectVersion === undefined
+            ? req.idempotencyKey
+            : `${req.idempotencyKey}:project-${projectVersion}`;
       }
 
       if (origin.kind === "human" && !req.approval) deps.reaperPoke?.();
@@ -480,30 +483,60 @@ export function createTurnMethods(
       const known = await deps.sessions.getByThread(conversation.threadRef);
       const participants = known ? await deps.sessions.participantsOf(known.id) : [];
       let enqueuedObservation: PrivateTurnObservation | undefined;
-      const enqueue = () =>
-        deps.runs.enqueue({
-          sessionId: conversation.threadRef,
-          request,
-          maxAttempts: deps.maxAttempts,
-          ...(dedupKey ? { dedupKey } : {}),
-          ...(deps.privateTurnObservationOutbox
-            ? {
-                acceptanceOutbox: ({ runId, acceptedAt }: { runId: string; acceptedAt: number }) => {
-                  const accepted = acceptedPrivateTurn(runId, acceptedAt);
-                  enqueuedObservation = accepted?.observation;
-                  return accepted?.outbox;
-                },
-              }
-            : {}),
-        });
+      const enqueue = async () => {
+        if (scheduled) {
+          if (!deps.scheduleAuthority) throw new Error("scheduled run authority is unavailable");
+          if (!dedupKey) throw new Error("scheduled run requires an idempotency key");
+          const persistedRequest = { ...request, idempotencyKey: dedupKey } as PersistedScheduleRunRequest;
+          const claimed = await deps.scheduleAuthority.claim({
+            cronId: scheduled.cronId,
+            scheduledAt: scheduled.scheduledAt,
+            threadRef: conversation.threadRef,
+            session: {
+              type: conversation.kind,
+              scopeId: scheduled.ownerScopeId,
+              ...(conversation.channelName ? { channelName: conversation.channelName } : {}),
+              surface: "cron",
+            },
+            request: persistedRequest,
+            maxAttempts: deps.maxAttempts,
+          });
+          scheduled.onClaim(claimed.status);
+          if (claimed.status === "disabled" || claimed.status === "skipped") return { disabled: true as const };
+          const run = await deps.runs.get(claimed.runId);
+          if (!run || run.durableSessionId !== claimed.sessionId) {
+            throw new Error("scheduled run was not committed with its preallocated session");
+          }
+          return { disabled: false as const, run, deduped: claimed.status === "deduped" };
+        }
+        return {
+          disabled: false as const,
+          ...(await deps.runs.enqueue({
+            sessionId: conversation.threadRef,
+            request,
+            maxAttempts: deps.maxAttempts,
+            ...(dedupKey ? { dedupKey } : {}),
+            ...(deps.privateTurnObservationOutbox
+              ? {
+                  acceptanceOutbox: ({ runId, acceptedAt }: { runId: string; acceptedAt: number }) => {
+                    const accepted = acceptedPrivateTurn(runId, acceptedAt);
+                    enqueuedObservation = accepted?.observation;
+                    return accepted?.outbox;
+                  },
+                }
+              : {}),
+          })),
+        };
+      };
       const enqueued = await withCurrentProjectRoster(enqueue);
       if (!enqueued) return { status: "refused", reason: "project membership changed; retry from the current project" };
+      if (enqueued.disabled) return { status: "silent" };
       const { run, deduped } = enqueued;
       await deliverAcceptedPrivateTurn(enqueuedObservation);
       if (!deduped) {
         deps.sessionStateBus?.emit({
           threadRef: conversation.threadRef,
-          ...(known ? { sessionId: known.id } : {}),
+          ...((known?.id ?? run.durableSessionId) ? { sessionId: known?.id ?? run.durableSessionId! } : {}),
           state: "working",
           at: Date.now(),
           participants: participants.length ? participants : [req.actor.externalId],

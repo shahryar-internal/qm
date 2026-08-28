@@ -96,6 +96,8 @@ import type { RuntimeChoice } from "../harness/harness-router.ts";
 import { type ReachOpts, type ReachResolution, type ReachTarget } from "../reach/reach.ts";
 import { type Project, type ProjectStore } from "../projects/project-store.ts";
 import type { PrivateTurnObservationOutbox } from "./private-turn-observation-outbox.ts";
+import type { PostgresScheduleAuthority } from "../cron/postgres-schedule-authority.ts";
+import type { ScheduledTurnContext } from "../cron/schedule-authority.ts";
 
 interface DeploymentVersionView {
   version: number;
@@ -236,7 +238,7 @@ export interface SessionSearchHit {
 }
 
 export interface App {
-  turn(req: TurnRequest): Promise<TurnResult>;
+  turn(req: TurnRequest, scheduled?: ScheduledTurnContext): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void): () => void;
   listSessionApprovals(sessionId: string, viewer: string): Promise<PendingApproval[]>;
@@ -515,6 +517,7 @@ export interface AppDeps {
   maxAttempts: number;
   runWaitMs?: number;
   privateTurnObservationOutbox?: PrivateTurnObservationOutbox;
+  scheduleAuthority?: Pick<PostgresScheduleAuthority, "claim" | "current" | "assertCurrent">;
   turnStream?: TurnStream;
   runActivity?: RunActivityStore;
   signals?: RunSignalStore;

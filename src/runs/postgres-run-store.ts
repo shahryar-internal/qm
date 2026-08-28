@@ -25,6 +25,7 @@ function rowToRun(r: Record<string, unknown>): Run {
   return {
     id: r.id as string,
     sessionId: r.session_id as string,
+    durableSessionId: (r.durable_session_id as string | null) ?? null,
     status: r.status as Run["status"],
     request: { ...request, origin: resolveTurnOrigin(request) },
     result: r.result != null ? (JSON.parse(r.result as string) as TurnResult) : null,
@@ -58,6 +59,8 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery_state TEXT`,
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_attempts INT NOT NULL DEFAULT 0`,
     `ALTER TABLE runs ADD COLUMN IF NOT EXISTS seq BIGSERIAL`,
+    `ALTER TABLE runs ADD COLUMN IF NOT EXISTS durable_session_id TEXT`,
+    `CREATE INDEX IF NOT EXISTS idx_runs_durable_session ON runs(durable_session_id) WHERE durable_session_id IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_runs_status_created_seq ON runs(status, created_at, seq)`,
     `CREATE INDEX IF NOT EXISTS idx_runs_status_created ON runs(status, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_runs_session_active_created
@@ -160,6 +163,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
 
     async enqueue({
       sessionId,
+      durableSessionId,
       request,
       dedupKey,
       maxAttempts = 3,
@@ -168,10 +172,10 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       return withPgTransaction(await pg.pool(), async (client) => {
         const id = randomUUID();
         const { rows: inserted } = await client.query(
-          `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at)
-           VALUES ($1,$2,'pending',$3,$4,0,$5,$6)
+          `INSERT INTO runs(id, session_id, durable_session_id, status, request, idempotency_key, attempts, max_attempts, created_at)
+           VALUES ($1,$2,$3,'pending',$4,$5,0,$6,$7)
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
-          [id, sessionId, JSON.stringify(request), dedupKey ?? null, maxAttempts, Date.now()],
+          [id, sessionId, durableSessionId ?? null, JSON.stringify(request), dedupKey ?? null, maxAttempts, Date.now()],
         );
         const deduped = !inserted[0];
         const row =
@@ -185,17 +189,20 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
 
     async claim(workerId, ttlMs): Promise<Run | null> {
       const token = randomUUID();
-      const now = Date.now();
       try {
         const { rows } = await q(
-          `UPDATE runs SET status='running', lease_token=$1, lease_expires_at=$2, worker_id=$3,
-             attempts=attempts+1, started_at=COALESCE(started_at,$4)
+          `WITH trusted AS (
+             SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms
+           )
+           UPDATE runs SET status='running', lease_token=$1, lease_expires_at=trusted.now_ms+$2, worker_id=$3,
+             attempts=attempts+1, started_at=COALESCE(started_at,trusted.now_ms)
+           FROM trusted
            WHERE id = (
              SELECT id FROM runs WHERE status='pending'
                AND session_id NOT IN (SELECT session_id FROM runs WHERE status='running')
              ORDER BY created_at ASC, seq ASC FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING *`,
-          [token, now + ttlMs, workerId, now],
+          [token, ttlMs, workerId],
         );
         return rows[0] ? rowToRun(rows[0]) : null;
       } catch (err) {
@@ -206,17 +213,20 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
 
     async claimById(runId, workerId, ttlMs): Promise<Run | null> {
       const token = randomUUID();
-      const now = Date.now();
       try {
         const { rows } = await q(
-          `UPDATE runs SET status='running', lease_token=$1, lease_expires_at=$2, worker_id=$3,
-             attempts=attempts+1, started_at=COALESCE(started_at,$4)
+          `WITH trusted AS (
+             SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms
+           )
+           UPDATE runs SET status='running', lease_token=$1, lease_expires_at=trusted.now_ms+$2, worker_id=$3,
+             attempts=attempts+1, started_at=COALESCE(started_at,trusted.now_ms)
+           FROM trusted
            WHERE id = (
-             SELECT id FROM runs WHERE id=$5 AND status='pending'
+             SELECT id FROM runs WHERE id=$4 AND status='pending'
                AND session_id NOT IN (SELECT session_id FROM runs WHERE status='running')
              FOR UPDATE SKIP LOCKED LIMIT 1
            ) RETURNING *`,
-          [token, now + ttlMs, workerId, now, runId],
+          [token, ttlMs, workerId, runId],
         );
         return rows[0] ? rowToRun(rows[0]) : null;
       } catch (err) {
@@ -227,8 +237,13 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
 
     async heartbeat(runId, leaseToken, ttlMs): Promise<boolean> {
       const { rowCount } = await q(
-        "UPDATE runs SET lease_expires_at=$1 WHERE id=$2 AND lease_token=$3 AND status='running'",
-        [Date.now() + ttlMs, runId, leaseToken],
+        `WITH trusted AS (
+           SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms
+         )
+         UPDATE runs SET lease_expires_at=trusted.now_ms+$1
+         FROM trusted
+         WHERE id=$2 AND lease_token=$3 AND status='running' AND lease_expires_at > trusted.now_ms`,
+        [ttlMs, runId, leaseToken],
       );
       return rowCount > 0;
     },
@@ -312,7 +327,9 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       onRetired?: (sessionIds: string[]) => Promise<void>,
       opts?: { maxAgeMs?: number; onReap?: (event: ReapEvent) => void },
     ): Promise<{ requeued: number; parked: number }> {
-      const now = Date.now();
+      const clock = await q("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms");
+      const now = Number(clock.rows[0]?.now_ms);
+      if (!Number.isSafeInteger(now) || now < 0) throw new Error("database clock returned an invalid lease cutoff");
       const { rows } = await q(
         "SELECT * FROM runs WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1",
         [now],

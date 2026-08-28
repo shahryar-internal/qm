@@ -81,6 +81,8 @@ import {
 } from "./environments/environment-store.ts";
 import { createIdempotencyStore, type IdempotencyRecord } from "./idempotency/idempotency-store.ts";
 import { createScheduler, type Scheduler } from "./cron/scheduler.ts";
+import { createPostgresScheduleAuthority, type PostgresScheduleAuthority } from "./cron/postgres-schedule-authority.ts";
+import { createScheduleAuthoritySigner } from "./cron/schedule-authority.ts";
 import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, disableLegacyWebhookRows } from "./webhooks/webhook-store.ts";
 import { createWebhookReceiver, type WebhookReceiver } from "./webhooks/webhook-receiver.ts";
@@ -390,6 +392,7 @@ export interface BuiltApp {
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
   privateTurnObservationOutbox?: PrivateTurnObservationOutbox;
+  scheduleAuthority?: PostgresScheduleAuthority;
 }
 
 export function buildApp(
@@ -881,6 +884,17 @@ export function buildApp(
         });
   const runs: RunStore = runStore.runs;
   const ledger = runStore.ledger;
+  const scheduleAuthority = config.scheduleAuthority
+    ? createPostgresScheduleAuthority({
+        connectionString: requireDbUrl("SCHEDULE_AUTHORITY"),
+        signer: createScheduleAuthoritySigner({
+          authorityRef: config.scheduleAuthority.authorityRef,
+          issuerRef: config.scheduleAuthority.issuerRef,
+          keyId: config.scheduleAuthority.keyId,
+          privateKey: { key: config.scheduleAuthority.signingJwk, format: "jwk" },
+        }),
+      })
+    : undefined;
 
   let processes: ProcessRegistry | undefined;
   if (supportsProcessSessions(sandbox)) {
@@ -1250,6 +1264,7 @@ export function buildApp(
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeys),
     runWaitMs: config.runWaitMs,
     ...(privateTurnObservationOutbox ? { privateTurnObservationOutbox } : {}),
+    ...(scheduleAuthority ? { scheduleAuthority } : {}),
   });
   const slackCore = createSlackCoreClient({
     app,
@@ -1366,6 +1381,7 @@ export function buildApp(
     idempotency,
     identity,
     run: (req) => app.turn(req),
+    ...(scheduleAuthority ? { runScheduled: (req, context) => app.turn(req, context) } : {}),
     leaderLease,
     directory,
     currentScopeMembers,
@@ -1450,6 +1466,7 @@ export function buildApp(
       sessions,
       orchestrator,
       leaseTtlMs,
+      ...(scheduleAuthority ? { scheduleAuthority } : {}),
       heartbeatIntervalMs: config.heartbeatIntervalMs,
       pollMs: 250,
       canClaim: () => drain.canClaim(),
@@ -1542,6 +1559,7 @@ export function buildApp(
       await harness.turns.close?.();
       await tasks.close?.();
       await transactionalOutboxStorage?.close?.();
+      await scheduleAuthority?.close();
     },
   };
 
@@ -1614,6 +1632,7 @@ export function buildApp(
     skillSyncEngine,
     slackCore,
     ...(privateTurnObservationOutbox ? { privateTurnObservationOutbox } : {}),
+    ...(scheduleAuthority ? { scheduleAuthority } : {}),
   };
 }
 

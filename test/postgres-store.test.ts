@@ -1085,15 +1085,70 @@ test("pg run store: reaper cannot clobber a run that completed or renewed its le
     assert.ok(!retiredSessions.includes("sweepDone"), "a completed run's session is never released by the sweep");
 
     const renewed = (await runs.enqueue({ sessionId: "sweepAlive", request: turn("y") })).run;
-    const claimedAlive = await runs.claimById(renewed.id, "w2", 1);
+    const claimedAlive = await runs.claimById(renewed.id, "w2", 60_000);
     assert.ok(claimedAlive?.leaseToken);
-    await new Promise((res) => setTimeout(res, 20));
     assert.equal(await runs.heartbeat(renewed.id, claimedAlive!.leaseToken!, 60_000), true);
     await runs.reapExpired(collect);
     assert.equal((await runs.get(renewed.id))?.status, "running", "renewed lease survives the sweep");
     assert.ok(!retiredSessions.includes("sweepAlive"), "a renewed run's session is never released by the sweep");
   } finally {
     await close();
+  }
+});
+
+test("pg run store: heartbeat cannot resurrect a lease at or past the database-time boundary", { skip }, async () => {
+  const runtime = createPostgresRunStore(URL!);
+  const pg = (await import("pg")).default;
+  const raw = new pg.Pool({ connectionString: URL });
+  const queued = (await runtime.runs.enqueue({ sessionId: "expired-heartbeat", request: turn("x") })).run;
+  const running = await runtime.runs.claimById(queued.id, "expired-worker", 60_000);
+  assert.ok(running?.leaseToken);
+  try {
+    await raw.query(
+      `UPDATE runs
+       SET lease_expires_at=floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
+       WHERE id=$1`,
+      [queued.id],
+    );
+    assert.equal(await runtime.runs.heartbeat(queued.id, running.leaseToken, 60_000), false);
+    await raw.query(
+      `UPDATE runs
+       SET lease_expires_at=floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint-1
+       WHERE id=$1`,
+      [queued.id],
+    );
+    assert.equal(await runtime.runs.heartbeat(queued.id, running.leaseToken, 60_000), false);
+  } finally {
+    await runtime.runs.releaseLease(queued.id, running.leaseToken);
+    await raw.end();
+    await runtime.close();
+  }
+});
+
+test("pg run store: reaper uses the database lease clock despite process clock skew", { skip }, async (t) => {
+  const runtime = createPostgresRunStore(URL!);
+  const pg = (await import("pg")).default;
+  const raw = new pg.Pool({ connectionString: URL });
+  const queued = (await runtime.runs.enqueue({ sessionId: "db-clock-reaper", request: turn("x") })).run;
+  const running = await runtime.runs.claimById(queued.id, "db-clock-worker", 60_000);
+  assert.ok(running?.leaseToken);
+  let processClock = Date.parse("2100-01-01T00:00:00.000Z");
+  t.mock.method(Date, "now", () => processClock);
+  try {
+    assert.deepEqual(await runtime.runs.reapExpired(), { requeued: 0, parked: 0 });
+    assert.equal((await runtime.runs.get(queued.id))?.status, "running");
+    await raw.query(
+      `UPDATE runs
+       SET lease_expires_at=floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint-1
+       WHERE id=$1`,
+      [queued.id],
+    );
+    processClock = Date.parse("2000-01-01T00:00:00.000Z");
+    assert.deepEqual(await runtime.runs.reapExpired(), { requeued: 1, parked: 0 });
+    assert.equal((await runtime.runs.get(queued.id))?.status, "pending");
+  } finally {
+    await raw.end();
+    await runtime.close();
   }
 });
 
