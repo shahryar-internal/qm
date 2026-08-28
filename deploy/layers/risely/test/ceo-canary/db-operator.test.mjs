@@ -219,7 +219,7 @@ test("Terraform registers only inert per-phase tasks with deny-all task roles", 
   );
 });
 
-test("unset operator image structurally excludes every operator resource and provenance output", () => {
+test("unset image excludes operator resources while production pins the registered digest", () => {
   assert.match(
     variablesTerraform,
     /variable "ceo_canary_db_operator_image" \{[\s\S]*?default\s+= null[\s\S]*?nullable = true/,
@@ -261,7 +261,10 @@ test("unset operator image structurally excludes every operator resource and pro
     outputsTerraform,
     /value = local\.ceo_canary_db_operator_enabled \? \{[\s\S]*?contractSha256[\s\S]*?\} : null/,
   );
-  assert.doesNotMatch(tfvars, /ceo_canary_db_operator_image/);
+  assert.match(
+    tfvars,
+    /ceo_canary_db_operator_image\s+= "075343201918\.dkr\.ecr\.us-west-2\.amazonaws\.com\/risely-qm-pilot-ceo-canary@sha256:7faf286dbbaf49b10de84b9ccf1e398ce91cf00559787307439c4da364a1f985"/,
+  );
 });
 
 test("operator module graph uses only same-QM database lifecycle code and no provider route", () => {

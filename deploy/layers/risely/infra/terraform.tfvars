@@ -16,6 +16,7 @@ github_ref                        = "refs/heads/codex/risely-slack-pilot"
 certificate_arn                   = ""
 db_deletion_protection            = true
 ceo_canary_runtime_image          = "075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:264263fc1698d169c55f14c86d39164db84b1517c8e10ba4ffaf28605dcafc69"
+ceo_canary_db_operator_image      = "075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:7faf286dbbaf49b10de84b9ccf1e398ce91cf00559787307439c4da364a1f985"
 services = {
   "core" : {
     "ecr_repository" : "risely-qm-pilot-core",
