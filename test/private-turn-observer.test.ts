@@ -25,6 +25,16 @@ function build(observe: (input: PrivateTurnObservation) => Promise<"accepted" | 
   return built;
 }
 
+test("production refuses a process-local private-turn observation outbox", () => {
+  assert.throws(
+    () =>
+      buildApp(testConfig({ production: true }), {
+        privateTurnObserver: { observe: async () => "accepted" },
+      }),
+    /production private-turn observer requires DATABASE_URL and RUN_STORE=postgres/u,
+  );
+});
+
 test("private Slack and web turns emit digest-only observations after durable enqueue", async () => {
   const observations: PrivateTurnObservation[] = [];
   const built = build(async (input) => {
@@ -62,6 +72,34 @@ test("private Slack and web turns emit digest-only observations after durable en
   assert.equal(observations[0]?.inputSha256, createHash("sha256").update(slackText).digest("hex"));
   assert.equal(JSON.stringify(observations).includes(slackText), false);
   assert.equal(JSON.stringify(observations).includes("private web secret"), false);
+});
+
+test("a direct private web steer is observed in the signal acceptance transaction", async () => {
+  const observations: PrivateTurnObservation[] = [];
+  const built = build(async (input) => {
+    observations.push(input);
+    return "accepted";
+  });
+  const queued = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "internal:owner" },
+    conversation: { kind: "dm", threadRef: "web:internal:owner:steer" },
+    origin: { kind: "human" },
+    text: "start private work",
+    async: true,
+  });
+  assert.equal(queued.status, "queued");
+  if (queued.status !== "queued") return;
+  assert.ok(queued.runId);
+  assert.deepEqual(
+    await built.app.signalRun(queued.runId, { kind: "steer", text: "private correction" }, "internal:owner"),
+    { accepted: true },
+  );
+  assert.equal(observations.length, 2);
+  assert.equal(observations[1]?.source, "web_chat");
+  assert.equal(observations[1]?.principalRef, "internal:owner");
+  assert.equal(observations[1]?.inputSha256, createHash("sha256").update("private correction").digest("hex"));
+  assert.notEqual(observations[0]?.eventRef, observations[1]?.eventRef);
 });
 
 test("the optional observer skips channels and automation and preserves deduplicated identity", async () => {

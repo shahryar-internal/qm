@@ -374,6 +374,7 @@ export const CONTROL_UNAVAILABLE: ControlUnavailable = {
 
 export interface ToolContextDeps {
   sandbox: Sandbox;
+  assertEffectCurrent?: () => Promise<void>;
   credentialExecServices?: readonly { service: string; binary: string }[];
   credentialExec?: ToolContext["credentialExec"];
   provision: () => Promise<SandboxHandle>;
@@ -431,6 +432,27 @@ export interface ToolContextDeps {
   controlClaims?: CapabilityClaims;
   webhookPublicUrl?: string;
   surface?: SurfaceToolDeps;
+}
+
+const EFFECT_AUTHORIZATION_EXEMPT = new Set<PropertyKey>(["mcpToolDefs", "soulRead", "staySilent"]);
+
+function guardToolContext(context: ToolContext, assertEffectCurrent?: () => Promise<void>): ToolContext {
+  if (!assertEffectCurrent) return context;
+  const guarded = new Map<PropertyKey, (...args: unknown[]) => Promise<unknown>>();
+  return new Proxy(context, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== "function" || EFFECT_AUTHORIZATION_EXEMPT.has(property)) return value;
+      const prior = guarded.get(property);
+      if (prior) return prior;
+      const method = async (...args: unknown[]) => {
+        await assertEffectCurrent();
+        return Reflect.apply(value, target, args) as unknown;
+      };
+      guarded.set(property, method);
+      return method;
+    },
+  });
 }
 
 export function createToolContext(deps: ToolContextDeps): ToolContext {
@@ -521,7 +543,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     return Buffer.concat(chunks);
   }
 
-  return {
+  const context: ToolContext = {
     ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),
     ...(deps.credentialExec ? { credentialExec: deps.credentialExec } : {}),
     async computerStatus(): Promise<ComputerStatus> {
@@ -1111,6 +1133,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         ? deps.surface.staySilent(reason)
         : Promise.resolve({ ok: true as const, message: "[staying silent]" }),
   };
+  return guardToolContext(context, deps.assertEffectCurrent);
 }
 
 const SURFACE_UNAVAILABLE_MESSAGE =

@@ -29,7 +29,7 @@ import { createScheduler } from "../src/cron/scheduler.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createIdempotencyStore } from "../src/idempotency/idempotency-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
-import { createWorker } from "../src/runs/worker.ts";
+import { createWorker, processRun } from "../src/runs/worker.ts";
 import type { Orchestrator } from "../src/core/orchestrator.ts";
 import { createOrchestrator } from "../src/core/orchestrator.ts";
 import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
@@ -69,7 +69,11 @@ const signer = createScheduleAuthoritySigner({
   privateKey,
 });
 
-function scheduleOrchestrator(sessions: SessionStore, harness: Harness = createMockHarness()): Orchestrator {
+function scheduleOrchestrator(
+  sessions: SessionStore,
+  harness: Harness = createMockHarness(),
+  sandboxOverride?: Sandbox,
+): Orchestrator {
   const config = createMemoryConfigStore("default-org");
   const acl = createAclStore();
   const auditLog = createAuditLog();
@@ -84,18 +88,20 @@ function scheduleOrchestrator(sessions: SessionStore, harness: Harness = createM
   const blocked = () => {
     throw new Error("schedule authority test must not invoke a sandbox");
   };
-  const sandbox: Sandbox = {
-    profile: { backend: "test", writablePersistence: "snapshot_to_workspace", processSessions: false },
-    provision: blocked as never,
-    run: blocked as never,
-    readFile: blocked as never,
-    writeFile: blocked as never,
-    writeFileBytes: blocked as never,
-    readFileBytes: blocked as never,
-    listDir: blocked as never,
-    removeDir: blocked as never,
-    teardown: blocked as never,
-  };
+  const sandbox: Sandbox =
+    sandboxOverride ??
+    ({
+      profile: { backend: "test", writablePersistence: "snapshot_to_workspace", processSessions: false },
+      provision: blocked as never,
+      run: blocked as never,
+      readFile: blocked as never,
+      writeFile: blocked as never,
+      writeFileBytes: blocked as never,
+      readFileBytes: blocked as never,
+      listDir: blocked as never,
+      removeDir: blocked as never,
+      teardown: blocked as never,
+    } as Sandbox);
   return createOrchestrator({
     identity: createIdentityService(),
     resolution: createResolutionService("default-org", config, acl),
@@ -698,6 +704,7 @@ test(
       );
       await rows("UPDATE crons SET json=jsonb_set(json,'{enabled}','false'::jsonb)");
       const scheduleDefinition = definition("end-to-end");
+      const scheduledAt = Date.parse("2020-09-01T16:00:00.000Z");
       const cron = await crons.create({
         schedule: { cron: "0 9 * * *", timezone: scheduleDefinition.timeZone },
         action: "scheduled task end-to-end",
@@ -716,17 +723,37 @@ test(
           receiptLifetimeMs: 300_000,
         },
       });
-      await assert.rejects(crons.delete(cron.id), /signed schedule crons cannot be deleted/u);
-      await scheduler.runNow(cron.id);
-      const probe = (await runtime.runs.list({ limit: 20 })).find((run) => run.dedupKey?.includes(":manual:"));
-      assert.ok(probe?.dedupKey);
-      assert.equal(probe.durableSessionId, null);
-      assert.equal(
-        (await rows("SELECT count(*)::int AS n FROM cron_schedule_fire_receipts WHERE run_id=$1", [probe.id]))[0]?.n,
-        0,
-      );
-      const template = { ...probe.request, idempotencyKey: probe.dedupKey } as PersistedScheduleRunRequest;
-      assert.equal(await runtime.runs.withdraw(probe.id), true);
+      let template: PersistedScheduleRunRequest | undefined;
+      const templateApp = createApp({
+        identity,
+        sessions,
+        orchestrator,
+        runs: runtime.runs,
+        leaseTtlMs: 30_000,
+        maxAttempts: 3,
+        scheduleAuthority: {
+          async claim(input: ScheduleRunClaimInput) {
+            template = input.request;
+            return { status: "skipped" };
+          },
+        },
+        signals: runSignals,
+        config: createMemoryConfigStore("default-org"),
+      } as unknown as AppDeps);
+      const templateScheduler = createScheduler({
+        crons,
+        deliveries: createDeliveryStore(),
+        idempotency: createIdempotencyStore(),
+        identity,
+        run: (req) => templateApp.turn({ ...req, async: true }),
+        runScheduled: (req, context) => templateApp.turn({ ...req, async: true }, context),
+      });
+      try {
+        await templateScheduler.tick(scheduledAt + 1_000);
+      } finally {
+        templateScheduler.stop();
+      }
+      assert.ok(template);
       await crons.update(cron.id, {
         scheduleAuthority: {
           contractVersion: 1,
@@ -740,6 +767,29 @@ test(
           receiptLifetimeMs: 300_000,
         },
       });
+      await assert.rejects(crons.delete(cron.id), /signed schedule crons cannot be deleted/u);
+      const manualRunsBefore = Number(
+        (
+          await rows("SELECT count(*)::int AS n FROM runs WHERE idempotency_key LIKE $1", [`cron:${cron.id}:manual:%`])
+        )[0]?.n,
+      );
+      await assert.rejects(scheduler.runNow(cron.id), /authority-managed crons cannot be fired manually/u);
+      assert.equal(
+        Number(
+          (
+            await rows("SELECT count(*)::int AS n FROM runs WHERE idempotency_key LIKE $1", [
+              `cron:${cron.id}:manual:%`,
+            ])
+          )[0]?.n,
+        ),
+        manualRunsBefore,
+      );
+      assert.equal(
+        Number(
+          (await rows("SELECT count(*)::int AS n FROM cron_schedule_fire_receipts WHERE cron_id=$1", [cron.id]))[0]?.n,
+        ),
+        0,
+      );
       const interval = await crons.create({
         schedule: { everyMs: 60_000 },
         action: "unsigned interval task",
@@ -754,7 +804,6 @@ test(
         createdBy: "U1",
         ownerScopeId: scopeId("personal", "U1"),
       });
-      const scheduledAt = Date.parse("2020-09-01T16:00:00.000Z");
       wallAt = scheduledAt + 1_000;
       await scheduler.tick(wallAt);
       const queued = await runtime.runs.list({ limit: 20 });
@@ -819,6 +868,76 @@ test(
     }
   },
 );
+
+test("effect authority is rechecked after harness admission and before sandbox provisioning", { skip }, async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2020-08-31T20:00:00.000Z"));
+  const { claim, maps } = await fixture("effect-expiry", "2020-09-30", undefined, 1_500);
+  const authority = createPostgresScheduleAuthority({ connectionString: TEST_URL!, signer });
+  const runtime = createPostgresRunStore(TEST_URL!);
+  const sessions = createPostgresSessionStore(TEST_URL!);
+  const baseHarness = createMockHarness();
+  let enterHarness = () => {};
+  const harnessEntered = new Promise<void>((resolve) => {
+    enterHarness = resolve;
+  });
+  let releaseHarness = () => {};
+  const harnessRelease = new Promise<void>((resolve) => {
+    releaseHarness = resolve;
+  });
+  const effects = { provision: 0, run: 0 };
+  const sandbox = {
+    profile: { backend: "test", writablePersistence: "snapshot_to_workspace", processSessions: false },
+    async provision() {
+      effects.provision += 1;
+      return { id: "effect-expiry", rootDir: "/workspace" };
+    },
+    async run() {
+      effects.run += 1;
+      return { stdout: "", stderr: "", code: 0, timedOut: false };
+    },
+  } as unknown as Sandbox;
+  const harness: Harness = {
+    ...baseHarness,
+    turns: {
+      async runTurn(turn) {
+        enterHarness();
+        await harnessRelease;
+        await turn.tools.execute("echo forbidden");
+        return { reply: "unreachable" };
+      },
+    },
+  };
+  let pending: ReturnType<typeof processRun> | undefined;
+  try {
+    const enqueued = await authority.claim(claim);
+    if (enqueued.status === "disabled" || enqueued.status === "skipped") assert.fail("eligible slot did not enqueue");
+    const running = await runtime.runs.claimById(enqueued.runId, "effect-expiry-worker", 30_000);
+    assert.ok(running?.leaseToken);
+    pending = processRun(
+      {
+        runs: runtime.runs,
+        orchestrator: scheduleOrchestrator(sessions, harness, sandbox),
+        scheduleAuthority: authority,
+        leaseTtlMs: 30_000,
+      },
+      running,
+    );
+    await harnessEntered;
+    const expiresAt = Date.parse(enqueued.receipt.expiresAt);
+    while ((await currentDatabaseTime()) < expiresAt) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    releaseHarness();
+    await assert.rejects(pending, /schedule-fire receipt is not current/u);
+    assert.deepEqual(effects, { provision: 0, run: 0 });
+  } finally {
+    releaseHarness();
+    await pending?.catch(() => undefined);
+    await runtime.close();
+    await authority.close();
+    await maps.pool.close();
+  }
+});
 
 test(
   "current invocation authority binds status, attempt, lease token, expiry, and handler identity",

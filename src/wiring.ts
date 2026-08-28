@@ -453,6 +453,9 @@ export function buildApp(
           signingSecret: config.privateTurnObserverSigningSecret,
         })
       : undefined);
+  if (privateTurnObserver && config.production && (!config.databaseUrl || config.runStore !== "postgres")) {
+    throw new Error("production private-turn observer requires DATABASE_URL and RUN_STORE=postgres");
+  }
   const memoryTransactionalOutbox =
     privateTurnObserver && config.runStore !== "postgres" ? createMemoryTransactionalOutbox() : undefined;
   const postgresTransactionalOutbox =

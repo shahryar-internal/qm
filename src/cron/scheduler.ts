@@ -311,7 +311,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     tick,
     async runNow(cronId) {
       const cron = await deps.crons.get(cronId);
-      if (!cron || cron.archived || !cron.enabled) return;
+      if (!cron) return;
+      if (cron.scheduleAuthority) throw new Error("authority-managed crons cannot be fired manually");
+      if (cron.archived || !cron.enabled) return;
       await fire(cron, now(), `cron:${cron.id}:manual:${randomUUID()}`);
     },
     notifyChanged(cronId) {
