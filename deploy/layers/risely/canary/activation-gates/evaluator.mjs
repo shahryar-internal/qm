@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson, StrictJsonError } from "./strict-json.mjs";
 
-export const bundledManifestSha256 = "54795b5e1e87f2d053f2bec2638fa9469f90cf2405a473e6065c2a83936a3ebe";
+export const bundledManifestSha256 = "adff988a832fb7ddfecf11d82d185fe83617c7eb4ea45aae598f355cced215b3";
 
 const layerRoot = fileURLToPath(new URL("../../", import.meta.url));
 const bundledManifestSegments = Object.freeze(["canary", "activation-gates", "manifest.json"]);
@@ -207,7 +207,7 @@ const closedEvidence = Object.freeze([
     id: "postgres_infra_host_source",
     path: "infra/outputs.tf",
     kind: "source",
-    sha256: "9b612ea5bc5de3899ad278143ba10008759627ee7f2037e9b707a3e056bb2e24",
+    sha256: "76e74ee65ad1336e927ba6baf8fef5e93c2c53b38d3da9580143568630c0d0bf",
   }),
   Object.freeze({
     id: "ceo_canary_task_contract_data",
@@ -243,7 +243,7 @@ const closedEvidence = Object.freeze([
     id: "ceo_canary_tfvars_hash_only",
     path: "infra/terraform.tfvars",
     kind: "source",
-    sha256: "9c1cf0381e165a30848af1959927a9f9b8298d441bb9c0d0e9923b91b0d692b8",
+    sha256: "0e793c052643a0cc2290955d71e2a3ad3661067df7478d7ffb413fe3e2f653c4",
   }),
   Object.freeze({
     id: "ceo_canary_terraform_versions_hash_only",
@@ -261,7 +261,7 @@ const closedEvidence = Object.freeze([
     id: "ceo_canary_task_variables_source",
     path: "infra/variables.tf",
     kind: "source",
-    sha256: "cc9c44eb7df6b13010b352abb323e4497311f073354b55b9fdf63b1755fab9e3",
+    sha256: "dc7e339db250d578e7543a3054f9bee6bb5d3bde3dcca021312f8f42ac801812",
   }),
   Object.freeze({
     id: "ceo_canary_task_test",
@@ -298,6 +298,24 @@ const closedEvidence = Object.freeze([
     path: "canary/deployment/DB-OPERATOR-RUNBOOK.md",
     kind: "source",
     sha256: "cde955b3247a91570faae11bf8865811767f0d9cf01a2720d42031663c765107",
+  }),
+  Object.freeze({
+    id: "ceo_canary_db_inventory_broker_infra_source",
+    path: "infra/ceo-canary-db-inventory-broker.tf",
+    kind: "source",
+    sha256: "b9f46ae41529effb5b9dcb93ec355f97f85c60244e1ce05d409432f5bcf985f9",
+  }),
+  Object.freeze({
+    id: "ceo_canary_db_inventory_broker_test",
+    path: "test/ceo-canary/db-inventory-broker.test.mjs",
+    kind: "test",
+    sha256: "cf18ca8246d9f34d44c5835bb98f6cd9f51292207607999586940251b44900d0",
+  }),
+  Object.freeze({
+    id: "ceo_canary_db_inventory_broker_runbook",
+    path: "canary/deployment/DB-INVENTORY-BROKER.md",
+    kind: "source",
+    sha256: "a088dbe5ecc66c3c07c135c22604179be42e560ad72425e4850ab85190cce8f5",
   }),
   Object.freeze({
     id: "postgres_sentinel_test",
@@ -706,6 +724,9 @@ const closedGates = Object.freeze([
       "ceo_canary_db_operator_infra_source",
       "ceo_canary_db_operator_test",
       "ceo_canary_db_operator_runbook",
+      "ceo_canary_db_inventory_broker_infra_source",
+      "ceo_canary_db_inventory_broker_test",
+      "ceo_canary_db_inventory_broker_runbook",
       "postgres_sentinel_test",
       "postgres_dockerfile_source",
       "postgres_db_operator_dockerfile_source",

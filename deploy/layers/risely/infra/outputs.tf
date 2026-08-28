@@ -38,6 +38,15 @@ output "ceo_canary_db_operator_provenance" {
     }
   } : null
 }
+output "ceo_canary_db_inventory_broker_provenance" {
+  description = "Expected fixed read-only inventory broker provenance; no invoker role or automatic execution is created."
+  value = local.ceo_canary_db_inventory_broker_enabled ? {
+    contract         = local.ceo_canary_db_inventory_broker_contract
+    contractSha256   = local.ceo_canary_db_inventory_broker_contract_sha256
+    stateMachineArn  = aws_sfn_state_machine.ceo_canary_db_inventory_broker[0].arn
+    executionRoleArn = aws_iam_role.ceo_canary_db_inventory_broker[0].arn
+  } : null
+}
 output "deploy_role_arn" { value = aws_iam_role.github_deploy.arn }
 output "task_execution_role_arn" { value = aws_iam_role.task_execution.arn }
 output "task_role_arn" { value = aws_iam_role.task.arn }
