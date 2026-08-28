@@ -24,7 +24,7 @@ output "ceo_canary_task_provenance" {
 }
 output "ceo_canary_db_operator_provenance" {
   description = "Expected inert one-off database operator task provenance and fixed private RunTask network contract."
-  value = {
+  value = local.ceo_canary_db_operator_enabled ? {
     contract       = local.ceo_canary_db_operator_provenance
     contractSha256 = local.ceo_canary_db_operator_provenance_sha256
     taskDefinitionArns = {
@@ -36,7 +36,7 @@ output "ceo_canary_db_operator_provenance" {
       securityGroupIds = [aws_security_group.ceo_canary.id]
       assignPublicIp   = "DISABLED"
     }
-  }
+  } : null
 }
 output "deploy_role_arn" { value = aws_iam_role.github_deploy.arn }
 output "task_execution_role_arn" { value = aws_iam_role.task_execution.arn }

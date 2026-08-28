@@ -2,13 +2,13 @@
 
 ## Status
 
-This layer defines five inert, one-off ECS task definitions. It creates no service, schedule, launcher, deployment permission, or desired task count. Do not launch any phase until a reviewed Terraform state plan proves that all resources are additive, an independent reviewer approves the exact task revision and provenance output, and the operator confirms that the existing QM database backup and recovery controls are healthy.
+The database-operator slice is absent by default. When `ceo_canary_db_operator_image` is unset, Terraform creates no operator log group, role, policy, task definition, service, schedule, launcher, deployment permission, or desired task count, and emits no operator provenance. Supplying a real immutable operator image enables exactly five inert, one-off ECS task definitions and their least-authority startup resources. Do not launch any phase until a reviewed Terraform state plan proves that all resources are additive, an independent reviewer approves the exact task revision and provenance output, and the operator confirms that the existing QM database backup and recovery controls are healthy.
 
 The operator uses the existing Terraform-owned `risely-qm-pilot-core` RDS instance, database `qm`, and schema `risely_agent_runtime`. It has no Command Center database credential, network route, secret, import, query, or migration. It has no provider credential or action/evaluation writer credential.
 
 ## Image and secrets
 
-Build the existing `credential-operator` target and provide its immutable stack-owned ECR digest as `ceo_canary_db_operator_image`. The runtime image is a separate input and must not be substituted. The structural bootstrap embedded in the operator image must byte-match `migrations/bootstrap.sql`; the offline contract test enforces that equality.
+Build the existing `credential-operator` target and provide its immutable stack-owned ECR digest as `ceo_canary_db_operator_image` only when the five definitions are intentionally being registered. The runtime image is a separate input and must not be substituted. A tag, foreign repository, placeholder digest, or runtime-image substitution is invalid operator evidence. The structural bootstrap embedded in the operator image must byte-match `migrations/bootstrap.sql`; the offline contract test enforces that equality.
 
 Populate the following dedicated secret containers only after the task definitions and execution policies have passed state-plan review:
 

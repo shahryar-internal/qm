@@ -543,6 +543,10 @@ test("Terraform emits a complete hashed provenance contract and creates dedicate
     /for_each\s+= \{ for name, service in var\.services : name => service if name != local\.ceo_canary_service_name \}/,
   );
   assert.match(tfvars, /"ceo-canary"\s*:/);
+  assert.match(
+    tfvars,
+    /ceo_canary_runtime_image\s+= "075343201918\.dkr\.ecr\.us-west-2\.amazonaws\.com\/risely-qm-pilot-ceo-canary@sha256:264263fc1698d169c55f14c86d39164db84b1517c8e10ba4ffaf28605dcafc69"/,
+  );
   for (const name of ["core", "web-ui", "admin", "portal", "auth", "gemini-compat"]) {
     assert.match(tfvars, new RegExp(`"${name}"\\s*:`));
   }

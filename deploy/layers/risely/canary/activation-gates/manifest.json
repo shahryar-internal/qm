@@ -119,28 +119,28 @@
       "id": "qm_shadow_ingress_source",
       "path": "canary/qm-shadow-ingress/index.mjs",
       "kind": "source",
-      "sha256": "e97843b8e49e6169e9967956aa48d8f87732dbe3bc4088572fa5d84f30721b81",
+      "sha256": "5763ef739beb7f6164e6258001456ef0f671e2d94a7a82f06f9b8f2385eefd3a",
       "maxBytes": 65536
     },
     {
       "id": "qm_shadow_ingress_test",
       "path": "test/qm-shadow-ingress/qm-shadow-ingress.test.mjs",
       "kind": "test",
-      "sha256": "041c5a9c1ee9883ded0d7aa2feeefa2a34d08a15bec57d21e2873d7c3c539509",
+      "sha256": "35605f1144162b8293456e6c0696d047e6939747bd379246c56064a9ec3b9457",
       "maxBytes": 65536
     },
     {
       "id": "qm_shadow_ingress_readme",
       "path": "canary/qm-shadow-ingress/README.md",
       "kind": "source",
-      "sha256": "58aa171875681a7c5ffbab3d230d0679cf5e24ff41d8ec1c3f19bd1b36375904",
+      "sha256": "211c8bfc58048cd4ea568d458b393bcc0651849a33fd3668eb95931a0e46cbbb",
       "maxBytes": 65536
     },
     {
       "id": "mercury_invoicing_source",
       "path": "canary/mercury-invoicing/index.mjs",
       "kind": "source",
-      "sha256": "54c4ca7e4be648c9608abcf5aafe07525f6d05e34094b2af53694138bed71c7d",
+      "sha256": "687be4d84fe265c5322174ec662c2dc28fe1ef8752368dd70987e414481d4123",
       "maxBytes": 65536
     },
     {
@@ -154,14 +154,21 @@
       "id": "mercury_invoicing_test",
       "path": "test/mercury-invoicing/mercury-invoicing.test.mjs",
       "kind": "test",
-      "sha256": "e8d7cd7564cb9f82d3f6e83d2c493ee087afeafb94ec9ae878abdc2b76cd02c4",
+      "sha256": "9cd550943244fb5be622a0ceb6859fe584d013606fc080c70435b55921015d66",
+      "maxBytes": 65536
+    },
+    {
+      "id": "mercury_invoicing_cli_integration_test",
+      "path": "test/mercury-invoicing/cli.integration.test.mjs",
+      "kind": "test",
+      "sha256": "213ae058a5f7f94e498e6d7816c47498676716504b2f7090a7449a226d993b2f",
       "maxBytes": 65536
     },
     {
       "id": "mercury_invoicing_readme",
       "path": "canary/mercury-invoicing/README.md",
       "kind": "source",
-      "sha256": "2a429d82b29b3eee7f1c20362eed591c108464bf83d4d9b5e4816c79a149d8b6",
+      "sha256": "45e77bbf948a1b1b0e3742071455952ed69cdd1a251d70504d152df358454982",
       "maxBytes": 65536
     },
     {
@@ -273,7 +280,7 @@
       "id": "ceo_canary_security_doc",
       "path": "canary/service/ceo-canary/SECURITY.md",
       "kind": "source",
-      "sha256": "fc2c059fcd397f515e560de77507f1eede26e4434a424f472261c60d4f1aee57",
+      "sha256": "76184af37699923ec9790ac2eef3bf688b7f88b820ab9a89ef380dbf7f7f0306",
       "maxBytes": 65536
     },
     {
@@ -287,7 +294,7 @@
       "id": "postgres_infra_host_source",
       "path": "infra/outputs.tf",
       "kind": "source",
-      "sha256": "d22239cd5a015cca4080f1714717c939690af9aec1e5e7e9c8e281c03dad195c",
+      "sha256": "9b612ea5bc5de3899ad278143ba10008759627ee7f2037e9b707a3e056bb2e24",
       "maxBytes": 65536
     },
     {
@@ -308,7 +315,7 @@
       "id": "ceo_canary_task_sealed_provenance_source",
       "path": "canary/deployment/sealed-provenance.mjs",
       "kind": "source",
-      "sha256": "b085b5a610b9da04748fdea3e846645529f0a08c0bf4adde28f72707bc788382",
+      "sha256": "a6ee79a1a3eae4c09c5535d72876129c590f4d8cd8e54b3a5fdde94633375bc4",
       "maxBytes": 65536
     },
     {
@@ -322,14 +329,14 @@
       "id": "ceo_canary_infra_main_hash_only",
       "path": "infra/main.tf",
       "kind": "source",
-      "sha256": "6c815db87b55a78b9eb001bf880118c6fe4f34d7a51f4f7f3542fe554a1cafe0",
+      "sha256": "de2f346d3f7b6c4b0e32edbd64d60d100c3201293051d4a10143b907a258aa11",
       "maxBytes": 131072
     },
     {
       "id": "ceo_canary_tfvars_hash_only",
       "path": "infra/terraform.tfvars",
       "kind": "source",
-      "sha256": "3e0f2bec2286d29f9b1dd6e6d2ed5c23b485c9d230bdd92c53dccc146590bf9c",
+      "sha256": "34ccef397970ee46fb95c30f3ada7873110a542978b9a6279309849f2e326507",
       "maxBytes": 65536
     },
     {
@@ -350,21 +357,21 @@
       "id": "ceo_canary_task_variables_source",
       "path": "infra/variables.tf",
       "kind": "source",
-      "sha256": "bbe96a34a5b9489b6554a3c9b2632fe16a9b57886787c0575fa442f9c5ce3f5d",
+      "sha256": "cc9c44eb7df6b13010b352abb323e4497311f073354b55b9fdf63b1755fab9e3",
       "maxBytes": 65536
     },
     {
       "id": "ceo_canary_task_test",
       "path": "test/ceo-canary/task-definition.test.mjs",
       "kind": "test",
-      "sha256": "497802b771dff98cd6dbbb7eb8b8aa14394c1c4ef122b33c12ad71c9982d2d5a",
+      "sha256": "0f36564e702d3b1c8d4b2b8a735112eba612f34050913ae2dedca0f74731c481",
       "maxBytes": 65536
     },
     {
       "id": "ceo_canary_task_runbook",
       "path": "canary/deployment/RUNBOOK.md",
       "kind": "source",
-      "sha256": "0d8e4f79436b13452ef5ee82f4825df4bd0d8f6326fd9632e141e71997f50e5b",
+      "sha256": "e8a6d818cd1c6360f161d28f56213a3f086747600365bb13100160e9409c073e",
       "maxBytes": 65536
     },
     {
@@ -378,21 +385,21 @@
       "id": "ceo_canary_db_operator_infra_source",
       "path": "infra/ceo-canary-db-operator.tf",
       "kind": "source",
-      "sha256": "b6512bba03c0d66e42e2e2c06c707ee8d45bd4fb65b38e43b03358f5ef0a01da",
+      "sha256": "0f44adedf4a703531eb0c0808db25ca7336a19f3872f120a939b15f21f9ad76c",
       "maxBytes": 65536
     },
     {
       "id": "ceo_canary_db_operator_test",
       "path": "test/ceo-canary/db-operator.test.mjs",
       "kind": "test",
-      "sha256": "ebc32707b1b558a16f18aa188c578a764d8d19470ee56409ca55f37657c887cc",
+      "sha256": "41bc75458ac8e766debdabde275faf5600659b917af14368f48b09b4d290a843",
       "maxBytes": 65536
     },
     {
       "id": "ceo_canary_db_operator_runbook",
       "path": "canary/deployment/DB-OPERATOR-RUNBOOK.md",
       "kind": "source",
-      "sha256": "40bfd4d759b6cd05455854ff0d67c143f3cbc3ce337496e84bf6fdd229c0423f",
+      "sha256": "255ece2f37f53ec8ae26298aaa8e6d3e2d5ce0ad953049bd9fe99c080c4a1a7f",
       "maxBytes": 65536
     },
     {
@@ -427,7 +434,7 @@
       "id": "secret_boundary_source",
       "path": "canary/service/ceo-canary/src/auth.mjs",
       "kind": "source",
-      "sha256": "48d92e4e0629d9f932d02835925b28bd5e8a3b0570b63325f484121d6739abaf",
+      "sha256": "bfcf5814fcb27aa55a2c1c645d856e099337678b29479899d828a7a67b9fda7d",
       "maxBytes": 65536
     },
     {
@@ -786,14 +793,17 @@
         "mercury_invoicing_source",
         "mercury_invoicing_validation_source",
         "mercury_invoicing_test",
+        "mercury_invoicing_cli_integration_test",
         "mercury_invoicing_readme"
       ],
       "blockers": [
-        "mercury_provider_effect_policy_not_approved",
-        "mercury_schedule_fire_receipt_not_live_assessed",
-        "mercury_trusted_billing_receipts_not_live_assessed",
+        "mercury_provider_effect_catalog_and_adapter_not_approved",
+        "mercury_trusted_schedule_lineage_not_live_assessed",
+        "mercury_durable_approval_and_reservation_not_implemented",
+        "mercury_signed_identity_and_billing_receipts_not_live_assessed",
         "mercury_cli_sandbox_acceptance_not_completed",
-        "mercury_durable_approval_reconciliation_not_implemented",
+        "mercury_immutable_cli_packaging_provenance_unapproved",
+        "mercury_authenticated_reconciliation_not_implemented",
         "qm_workflow_artifact_ui_live_acceptance_unverified"
       ]
     },

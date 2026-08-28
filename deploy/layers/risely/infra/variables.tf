@@ -92,9 +92,11 @@ variable "ceo_canary_runtime_image" {
   }
 }
 variable "ceo_canary_db_operator_image" {
-  type = string
+  type     = string
+  default  = null
+  nullable = true
   validation {
-    condition     = can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.ceo_canary_db_operator_image))
+    condition     = var.ceo_canary_db_operator_image == null ? true : can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$", var.ceo_canary_db_operator_image))
     error_message = "ceo_canary_db_operator_image must be a complete ECR repository URI pinned by sha256 digest"
   }
 }

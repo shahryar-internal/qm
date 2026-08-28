@@ -5,6 +5,12 @@ const DIGEST = /^[0-9a-f]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
+export const qmShadowIngressRoute = Object.freeze({
+  method: "POST",
+  pathWithQuery: "/internal/v1/qm-shadow/observations",
+  maxBodyBytes: 16 * 1024,
+});
+
 export const qmShadowIngressPolicy = Object.freeze({
   contractType: "qm-shadow-ingress-policy",
   contractVersion: 1,

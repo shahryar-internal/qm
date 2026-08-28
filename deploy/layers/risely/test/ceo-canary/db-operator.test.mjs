@@ -14,6 +14,9 @@ const source = read("canary/service/ceo-canary/src/db-operator.mjs");
 const terraform = read("infra/ceo-canary-db-operator.tf");
 const mainTerraform = read("infra/main.tf");
 const endpointTerraform = read("infra/ceo-canary.tf");
+const outputsTerraform = read("infra/outputs.tf");
+const variablesTerraform = read("infra/variables.tf");
+const tfvars = read("infra/terraform.tfvars");
 const dockerfile = read("canary/service/ceo-canary/Dockerfile");
 const bootstrap = read("canary/service/ceo-canary/migrations/bootstrap.sql");
 const phaseNames = ["inventory", "bootstrap", "provision", "migrate", "readiness"];
@@ -212,6 +215,51 @@ test("Terraform registers only inert per-phase tasks with deny-all task roles", 
     )?.length,
     2,
   );
+});
+
+test("unset operator image structurally excludes every operator resource and provenance output", () => {
+  assert.match(
+    variablesTerraform,
+    /variable "ceo_canary_db_operator_image" \{[\s\S]*?default\s+= null[\s\S]*?nullable = true/,
+  );
+  assert.match(
+    variablesTerraform,
+    /var\.ceo_canary_db_operator_image == null \? true : can\(regex\([\s\S]*?var\.ceo_canary_db_operator_image\)\)/,
+  );
+  assert.match(terraform, /ceo_canary_db_operator_enabled\s+= var\.ceo_canary_db_operator_image != null/);
+  assert.match(
+    terraform,
+    /ceo_canary_db_operator_phases\s+= local\.ceo_canary_db_operator_enabled \? local\.ceo_canary_db_operator_contract\.phases : \{\}/,
+  );
+  assert.match(
+    terraform,
+    /ceo_canary_managed_secret_names\s+= local\.ceo_canary_db_operator_enabled \? var\.secret_names : setsubtract\(var\.secret_names, \["CANARY_BOOTSTRAP_DATABASE_URL"\]\)/,
+  );
+  assert.match(mainTerraform, /for_each\s+= local\.ceo_canary_managed_secret_names/);
+  for (const resource of [
+    "aws_cloudwatch_log_group",
+    "aws_iam_role",
+    "aws_iam_role_policy",
+    "aws_iam_role_policy_attachment",
+    "aws_ecs_task_definition",
+  ]) {
+    assert.match(
+      terraform,
+      new RegExp(
+        `resource "${resource}" "ceo_canary_db_operator[^\"]*" \\{[\\s\\S]*?for_each\\s*= local\\.ceo_canary_db_operator_phases`,
+      ),
+      resource,
+    );
+  }
+  assert.match(
+    terraform,
+    /length\(aws_ecs_task_definition\.ceo_canary_db_operator\) == \(local\.ceo_canary_db_operator_enabled \? 5 : 0\)/,
+  );
+  assert.match(
+    outputsTerraform,
+    /value = local\.ceo_canary_db_operator_enabled \? \{[\s\S]*?contractSha256[\s\S]*?\} : null/,
+  );
+  assert.doesNotMatch(tfvars, /ceo_canary_db_operator_image/);
 });
 
 test("operator module graph uses only same-QM database lifecycle code and no provider route", () => {

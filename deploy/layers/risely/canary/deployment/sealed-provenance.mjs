@@ -60,7 +60,7 @@ export const sealedCeoCanaryTerraformProvenance = deepFreeze({
       taskRoleDenyAllPolicyName: "risely-qm-pilot-ceo-canary-deny-all",
     },
     image:
-      "075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:fb9019d466839194d7d96fb983eb2ca1ce989b62384bd331ae3b68ed3d1bc3dd",
+      "075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:264263fc1698d169c55f14c86d39164db84b1517c8e10ba4ffaf28605dcafc69",
     logging: {
       groupName: "/ecs/risely-qm-pilot-ceo-canary",
       maxBufferSize: "4m",
@@ -234,7 +234,7 @@ export const sealedCeoCanaryTerraformProvenance = deepFreeze({
     },
     serviceName: "ceo-canary",
   },
-  contractSha256: "296cbb8211d4d55baf3c8db0498f8987ffd891330179bfbd52951ddc028a352f",
+  contractSha256: "227d39a50c7a34fd5486c5c77d6dde630f9574752180b6c339513e409afa5909",
   serviceArn: "arn:aws:ecs:us-west-2:075343201918:service/risely-qm-pilot/risely-qm-pilot-ceo-canary",
-  taskDefinitionArn: "arn:aws:ecs:us-west-2:075343201918:task-definition/risely-qm-pilot-ceo-canary:1",
+  taskDefinitionArn: "arn:aws:ecs:us-west-2:075343201918:task-definition/risely-qm-pilot-ceo-canary:2",
 });

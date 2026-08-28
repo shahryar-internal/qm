@@ -9,6 +9,15 @@ const mercuryCliSource = Object.freeze({
   repository: "https://github.com/MercuryTechnologies/mercury-cli",
   commit: "25cc254e78eddfbbd4f13cfc90a0beca930a2c0e",
   version: "0.11.8",
+  releaseTag: "v0.11.8",
+  releasePublishedAt: "2026-08-12T04:44:24Z",
+  checksumsAssetSha256: "6ca71e169384a60c2838d562ab0fe4d797e12bec9fe50f2340e541caf7a16991",
+  linuxAmd64Archive: Object.freeze({
+    name: "mercury_0.11.8_linux_amd64.tar.gz",
+    sha256: "f39c3426edaf2750c04366d87c43c846fd50dd258056633fb2dbe633dc336a9c",
+    binarySha256: "3bb3a39a3676376998ea3a48034b7a636c5c31d7b7d08dca4c26cebd64520b8b",
+    format: "elf_x86_64_static_stripped",
+  }),
   executable: "mercury",
 });
 const mercuryHosts = Object.freeze({
@@ -64,23 +73,34 @@ const validateSchedule = (value) => {
 const localOccurrence = (schedule, occurrenceAt) => {
   const parsed = Date.parse(occurrenceAt);
   if (parsed % 60_000 !== 0) fail("occurrence_not_on_scheduled_minute");
-  const values = Object.fromEntries(
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: schedule.timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      weekday: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(new Date(parsed))
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: schedule.timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const partsAt = (instantMs) =>
+    Object.fromEntries(
+      formatter
+        .formatToParts(new Date(instantMs))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    );
+  const values = partsAt(parsed);
   const localDate = `${values.year}-${values.month}-${values.day}`;
   const localTime = `${values.hour}:${values.minute}`;
+  const localMinute = `${localDate}T${localTime}`;
+  for (let deltaMinutes = -1_800; deltaMinutes <= 1_800; deltaMinutes += 1) {
+    if (deltaMinutes === 0) continue;
+    const alternate = partsAt(parsed + deltaMinutes * 60_000);
+    if (`${alternate.year}-${alternate.month}-${alternate.day}T${alternate.hour}:${alternate.minute}` === localMinute) {
+      fail("occurrence_time_ambiguous");
+    }
+  }
   const weeklyDay = values.weekday.toUpperCase();
   if (localTime !== schedule.localTime) fail("occurrence_time_mismatch");
   if (schedule.cadence === "weekly" && weeklyDay !== schedule.weeklyDay) fail("occurrence_weekday_mismatch");
@@ -267,6 +287,7 @@ const candidateFor = (
     servicePeriodStartDate: record.servicePeriodStartDate,
     servicePeriodEndDate: record.servicePeriodEndDate,
   };
+  const cliPlan = cliPlanFor(scope, environment, payload);
   const candidateProjection = {
     contractType: "MercuryInvoiceCandidate",
     contractVersion: 1,
@@ -291,6 +312,9 @@ const candidateFor = (
     sendEmailOption,
     approvalRequired: record.deliveryMode === "send_after_approval",
     invoicePayloadSha256: hash(scope, payload),
+    cliSourceCommit: mercuryCliSource.commit,
+    cliReleaseArtifactSha256: mercuryCliSource.linuxAmd64Archive.sha256,
+    cliPlanSha256: hash(scope, cliPlan),
   };
   const candidateSha256 = hash(scope, candidateProjection);
   const candidateRef = `mercury-invoice-candidate:${candidateSha256}`;
@@ -312,7 +336,7 @@ const candidateFor = (
     candidateRef,
     candidateSha256,
     approvalBindingSha256,
-    cliPlan: cliPlanFor(scope, environment, payload),
+    cliPlan,
     state: record.deliveryMode === "prepare_only" ? "prepared_unsent" : "approval_required_before_create",
     retryAllowed: false,
     providerExecutionAllowed: false,

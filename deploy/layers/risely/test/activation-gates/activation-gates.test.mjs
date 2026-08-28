@@ -51,7 +51,7 @@ const importAllowlists = Object.freeze({
   "strict-json.mjs": Object.freeze([]),
 });
 const sourceDigests = Object.freeze({
-  "evaluator.mjs": "986d0fff29bb51510ecf58be5abf5fc98e7d67adf946fb437ac6c095bb7b6631",
+  "evaluator.mjs": "faeac3a972cda4bed66bbbe0939076132071a05b5556fffa19af0a0218af6ffa",
   "index.mjs": "fc89263b5c110dad1ec7488248d09d2c7bfe64b993f6ab1ba395360b102017f9",
   "strict-json.mjs": "512e6a35c325633fe3e274a600b886651a252764e0f192ebe4ac6b7556e4c21a",
 });
@@ -332,10 +332,10 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   const second = await evaluateActivationGates();
   assert.deepEqual(first, second);
   assert.equal(first.manifestSha256, bundledManifestSha256);
-  assert.equal(first.manifestSha256, "268fe674a90b159df8f956074e9c01a2065bb54128c5337834deb9fa992bab2b");
-  assert.equal(first.evidenceSetSha256, "b1257b22f9d29f49ec7ea1c083eeaab558747e6361797dab40545b7974ee8fd1");
+  assert.equal(first.manifestSha256, "5a9416a7cbab991ad639ef37db58bfec6e8973fa5d8bfb432747f7cebbbf6310");
+  assert.equal(first.evidenceSetSha256, "3011c92e40fbcde78c6f87d68260827ae758b432faae29f3cf7537732d45cb56");
   assert.equal(first.dependencyGraphSha256, "0d6ac8aae4aaab36c55c4b09a41935fb36fdbd399de4e5ca26200bd5b6c87079");
-  assert.equal(first.reportSha256, "c09ca5587b8580e9421386b0a09e2b0bf527354945d1fece10940d6c42c24e68");
+  assert.equal(first.reportSha256, "83266094a14b313aa81c4b2026c93d9028a58aca2fa1a1ac597d5d04bb122d03");
   assert.equal(first.overallState, "blocked");
   assert.equal(first.liveReadiness, "not_assessed");
   assert.equal(first.activationAuthorized, false);
@@ -348,13 +348,13 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   );
   assert.deepEqual(first.readBoundary, {
     mode: "closed_regular_repo_source_and_test_digests_only",
-    evidencePathSetSha256: "db627435a0950ad9b17a0c3c3d97d3513af39d8a095bf35db04b11b795f2e633",
+    evidencePathSetSha256: "23da501e05b40bb02aad6e805ea44ac2de6ea371c74e194a9eab78e6205d8b41",
     hashOnlyContentPaths: ["infra/main.tf", "infra/terraform.tfvars", "infra/versions.tf", "infra/.terraform.lock.hcl"],
     environmentFilesAllowed: false,
     secretStoresAllowed: false,
     importedProviderPackagesAllowed: false,
   });
-  assert.equal(first.evidence.length, 79);
+  assert.equal(first.evidence.length, 80);
   assert.equal(first.gates.length, 12);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first.gates[0]), true);
@@ -403,11 +403,13 @@ test("all twelve closed gates verify only offline evidence and retain their exac
     "production_provider_effect_durable_port_unavailable",
     "production_provider_effect_adapters_unavailable",
     "production_provider_effect_reconciliation_ports_unavailable",
-    "mercury_provider_effect_policy_not_approved",
-    "mercury_schedule_fire_receipt_not_live_assessed",
-    "mercury_trusted_billing_receipts_not_live_assessed",
+    "mercury_provider_effect_catalog_and_adapter_not_approved",
+    "mercury_trusted_schedule_lineage_not_live_assessed",
+    "mercury_durable_approval_and_reservation_not_implemented",
+    "mercury_signed_identity_and_billing_receipts_not_live_assessed",
     "mercury_cli_sandbox_acceptance_not_completed",
-    "mercury_durable_approval_reconciliation_not_implemented",
+    "mercury_immutable_cli_packaging_provenance_unapproved",
+    "mercury_authenticated_reconciliation_not_implemented",
     "qm_workflow_artifact_ui_live_acceptance_unverified",
     "slack_identity_and_delivery_not_live_assessed",
     "notion_private_root_not_live_assessed",

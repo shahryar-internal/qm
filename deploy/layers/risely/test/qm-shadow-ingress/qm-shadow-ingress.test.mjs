@@ -9,26 +9,38 @@ import {
   createQmShadowIngress,
   qmShadowActivationBlockers,
   qmShadowIngressPolicy,
+  qmShadowIngressRoute,
   validateQmShadowObservation,
 } from "../../canary/qm-shadow-ingress/index.mjs";
 import { createRuntimeScope } from "../../canary/runtime-scope/index.mjs";
 import {
   assertIngressConfig,
+  assertRouteScopedIngressConfig,
   bodySignature,
   canonicalIngressMetadata,
+  completeIngressAuthentication,
   headerSignature,
+  verifyIngressHeaders,
 } from "../../canary/service/ceo-canary/src/auth.mjs";
 import { createRuntimeDomain } from "../../canary/service/ceo-canary/src/domain.mjs";
 import { createCanaryHttpServer } from "../../canary/service/ceo-canary/src/http.mjs";
 
 const NOW = Date.parse("2026-08-27T12:00:00.000Z");
 const REQUEST_HASH = "a".repeat(64);
-const SECRET = "qm-shadow-ingress-test-secret-at-least-thirty-two-characters";
-const INGRESS_CONFIG = assertIngressConfig({
-  secret: SECRET,
+const PRIMARY_SECRET = "primary-ingress-test-secret-at-least-thirty-two-characters";
+const PRIMARY_INGRESS_CONFIG = assertIngressConfig({
+  secret: PRIMARY_SECRET,
+  issuer: "run-action-caller-v1",
+  audience: "ceo-canary-run-actions",
+  keyId: "run-action-key-v1",
+});
+const SHADOW_SECRET = "qm-shadow-ingress-test-secret-at-least-thirty-two-characters";
+const SHADOW_INGRESS_CONFIG = assertRouteScopedIngressConfig({
+  secret: SHADOW_SECRET,
   issuer: "qm-surface-bridge-v1",
-  audience: "ceo-canary",
+  audience: "ceo-canary-qm-shadow",
   keyId: "qm-surface-key-v1",
+  ...qmShadowIngressRoute,
 });
 
 class DurableRunStore {
@@ -93,27 +105,28 @@ function observation(scope, source = "slack_dm", overrides = {}) {
   };
 }
 
-function signed(path, body, nonce) {
+function signed(path, body, nonce, { config = SHADOW_INGRESS_CONFIG, secret = SHADOW_SECRET, method = "POST" } = {}) {
   const bytes = Buffer.from(body, "utf8");
+  const contentType = method === "POST" ? "application/json" : "";
   const fields = {
-    issuer: INGRESS_CONFIG.issuer,
-    audience: INGRESS_CONFIG.audience,
-    keyId: INGRESS_CONFIG.keyId,
-    method: "POST",
+    issuer: config.issuer,
+    audience: config.audience,
+    keyId: config.keyId,
+    method,
     pathWithQuery: path,
     timestamp: String(Math.floor(NOW / 1000)),
     nonce,
-    contentType: "application/json",
+    contentType,
     contentLength: String(bytes.length),
     contentSha256: createHash("sha256").update(bytes).digest("hex"),
   };
   const metadata = canonicalIngressMetadata(fields);
   return {
     path,
-    method: "POST",
+    method,
     body: bytes,
     headers: {
-      "content-type": fields.contentType,
+      ...(contentType ? { "content-type": fields.contentType } : {}),
       "content-length": fields.contentLength,
       "x-canary-issuer": fields.issuer,
       "x-canary-audience": fields.audience,
@@ -123,8 +136,8 @@ function signed(path, body, nonce) {
       "x-canary-content-type": fields.contentType,
       "x-canary-content-length": fields.contentLength,
       "x-canary-content-sha256": fields.contentSha256,
-      "x-canary-header-signature": headerSignature(SECRET, metadata),
-      "x-canary-body-signature": bodySignature(SECRET, metadata, bytes),
+      "x-canary-header-signature": headerSignature(secret, metadata),
+      "x-canary-body-signature": bodySignature(secret, metadata, bytes),
     },
   };
 }
@@ -283,6 +296,228 @@ test("the factory preserves isolation when the same raw QM identifiers appear un
   assert.throws(() => createQmShadowIngress({ store: new DurableRunStore(ceoScope), scope: roleScope }));
 });
 
+test("the server requires an exact shadow-only route capability and distinct authority", () => {
+  const scope = createRuntimeScope(ceoDeploymentProfile);
+  const store = new DurableRunStore(scope);
+  const shadowIngress = createQmShadowIngress({ store, scope });
+  const rawShadowConfig = {
+    secret: SHADOW_SECRET,
+    issuer: SHADOW_INGRESS_CONFIG.issuer,
+    audience: SHADOW_INGRESS_CONFIG.audience,
+    keyId: SHADOW_INGRESS_CONFIG.keyId,
+    ...qmShadowIngressRoute,
+  };
+  for (const change of [
+    { secret: PRIMARY_SECRET },
+    { audience: PRIMARY_INGRESS_CONFIG.audience },
+    { keyId: PRIMARY_INGRESS_CONFIG.keyId },
+  ]) {
+    assert.throws(
+      () =>
+        createCanaryHttpServer({
+          service: {},
+          shadowIngress,
+          shadowIngressConfig: { ...rawShadowConfig, ...change },
+          store,
+          ingressConfig: PRIMARY_INGRESS_CONFIG,
+        }),
+      /distinct secret, audience, and key id/,
+    );
+  }
+  for (const change of [
+    { method: "GET" },
+    { pathWithQuery: "/internal/v1/actions" },
+    { maxBodyBytes: qmShadowIngressRoute.maxBodyBytes + 1 },
+  ]) {
+    assert.throws(
+      () =>
+        createCanaryHttpServer({
+          service: {},
+          shadowIngress,
+          shadowIngressConfig: { ...rawShadowConfig, ...change },
+          store,
+          ingressConfig: PRIMARY_INGRESS_CONFIG,
+        }),
+      /route capability does not match/,
+    );
+  }
+  assert.throws(
+    () =>
+      createCanaryHttpServer({
+        service: {},
+        shadowIngressConfig: rawShadowConfig,
+        store,
+        ingressConfig: PRIMARY_INGRESS_CONFIG,
+      }),
+    /credentials cannot be configured without the ingress/,
+  );
+});
+
+test("ingress configuration rejects descriptor attacks without invoking attacker code", () => {
+  const raw = {
+    secret: SHADOW_SECRET,
+    issuer: SHADOW_INGRESS_CONFIG.issuer,
+    audience: SHADOW_INGRESS_CONFIG.audience,
+    keyId: SHADOW_INGRESS_CONFIG.keyId,
+    ...qmShadowIngressRoute,
+  };
+  let calls = 0;
+  const proxy = new Proxy(raw, {
+    get() {
+      calls += 1;
+      return undefined;
+    },
+    getOwnPropertyDescriptor() {
+      calls += 1;
+      return undefined;
+    },
+    getPrototypeOf() {
+      calls += 1;
+      return Object.prototype;
+    },
+    ownKeys() {
+      calls += 1;
+      return [];
+    },
+  });
+  assert.throws(() => assertRouteScopedIngressConfig(proxy), /configuration is invalid/);
+  assert.equal(calls, 0);
+
+  const accessor = { ...raw };
+  Object.defineProperty(accessor, "secret", {
+    enumerable: true,
+    get() {
+      calls += 1;
+      return SHADOW_SECRET;
+    },
+  });
+  assert.throws(() => assertRouteScopedIngressConfig(accessor), /configuration is invalid/);
+  assert.equal(calls, 0);
+
+  const callable = { ...raw, toJSON: () => (calls += 1) };
+  assert.throws(() => assertRouteScopedIngressConfig(callable), /configuration is invalid/);
+  assert.equal(calls, 0);
+  assert.throws(
+    () => assertRouteScopedIngressConfig(Object.assign(Object.create({ inherited: true }), raw)),
+    /configuration is invalid/,
+  );
+  const symbol = { ...raw, [Symbol("hidden")]: true };
+  assert.throws(() => assertRouteScopedIngressConfig(symbol), /configuration is invalid/);
+});
+
+test("shadow and run-action signers cannot substitute routes or methods", async (t) => {
+  const scope = createRuntimeScope(ceoDeploymentProfile);
+  const store = new DurableRunStore(scope);
+  const shadowIngress = createQmShadowIngress({ store, scope });
+  const server = createCanaryHttpServer({
+    service: {},
+    shadowIngress,
+    shadowIngressConfig: SHADOW_INGRESS_CONFIG,
+    store,
+    ingressConfig: PRIMARY_INGRESS_CONFIG,
+    now: () => NOW,
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const port = server.address().port;
+  const shadowPath = qmShadowIngressRoute.pathWithQuery;
+  const body = JSON.stringify(observation(scope));
+  const substitutedNonce = "nonce-qm-shadow-substitution-000000001";
+  const runActionOnShadow = await rawRequest(
+    port,
+    signed(shadowPath, body, substitutedNonce, {
+      config: PRIMARY_INGRESS_CONFIG,
+      secret: PRIMARY_SECRET,
+    }),
+  );
+  assert.equal(runActionOnShadow.status, 401);
+  assert.equal(runActionOnShadow.body.error, "authority_mismatch");
+  const shadowOnAction = await rawRequest(
+    port,
+    signed("/internal/v1/actions", "{}", "nonce-qm-shadow-substitution-000000002"),
+  );
+  assert.equal(shadowOnAction.status, 401);
+  assert.equal(shadowOnAction.body.error, "authority_mismatch");
+  const wrongMethod = await rawRequest(
+    port,
+    signed(shadowPath, "", "nonce-qm-shadow-substitution-000000003", { method: "GET" }),
+  );
+  assert.equal(wrongMethod.status, 401);
+  assert.equal(wrongMethod.body.error, "route_capability_mismatch");
+  assert.equal(store.nonces.size, 0);
+  const accepted = await rawRequest(port, signed(shadowPath, body, substitutedNonce));
+  assert.equal(accepted.status, 201);
+  assert.equal(accepted.body.status, "accepted");
+  assert.equal(store.nonces.size, 1);
+});
+
+test("replay nonces are partitioned by the exact ingress authority", async () => {
+  const scope = createRuntimeScope(ceoDeploymentProfile);
+  const store = new DurableRunStore(scope);
+  const nonce = "nonce-shared-by-distinct-authorities-000001";
+  const body = Buffer.from("{}", "utf8");
+  const authenticate = async (input, config, secret) => {
+    const verified = verifyIngressHeaders({
+      method: input.method,
+      pathWithQuery: input.path,
+      headers: input.headers,
+      config,
+      now: NOW,
+    });
+    return completeIngressAuthentication({
+      verified,
+      bodyDigest: createHash("sha256").update(body).digest("hex"),
+      computedBodySignature: bodySignature(secret, verified.metadata, body),
+      store,
+    });
+  };
+  const primary = signed("/internal/v1/runs", body.toString("utf8"), nonce, {
+    config: PRIMARY_INGRESS_CONFIG,
+    secret: PRIMARY_SECRET,
+  });
+  const shadow = signed(qmShadowIngressRoute.pathWithQuery, body.toString("utf8"), nonce);
+  await authenticate(primary, PRIMARY_INGRESS_CONFIG, PRIMARY_SECRET);
+  await authenticate(shadow, SHADOW_INGRESS_CONFIG, SHADOW_SECRET);
+  assert.equal(store.nonces.size, 2);
+  await assert.rejects(
+    authenticate(primary, PRIMARY_INGRESS_CONFIG, PRIMARY_SECRET),
+    (error) => error.code === "replayed_request",
+  );
+});
+
+test("shadow body limit fails before nonce consumption", async (t) => {
+  const scope = createRuntimeScope(ceoDeploymentProfile);
+  const store = new DurableRunStore(scope);
+  const shadowIngress = createQmShadowIngress({ store, scope });
+  const server = createCanaryHttpServer({
+    service: {},
+    shadowIngress,
+    shadowIngressConfig: SHADOW_INGRESS_CONFIG,
+    store,
+    ingressConfig: PRIMARY_INGRESS_CONFIG,
+    now: () => NOW,
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const port = server.address().port;
+  const nonce = "nonce-qm-shadow-oversized-000000000001";
+  const oversized = await rawRequest(
+    port,
+    signed(qmShadowIngressRoute.pathWithQuery, " ".repeat(qmShadowIngressRoute.maxBodyBytes + 1), nonce),
+  );
+  assert.equal(oversized.status, 413);
+  assert.equal(oversized.body.error, "request_too_large");
+  assert.equal(store.nonces.size, 0);
+  const accepted = await rawRequest(
+    port,
+    signed(qmShadowIngressRoute.pathWithQuery, JSON.stringify(observation(scope)), nonce),
+  );
+  assert.equal(accepted.status, 201);
+  assert.equal(store.nonces.size, 1);
+});
+
 test("the signed internal route persists once, rejects nonce replay, and deduplicates QM redelivery", async (t) => {
   const scope = createRuntimeScope(ceoDeploymentProfile);
   const store = new DurableRunStore(scope);
@@ -290,8 +525,9 @@ test("the signed internal route persists once, rejects nonce replay, and dedupli
   const server = createCanaryHttpServer({
     service: {},
     shadowIngress,
+    shadowIngressConfig: SHADOW_INGRESS_CONFIG,
     store,
-    ingressConfig: INGRESS_CONFIG,
+    ingressConfig: PRIMARY_INGRESS_CONFIG,
     now: () => NOW,
   });
   server.listen(0, "127.0.0.1");

@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { productionRuntimeScopeFromEnv } from "../../../runtime-scope/index.mjs";
-import { createQmShadowIngress } from "../../../qm-shadow-ingress/index.mjs";
-import { assertIngressConfig } from "./auth.mjs";
+import { createQmShadowIngress, qmShadowIngressRoute } from "../../../qm-shadow-ingress/index.mjs";
+import { assertIngressConfig, assertRouteScopedIngressConfig } from "./auth.mjs";
 import { createCanaryHttpServer } from "./http.mjs";
 import { PostgresCanaryStore } from "./postgres-store.mjs";
 import { CanaryService } from "./service.mjs";
@@ -25,14 +25,23 @@ export async function startServer(env = process.env, options = {}) {
     audience: env.CANARY_INGRESS_AUDIENCE,
     keyId: env.CANARY_INGRESS_KEY_ID,
   });
+  const shadowIngressEnabled = env.CANARY_QM_SHADOW_INGRESS_ENABLED === "1";
+  const shadowIngressConfig = shadowIngressEnabled
+    ? assertRouteScopedIngressConfig({
+        secret: env.CANARY_QM_SHADOW_INGRESS_SECRET,
+        issuer: env.CANARY_QM_SHADOW_INGRESS_ISSUER,
+        audience: env.CANARY_QM_SHADOW_INGRESS_AUDIENCE,
+        keyId: env.CANARY_QM_SHADOW_INGRESS_KEY_ID,
+        ...qmShadowIngressRoute,
+      })
+    : undefined;
   const store = PostgresCanaryStore.fromEnv(env, scope);
   let server;
   try {
     await store.initialize();
     const service = new CanaryService({ store, scope });
-    const shadowIngress =
-      env.CANARY_QM_SHADOW_INGRESS_ENABLED === "1" ? createQmShadowIngress({ store, scope }) : undefined;
-    server = createCanaryHttpServer({ service, shadowIngress, store, ingressConfig });
+    const shadowIngress = shadowIngressEnabled ? createQmShadowIngress({ store, scope }) : undefined;
+    server = createCanaryHttpServer({ service, shadowIngress, shadowIngressConfig, store, ingressConfig });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       const onListening = () => {

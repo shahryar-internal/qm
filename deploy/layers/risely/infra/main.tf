@@ -706,7 +706,7 @@ resource "aws_iam_role_policy" "task_objects" {
 }
 
 resource "aws_secretsmanager_secret" "contract" {
-  for_each                = var.secret_names
+  for_each                = local.ceo_canary_managed_secret_names
   name                    = "${var.secrets_prefix}${each.value}"
   recovery_window_in_days = var.secret_recovery_window_days
   tags                    = local.tags

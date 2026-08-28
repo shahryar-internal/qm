@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { TextDecoder } from "node:util";
-import { completeIngressAuthentication, createBodyMac, IngressAuthError, verifyIngressHeaders } from "./auth.mjs";
+import {
+  assertIngressAuthoritySeparation,
+  assertRouteScopedIngressConfig,
+  completeIngressAuthentication,
+  createBodyMac,
+  IngressAuthError,
+  verifyIngressHeaders,
+} from "./auth.mjs";
 import { CanaryDomainError } from "./domain.mjs";
 import { parseStrictJson } from "./json.mjs";
 import { CanaryServiceError } from "./service.mjs";
 import { CanaryStoreError } from "./postgres-store.mjs";
-import { QmShadowIngressError } from "../../../qm-shadow-ingress/index.mjs";
+import { qmShadowIngressRoute, QmShadowIngressError } from "../../../qm-shadow-ingress/index.mjs";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_PREAUTH_REQUESTS = 8;
@@ -30,7 +37,7 @@ function rawHeaderCount(request, target) {
   return count;
 }
 
-function assertUnambiguousTransport(request, verified) {
+function assertUnambiguousTransport(request, verified, maxBodyBytes) {
   if (request.headers["transfer-encoding"] !== undefined || rawHeaderCount(request, "transfer-encoding") !== 0) {
     throw new IngressAuthError("ambiguous_transport", "Transfer encoding is not accepted");
   }
@@ -44,7 +51,7 @@ function assertUnambiguousTransport(request, verified) {
   if (!Number.isSafeInteger(transportLength) || transportLength !== verified.contentLength) {
     throw new IngressAuthError("content_length_mismatch", "Transport and signed content lengths differ");
   }
-  if (transportLength > MAX_BODY_BYTES) {
+  if (transportLength > maxBodyBytes) {
     throw new IngressAuthError("request_too_large", "Signed request body exceeds its size limit");
   }
   const transportContentType = request.headers["content-type"] ?? "";
@@ -60,7 +67,7 @@ function assertUnambiguousTransport(request, verified) {
   }
 }
 
-function readAuthenticatedBody(request, verified, secret) {
+function readAuthenticatedBody(request, verified, secret, maxBodyBytes) {
   return new Promise((resolve, reject) => {
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const digest = createHash("sha256");
@@ -78,7 +85,7 @@ function readAuthenticatedBody(request, verified, secret) {
     request.on("data", (chunk) => {
       if (failed) return;
       received += chunk.length;
-      if (received > verified.contentLength || received > MAX_BODY_BYTES) {
+      if (received > verified.contentLength || received > maxBodyBytes) {
         fail(new IngressAuthError("content_length_mismatch", "Request body exceeds its signed content length"));
         return;
       }
@@ -174,8 +181,37 @@ function safeError(error, status) {
   return { error: error.code ?? "request_failed", message: error.message };
 }
 
-export function createCanaryHttpServer({ service, shadowIngress, store, ingressConfig, now = () => Date.now() }) {
-  let preauthRequests = 0;
+export function createCanaryHttpServer({
+  service,
+  shadowIngress,
+  shadowIngressConfig,
+  store,
+  ingressConfig,
+  now = () => Date.now(),
+}) {
+  let scopedShadowIngressConfig;
+  if (shadowIngress) {
+    scopedShadowIngressConfig = assertRouteScopedIngressConfig({
+      secret: shadowIngressConfig?.secret,
+      issuer: shadowIngressConfig?.issuer,
+      audience: shadowIngressConfig?.audience,
+      keyId: shadowIngressConfig?.keyId,
+      method: shadowIngressConfig?.route?.method ?? shadowIngressConfig?.method,
+      pathWithQuery: shadowIngressConfig?.route?.pathWithQuery ?? shadowIngressConfig?.pathWithQuery,
+      maxBodyBytes: shadowIngressConfig?.route?.maxBodyBytes ?? shadowIngressConfig?.maxBodyBytes,
+    });
+    if (
+      scopedShadowIngressConfig.route.method !== qmShadowIngressRoute.method ||
+      scopedShadowIngressConfig.route.pathWithQuery !== qmShadowIngressRoute.pathWithQuery ||
+      scopedShadowIngressConfig.route.maxBodyBytes !== qmShadowIngressRoute.maxBodyBytes
+    ) {
+      throw new TypeError("QM shadow ingress route capability does not match its contract");
+    }
+    assertIngressAuthoritySeparation(ingressConfig, scopedShadowIngressConfig);
+  } else if (shadowIngressConfig !== undefined) {
+    throw new TypeError("QM shadow ingress credentials cannot be configured without the ingress");
+  }
+  const preauthRequests = new Map();
   let readiness = { checkedAt: 0, ok: false, pending: null };
   const checkReadiness = async () => {
     const checkedAt = now();
@@ -194,6 +230,7 @@ export function createCanaryHttpServer({ service, shadowIngress, store, ingressC
   };
   const server = createServer({ maxHeaderSize: 16 * 1024 }, async (request, response) => {
     let preauthHeld = false;
+    let preauthAuthority = null;
     try {
       const method = request.method ?? "";
       const pathWithQuery = request.url ?? "/";
@@ -208,34 +245,41 @@ export function createCanaryHttpServer({ service, shadowIngress, store, ingressC
         return;
       }
       if (url.search) throw new IngressAuthError("invalid_path", "Internal API query parameters are not accepted");
-      if (preauthRequests >= MAX_PREAUTH_REQUESTS) {
+      const selectedIngressConfig =
+        scopedShadowIngressConfig && url.pathname === qmShadowIngressRoute.pathWithQuery
+          ? scopedShadowIngressConfig
+          : ingressConfig;
+      preauthAuthority = selectedIngressConfig.keyId;
+      const authorityRequests = preauthRequests.get(preauthAuthority) ?? 0;
+      if (authorityRequests >= MAX_PREAUTH_REQUESTS) {
         throw new CanaryServiceError("preauth_capacity", "Pre-authentication request capacity is exhausted");
       }
-      preauthRequests += 1;
+      preauthRequests.set(preauthAuthority, authorityRequests + 1);
       preauthHeld = true;
+      const maxBodyBytes = selectedIngressConfig.route?.maxBodyBytes ?? MAX_BODY_BYTES;
       const verified = verifyIngressHeaders({
         method,
         pathWithQuery,
         headers: request.headers,
-        config: ingressConfig,
+        config: selectedIngressConfig,
         now: now(),
       });
-      assertUnambiguousTransport(request, verified);
-      const streamed = await readAuthenticatedBody(request, verified, ingressConfig.secret);
+      assertUnambiguousTransport(request, verified, maxBodyBytes);
+      const streamed = await readAuthenticatedBody(request, verified, selectedIngressConfig.secret, maxBodyBytes);
       const auth = await completeIngressAuthentication({
         verified,
         bodyDigest: streamed.bodyDigest,
         computedBodySignature: streamed.computedBodySignature,
         store,
       });
-      preauthRequests -= 1;
+      preauthRequests.set(preauthAuthority, (preauthRequests.get(preauthAuthority) ?? 1) - 1);
       preauthHeld = false;
       const body = streamed.body;
       if (method === "POST" && url.pathname === "/internal/v1/runs") {
         send(response, 201, await service.createRun(parseStrictJson(body), auth.requestHash));
         return;
       }
-      if (method === "POST" && url.pathname === "/internal/v1/qm-shadow/observations") {
+      if (method === qmShadowIngressRoute.method && url.pathname === qmShadowIngressRoute.pathWithQuery) {
         if (!shadowIngress) {
           throw new CanaryServiceError("shadow_ingress_unavailable", "QM shadow ingress is not configured");
         }
@@ -276,7 +320,9 @@ export function createCanaryHttpServer({ service, shadowIngress, store, ingressC
       const status = statusFor(error);
       send(response, status, safeError(error, status));
     } finally {
-      if (preauthHeld) preauthRequests -= 1;
+      if (preauthHeld && preauthAuthority !== null) {
+        preauthRequests.set(preauthAuthority, (preauthRequests.get(preauthAuthority) ?? 1) - 1);
+      }
     }
   });
   server.requestTimeout = 5000;

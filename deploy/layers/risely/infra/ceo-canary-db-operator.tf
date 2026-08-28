@@ -1,6 +1,8 @@
 locals {
   ceo_canary_db_operator_contract = jsondecode(file("${path.module}/../canary/deployment/ceo-canary-db-operator-contract.json"))
-  ceo_canary_db_operator_phases   = local.ceo_canary_db_operator_contract.phases
+  ceo_canary_db_operator_enabled  = var.ceo_canary_db_operator_image != null
+  ceo_canary_db_operator_phases   = local.ceo_canary_db_operator_enabled ? local.ceo_canary_db_operator_contract.phases : {}
+  ceo_canary_managed_secret_names = local.ceo_canary_db_operator_enabled ? var.secret_names : setsubtract(var.secret_names, ["CANARY_BOOTSTRAP_DATABASE_URL"])
   ceo_canary_db_operator_environment = merge(local.ceo_canary_db_operator_contract.environment, {
     AWS_REGION                     = var.region
     CANARY_BOOTSTRAP_ADMIN_ROLE    = local.ceo_canary_db_operator_contract.database.bootstrapAdminUser
@@ -23,7 +25,7 @@ locals {
   ceo_canary_db_operator_log_arns = flatten([
     for group in values(aws_cloudwatch_log_group.ceo_canary_db_operator) : [group.arn, "${group.arn}:*"]
   ])
-  ceo_canary_db_operator_provenance = {
+  ceo_canary_db_operator_provenance = local.ceo_canary_db_operator_enabled ? {
     schemaVersion = local.ceo_canary_db_operator_contract.schemaVersion
     accountId     = local.ceo_canary_db_operator_contract.accountId
     region        = local.ceo_canary_db_operator_contract.region
@@ -58,13 +60,13 @@ locals {
       providerEgress   = false
     }
     launch = local.ceo_canary_db_operator_contract.launch
-  }
-  ceo_canary_db_operator_provenance_sha256 = sha256(jsonencode(local.ceo_canary_db_operator_provenance))
+  } : null
+  ceo_canary_db_operator_provenance_sha256 = local.ceo_canary_db_operator_enabled ? sha256(jsonencode(local.ceo_canary_db_operator_provenance)) : null
 }
 
 check "ceo_canary_db_operator_closed_contract" {
   assert {
-    condition = (
+    condition = !local.ceo_canary_db_operator_enabled || (
       local.ceo_canary_db_operator_contract.schemaVersion == 1 &&
       local.ceo_canary_db_operator_contract.accountId == var.account_id &&
       local.ceo_canary_db_operator_contract.region == var.region &&
@@ -107,7 +109,7 @@ check "ceo_canary_db_operator_closed_contract" {
 
 check "ceo_canary_db_operator_images_and_secrets" {
   assert {
-    condition = (
+    condition = !local.ceo_canary_db_operator_enabled ? true : (
       startswith(
         var.ceo_canary_db_operator_image,
         "${var.account_id}.dkr.ecr.${var.region}.amazonaws.com/${local.ceo_canary_db_operator_contract.ecrRepository}@sha256:"
@@ -245,7 +247,7 @@ resource "aws_ecs_task_definition" "ceo_canary_db_operator" {
 check "ceo_canary_db_operator_has_no_automatic_launcher" {
   assert {
     condition = (
-      length(aws_ecs_task_definition.ceo_canary_db_operator) == 5 &&
+      length(aws_ecs_task_definition.ceo_canary_db_operator) == (local.ceo_canary_db_operator_enabled ? 5 : 0) &&
       local.ceo_canary_db_operator_contract.launch.serviceCreated == false &&
       local.ceo_canary_db_operator_contract.launch.scheduleCreated == false &&
       local.ceo_canary_db_operator_contract.launch.deploymentPrincipalAvailable == false

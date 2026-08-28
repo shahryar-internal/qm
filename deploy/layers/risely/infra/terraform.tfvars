@@ -15,6 +15,7 @@ github_repository                 = "Risely-AI/risely-agent-runtime"
 github_ref                        = "refs/heads/codex/risely-slack-pilot"
 certificate_arn                   = ""
 db_deletion_protection            = true
+ceo_canary_runtime_image          = "075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:264263fc1698d169c55f14c86d39164db84b1517c8e10ba4ffaf28605dcafc69"
 services = {
   "core" : {
     "ecr_repository" : "risely-qm-pilot-core",

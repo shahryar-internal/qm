@@ -73,6 +73,26 @@ test("a monthly batch is deterministic, sequential, unsent, and provider-free", 
   assert.equal(first.candidates[0].cliPlan.debugAllowed, false);
   assert.equal(first.candidates[0].cliPlan.callerBaseUrlAllowed, false);
   assert.equal(first.candidates[0].cliPlan.source.version, "0.11.8");
+  assert.equal(first.candidates[0].cliSourceCommit, "25cc254e78eddfbbd4f13cfc90a0beca930a2c0e");
+  assert.equal(first.candidates[0].cliPlan.source.releaseTag, "v0.11.8");
+  assert.equal(
+    first.candidates[0].cliPlan.source.checksumsAssetSha256,
+    "6ca71e169384a60c2838d562ab0fe4d797e12bec9fe50f2340e541caf7a16991",
+  );
+  assert.deepEqual(first.candidates[0].cliPlan.source.linuxAmd64Archive, {
+    name: "mercury_0.11.8_linux_amd64.tar.gz",
+    sha256: "f39c3426edaf2750c04366d87c43c846fd50dd258056633fb2dbe633dc336a9c",
+    binarySha256: "3bb3a39a3676376998ea3a48034b7a636c5c31d7b7d08dca4c26cebd64520b8b",
+    format: "elf_x86_64_static_stripped",
+  });
+  assert.equal(
+    first.candidates[0].cliReleaseArtifactSha256,
+    "f39c3426edaf2750c04366d87c43c846fd50dd258056633fb2dbe633dc336a9c",
+  );
+  assert.equal(
+    first.candidates[0].cliPlanSha256,
+    program.runtimeScope.contracts.PrincipalBinding.hash(first.candidates[0].cliPlan),
+  );
   assert.equal(first.candidates[0].cliPlan.environment, "sandbox");
   assert.deepEqual(first.candidates[0].cliPlan.processEnvironment, {
     requiredSecretNames: ["MERCURY_API_KEY"],
@@ -108,6 +128,8 @@ test("a monthly batch is deterministic, sequential, unsent, and provider-free", 
   assert.equal(renderedArtifact.includes("billing@acme.example"), false);
   assert.equal(renderedArtifact.includes("182bd5e5-6e1a-4fe4-a799-aa6d9a6ab26e"), false);
   assert.equal(renderedArtifact.includes("282bd5e5-6e1a-4fe4-a799-aa6d9a6ab26e"), false);
+
+  assert.equal("compileEffectProposal" in program, false);
 });
 
 test("QM schedule contracts cover daily weekly and monthly cadences without provider authority", () => {
@@ -306,6 +328,24 @@ test("invalid records, duplicate customers, and dangerous schedule shapes fail c
     "recipients",
     "transfers",
   ]);
+});
+
+test("a repeated DST local minute is rejected instead of compiling duplicate invoices", () => {
+  const program = createMercuryInvoicingProgram(ceoDeploymentProfile);
+  const record = buildRecord(program);
+  const repeatedSchedule = {
+    ...batchInput(program, [record]).schedule,
+    scheduleRef: "schedule:mercury:dst-overlap",
+    cadence: "daily",
+    localTime: "01:30",
+    monthlyDay: null,
+  };
+  for (const occurrenceAt of ["2026-11-01T08:30:00.000Z", "2026-11-01T09:30:00.000Z"]) {
+    assert.throws(
+      () => program.buildBatch(batchInput(program, [record], { schedule: repeatedSchedule, occurrenceAt })),
+      /occurrence_time_ambiguous/,
+    );
+  }
 });
 
 test("accessors, proxies, symbols, and forged branded objects are rejected without invocation", () => {
