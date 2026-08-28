@@ -11,9 +11,9 @@ const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the pg run-signal tests";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-const until = async (cond: () => boolean, ms = 3_000): Promise<void> => {
+const until = async (cond: () => boolean | Promise<boolean>, ms = 3_000): Promise<void> => {
   const deadline = Date.now() + ms;
-  while (!cond()) {
+  while (!(await cond())) {
     if (Date.now() > deadline) throw new Error("timed out waiting for condition");
     await sleep(20);
   }
@@ -113,6 +113,41 @@ test("startSignalPoll: a legacy durable followUp row is dispatched as a steer du
   } finally {
     await stop();
   }
+});
+
+test("startSignalPoll: discard mode drains pending and live signals without invoking handlers", async () => {
+  const store = createMemoryRunSignalStore();
+  const handled: string[] = [];
+  const request = {
+    surface: "slack",
+    actor: { externalId: "U1" },
+    conversation: { kind: "dm" as const, threadRef: "signed-run" },
+    text: "provider write",
+    ownerKeychainUnion: true,
+    unattendedGrants: ["admin.sessions.read"],
+  };
+  await store.send("signed-run", { kind: "steer", text: "pending requestless" });
+  await store.send("signed-run", { kind: "steer", text: "pending request-bearing", request });
+  await store.send("signed-run", { kind: "abort" });
+  const stop = startSignalPoll(
+    store,
+    "signed-run",
+    {
+      onSteer: async (text) => {
+        handled.push(text);
+      },
+      onAbort: async () => {
+        handled.push("abort");
+      },
+    },
+    { intervalMs: 60_000, discard: true },
+  );
+  await until(async () => !(await store.pendingRunIds()).includes("signed-run"));
+  await store.send("signed-run", { kind: "steer", text: "live request-bearing", request });
+  await until(async () => (await store.pendingRunIds()).length === 0);
+  await stop();
+  assert.deepEqual(handled, []);
+  assert.deepEqual(await store.takePending("signed-run"), []);
 });
 
 test("startSignalPoll: a doorbell during a slow drain queues one re-drain (no signal stranded)", async () => {

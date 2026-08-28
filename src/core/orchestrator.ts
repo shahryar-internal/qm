@@ -2354,6 +2354,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return deps.harness.turns.runTurn({
             session,
             ...(input.runId ? { runId: input.runId } : {}),
+            ...(input.scheduleAuthority ? { acceptRunSignals: false } : {}),
             ...(input.cancel ? { cancel: input.cancel } : {}),
             input: harnessInput,
             ...(!partial && messageTs ? { triggerTs: messageTs } : {}),

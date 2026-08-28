@@ -569,7 +569,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     if (!deps.signals) return [];
     const sourceRun = await deps.runs.get(runId);
     const pending = await deps.signals.takePending(runId);
-    if (sourceRun && isSignedScheduledRun(sourceRun)) return pending.map((signal) => ({ signal }));
+    if (!sourceRun || isSignedScheduledRun(sourceRun)) return pending.map((signal) => ({ signal }));
     const drained: Array<{ signal: RunSignal; replayRunId?: string }> = [];
     for (const signal of pending) {
       if (signal.kind === "abort") continue;

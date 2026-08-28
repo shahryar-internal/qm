@@ -67,7 +67,7 @@ export function startSignalPoll(
   signals: RunSignalStore,
   runId: string,
   handlers: SignalPollHandlers,
-  opts?: { intervalMs?: number; onError?: (e: unknown) => void; drainOnStop?: boolean },
+  opts?: { intervalMs?: number; onError?: (e: unknown) => void; drainOnStop?: boolean; discard?: boolean },
 ): () => Promise<void> {
   let draining = false;
   let redrain = false;
@@ -82,6 +82,7 @@ export function startSignalPoll(
     draining = true;
     inFlight = (async () => {
       for (const s of await signals.takePending(runId)) {
+        if (opts?.discard) continue;
         const kind = s.kind as string;
         if (kind === "abort") await handlers.onAbort();
         else if ((kind === "steer" || kind === "followUp") && s.text) await handlers.onSteer(s.text, s.ts);
@@ -99,11 +100,15 @@ export function startSignalPoll(
   const unsubscribe = signals.onSignal(runId, drain);
   const timer = setInterval(drain, opts?.intervalMs ?? SIGNAL_POLL_MS);
   timer.unref?.();
+  drain();
   return async () => {
     accepting = false;
     clearInterval(timer);
     unsubscribe();
-    if (opts?.drainOnStop) drain(true);
+    if (opts?.drainOnStop || opts?.discard) {
+      await inFlight;
+      drain(true);
+    }
     for (;;) {
       const current = inFlight;
       await current;

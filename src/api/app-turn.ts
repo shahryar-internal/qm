@@ -623,6 +623,7 @@ export function createTurnMethods(
       const run = await deps.runs.get(runId);
       if (!run) return { withdrawn: false, reason: "not_found" };
       if (viewer && !(await viewerMayUseRun(run, viewer))) return { withdrawn: false, reason: "not_found" };
+      if (isSignedScheduledRun(run)) return { withdrawn: false, reason: "scheduled_run" };
       return (await deps.runs.withdraw(runId)) ? { withdrawn: true } : { withdrawn: false, reason: "started" };
     },
 

@@ -1792,7 +1792,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                       await entry.agentSession.abort();
                     },
                   },
-                  { onError: (e) => swallow("pi: run signal poll", e) },
+                  {
+                    onError: (e) => swallow("pi: run signal poll", e),
+                    discard: turn.acceptRunSignals === false,
+                  },
                 )
               : null;
           const promptStart = Date.now();
