@@ -309,6 +309,8 @@ const assertSignedProof = (state, input, proofClass, capability, digestField, co
   identifier(input.keyId, code);
   identifier(input.issuerRef, code);
   if (typeof input.signature !== "string" || !base64urlPattern.test(input.signature)) fail(code);
+  const signatureBytes = Buffer.from(input.signature, "base64url");
+  if (signatureBytes.length !== 64 || signatureBytes.toString("base64url") !== input.signature) fail(code);
   const issuer = state.proofIssuers.get(`${proofClass}\n${input.keyId}`);
   if (!issuer || issuer.issuerRef !== input.issuerRef || !issuer.capabilities.includes(capability)) fail(code);
   const hashProjection = { ...input };
@@ -846,7 +848,11 @@ const completionResult = (state, value, attempt, attemptedResult) => {
   if (
     attemptedResult.status === "outcome_unknown" ||
     receipt.status !== "outcome_unknown" ||
-    !["provider_kill_switch_changed_after_reservation", "provider_attempt_lease_expired"].includes(receipt.errorCode)
+    ![
+      "provider_kill_switch_changed_after_reservation",
+      "provider_attempt_lease_expired",
+      "provider_completion_unavailable",
+    ].includes(receipt.errorCode)
   ) {
     fail("provider_effect_receipt_invalid");
   }
@@ -1012,7 +1018,9 @@ const assertReconciliation = (state, value) => {
     fail("provider_effect_reconciliation_invalid");
   }
   const killSwitch = assertKillSwitch(state, input.killSwitch, input.profileRef, input.profileSha256, input.capability);
-  if (killSwitch.checkedAt !== input.databaseNow) fail("provider_effect_reconciliation_invalid");
+  if (Date.parse(killSwitch.checkedAt) > Date.parse(input.databaseNow)) {
+    fail("provider_effect_reconciliation_invalid");
+  }
   const identity = snapshot(
     scope,
     input.reconciliationIdentity,

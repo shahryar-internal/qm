@@ -10,6 +10,8 @@ import {
 } from "./schema.mjs";
 
 const digestPattern = /^[0-9a-f]{64}$/u;
+const base64urlPattern = /^[A-Za-z0-9_-]+$/u;
+const receiptIssueTimeoutMs = 10_000;
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const errorCodePattern = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
 const receiptFields = Object.freeze([
@@ -92,6 +94,18 @@ const databaseInstant = (value, code) => {
   return instant(value, code);
 };
 
+const signature = (value, code) => {
+  if (typeof value !== "string" || !base64urlPattern.test(value)) fail(code);
+  let decoded;
+  try {
+    decoded = Buffer.from(value, "base64url");
+  } catch {
+    fail(code);
+  }
+  if (decoded.length !== 64 || decoded.toString("base64url") !== value) fail(code);
+  return value;
+};
+
 const clone = (value) => structuredClone(value);
 
 const freeze = (scope, value) => scope.contracts.PrincipalBinding.freeze(value);
@@ -160,6 +174,7 @@ const assertReceiptAuthority = (value) => {
 
 const assertReceipt = (scope, authority, value, expected) => {
   const receipt = exact(clone(value), receiptFields, "provider_effect_receipt_invalid");
+  signature(receipt.signature, "provider_effect_receipt_invalid");
   for (const field of ["receiptId", "attemptRef", "authenticatedBy", "keyId", "issuerRef"]) {
     identifier(receipt[field], "provider_effect_receipt_invalid");
   }
@@ -328,7 +343,13 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
   if (typeof active.isActive !== "function") fail("provider_effect_store_activation_invalid");
 
   const ensureActive = () => {
-    if (active.isActive() !== true) fail("provider_effect_store_unavailable");
+    let available = false;
+    try {
+      available = active.isActive() === true;
+    } catch {
+      available = false;
+    }
+    if (!available) fail("provider_effect_store_unavailable");
   };
 
   const assertProofDigest = (proof, digestField) => {
@@ -356,8 +377,8 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     }
   };
 
-  const transaction = async (operation, readOnly = false) => {
-    ensureActive();
+  const transaction = async (operation, readOnly = false, enforceActivation = true) => {
+    if (enforceActivation) ensureActive();
     const client = await pool.connect();
     try {
       await client.query(
@@ -367,8 +388,8 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       await client.query("SET LOCAL statement_timeout = '10s'");
       await assertSchema(client);
       const result = await operation(client);
-      ensureActive();
       await client.query("COMMIT");
+      if (enforceActivation) ensureActive();
       return result;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
@@ -649,7 +670,75 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     return transaction(async (client) => (await selectAuthorization(client, proposalId)).authorization, true);
   };
 
-  const reserveAttempt = (value) => {
+  const assertReservationAuthority = (request, authorization, row, killSwitch) => {
+    if (
+      request.authorizationSha256 !== row.authorization_sha256 ||
+      request.expectedRevision !== authorization.revision ||
+      request.killSwitchRevision !== Number(row.kill_switch_revision) ||
+      request.killSwitchRevision !== Number(killSwitch.revision) ||
+      request.evaluationReleaseSha256 !== row.evaluation_release_sha256 ||
+      request.providerIdentityReceiptSha256 !== row.provider_identity_receipt_sha256 ||
+      request.resourceOwnershipReceiptSha256 !== row.resource_ownership_receipt_sha256 ||
+      request.approvalSha256 !== row.approval_sha256 ||
+      killSwitch.engaged
+    ) {
+      fail(killSwitch.engaged ? "provider_effect_kill_switch_engaged" : "provider_effect_attempt_conflict");
+    }
+  };
+
+  const assertReservationTime = (authorization, row, databaseNow) => {
+    const expiryValues = [
+      row.proposal_expires_at,
+      row.release_expires_at,
+      row.identity_expires_at,
+      row.ownership_expires_at,
+      ...(row.approval_expires_at === null ? [] : [row.approval_expires_at]),
+    ].map((entry) => Date.parse(databaseInstant(entry, "provider_effect_store_corrupt")));
+    if (
+      Date.parse(databaseNow) < Date.parse(authorization.databaseNow) ||
+      expiryValues.some((expiry) => Date.parse(databaseNow) >= expiry)
+    ) {
+      fail("provider_effect_authorization_expired");
+    }
+    if (authorization.attempts !== 0) fail("provider_effect_already_reserved");
+  };
+
+  const attemptFor = (authorization, request, attemptedAt) => {
+    const policy = suite.policy(authorization.capability);
+    const leaseExpiresAt = new Date(
+      Math.min(Date.parse(authorization.proposal.expiresAt), Date.parse(attemptedAt) + policy.maximumLeaseLifetimeMs),
+    ).toISOString();
+    if (leaseExpiresAt <= attemptedAt) fail("provider_effect_authorization_expired");
+    return freeze(scope, {
+      profileRef: authorization.profileRef,
+      profileSha256: authorization.profileSha256,
+      proposalId: authorization.proposal.proposalId,
+      proposalHash: authorization.proposal.proposalHash,
+      intentSha256: authorization.intentSha256,
+      prospectiveEffectKey: authorization.prospectiveEffectKey,
+      policySha256: authorization.policySha256,
+      capability: authorization.capability,
+      capabilityVersion: authorization.capabilityVersion,
+      provider: authorization.provider,
+      operation: authorization.operation,
+      providerOwnerRef: authorization.providerOwnerRef,
+      authorizationSha256: request.authorizationSha256,
+      killSwitchRevision: request.killSwitchRevision,
+      evaluationReleaseSha256: request.evaluationReleaseSha256,
+      providerIdentityReceiptSha256: request.providerIdentityReceiptSha256,
+      resourceOwnershipReceiptSha256: request.resourceOwnershipReceiptSha256,
+      approvalSha256: request.approvalSha256,
+      approvalConsumedAt: request.approvalSha256 === null ? null : attemptedAt,
+      attemptRef: `provider-attempt:${authorization.prospectiveEffectKey}`,
+      attemptNumber: 1,
+      status: "attempting",
+      attemptedAt,
+      leaseExpiresAt,
+      revision: authorization.revision + 1,
+    });
+  };
+
+  const reserveAttempt = async (value) => {
     const request = exact(
       clone(value),
       [
@@ -677,6 +766,25 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     if (!Number.isSafeInteger(request.expectedRevision) || !Number.isSafeInteger(request.killSwitchRevision)) {
       fail("provider_effect_attempt_request_invalid");
     }
+    const attempt = await transaction(async (client) => {
+      const { authorization, row } = await selectAuthorization(client, request.proposalId);
+      const killSwitch = await currentKillSwitch(client);
+      assertReservationAuthority(request, authorization, row, killSwitch);
+      const nowResult = await client.query("SELECT clock_timestamp() AS now");
+      const attemptedAt = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
+      assertReservationTime(authorization, row, attemptedAt);
+      return attemptFor(authorization, request, attemptedAt);
+    }, true);
+    const holdResult = unknownResult(attempt, "provider_completion_unavailable");
+    const holdReceipt = await issueReceipt(
+      receiptSemantic({
+        attempt,
+        result: holdResult,
+        completedAt: null,
+        reconciliationRef: null,
+        priorReceiptSha256: null,
+      }),
+    );
     return transaction(async (client) => {
       await lockProfile(client);
       const { authorization, row } = await selectAuthorization(client, request.proposalId, true);
@@ -684,68 +792,17 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
         `${scope.profileRef}\n${scope.profileSha256}\n${authorization.prospectiveEffectKey}`,
       ]);
       const killSwitch = await currentKillSwitch(client, true);
-      if (
-        request.authorizationSha256 !== row.authorization_sha256 ||
-        request.expectedRevision !== authorization.revision ||
-        request.killSwitchRevision !== Number(row.kill_switch_revision) ||
-        request.killSwitchRevision !== Number(killSwitch.revision) ||
-        request.evaluationReleaseSha256 !== row.evaluation_release_sha256 ||
-        request.providerIdentityReceiptSha256 !== row.provider_identity_receipt_sha256 ||
-        request.resourceOwnershipReceiptSha256 !== row.resource_ownership_receipt_sha256 ||
-        request.approvalSha256 !== row.approval_sha256 ||
-        killSwitch.engaged
-      ) {
-        fail(killSwitch.engaged ? "provider_effect_kill_switch_engaged" : "provider_effect_attempt_conflict");
-      }
+      assertReservationAuthority(request, authorization, row, killSwitch);
       const nowResult = await client.query("SELECT clock_timestamp() AS now");
-      const attemptedAt = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
-      const expiryValues = [
-        row.proposal_expires_at,
-        row.release_expires_at,
-        row.identity_expires_at,
-        row.ownership_expires_at,
-        ...(row.approval_expires_at === null ? [] : [row.approval_expires_at]),
-      ].map((entry) => Date.parse(databaseInstant(entry, "provider_effect_store_corrupt")));
+      const committedAt = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
+      assertReservationTime(authorization, row, committedAt);
       if (
-        Date.parse(attemptedAt) < Date.parse(authorization.databaseNow) ||
-        expiryValues.some((expiry) => Date.parse(attemptedAt) >= expiry)
+        Date.parse(committedAt) < Date.parse(attempt.attemptedAt) ||
+        Date.parse(committedAt) >= Date.parse(attempt.leaseExpiresAt) ||
+        !compare(attemptFor(authorization, request, attempt.attemptedAt), attempt)
       ) {
         fail("provider_effect_authorization_expired");
       }
-      if (authorization.attempts !== 0) fail("provider_effect_already_reserved");
-      const policy = suite.policy(authorization.capability);
-      const leaseExpiresAt = new Date(
-        Math.min(Date.parse(authorization.proposal.expiresAt), Date.parse(attemptedAt) + policy.maximumLeaseLifetimeMs),
-      ).toISOString();
-      if (leaseExpiresAt <= attemptedAt) fail("provider_effect_authorization_expired");
-      const attemptRef = `provider-attempt:${authorization.prospectiveEffectKey}`;
-      const attempt = {
-        profileRef: authorization.profileRef,
-        profileSha256: authorization.profileSha256,
-        proposalId: authorization.proposal.proposalId,
-        proposalHash: authorization.proposal.proposalHash,
-        intentSha256: authorization.intentSha256,
-        prospectiveEffectKey: authorization.prospectiveEffectKey,
-        policySha256: authorization.policySha256,
-        capability: authorization.capability,
-        capabilityVersion: authorization.capabilityVersion,
-        provider: authorization.provider,
-        operation: authorization.operation,
-        providerOwnerRef: authorization.providerOwnerRef,
-        authorizationSha256: request.authorizationSha256,
-        killSwitchRevision: request.killSwitchRevision,
-        evaluationReleaseSha256: request.evaluationReleaseSha256,
-        providerIdentityReceiptSha256: request.providerIdentityReceiptSha256,
-        resourceOwnershipReceiptSha256: request.resourceOwnershipReceiptSha256,
-        approvalSha256: request.approvalSha256,
-        approvalConsumedAt: request.approvalSha256 === null ? null : attemptedAt,
-        attemptRef,
-        attemptNumber: 1,
-        status: "attempting",
-        attemptedAt,
-        leaseExpiresAt,
-        revision: authorization.revision + 1,
-      };
       const attemptSha256 = scope.contracts.PrincipalBinding.hash(attempt);
       await client.query(
         `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_attempts (
@@ -794,10 +851,11 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
           `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.approval_consumptions
              (profile_ref, profile_sha256, approval_sha256, attempt_ref, consumed_at)
            VALUES ($1, $2, $3, $4, $5::timestamptz)`,
-          [scope.profileRef, scope.profileSha256, attempt.approvalSha256, attempt.attemptRef, attemptedAt],
+          [scope.profileRef, scope.profileSha256, attempt.approvalSha256, attempt.attemptRef, attempt.attemptedAt],
         );
       }
-      return freeze(scope, attempt);
+      await persistAttemptHold(client, attempt, holdResult, holdReceipt);
+      return attempt;
     });
   };
 
@@ -871,9 +929,32 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
   };
 
   const issueReceipt = async (semantic) => {
-    if (signer.isActive() !== true) fail("provider_effect_receipt_authority_unavailable");
-    const value = await signer.issue(freeze(scope, semantic));
-    if (signer.isActive() !== true) fail("provider_effect_receipt_authority_unavailable");
+    let available = false;
+    try {
+      available = signer.isActive() === true;
+    } catch {
+      available = false;
+    }
+    if (!available) fail("provider_effect_receipt_authority_unavailable");
+    let timeout;
+    const timeoutResult = new Promise((_, reject) => {
+      timeout = setTimeout(
+        () => reject(new ProviderEffectStoreError("provider_effect_receipt_authority_timeout")),
+        receiptIssueTimeoutMs,
+      );
+    });
+    let value;
+    try {
+      value = await Promise.race([Promise.resolve().then(() => signer.issue(freeze(scope, semantic))), timeoutResult]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    try {
+      available = signer.isActive() === true;
+    } catch {
+      available = false;
+    }
+    if (!available) fail("provider_effect_receipt_authority_unavailable");
     return assertReceipt(scope, signer, value, semantic);
   };
 
@@ -950,39 +1031,195 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     authenticationSha256: signer.authenticationSha256,
   });
 
-  const completeAttempt = (value) => {
-    const input = exact(clone(value), ["attempt", "result"], "provider_effect_completion_invalid");
-    const suppliedAttempt = exact(input.attempt, attemptFields, "provider_effect_attempt_invalid");
-    identifier(suppliedAttempt.attemptRef, "provider_effect_attempt_invalid");
-    return transaction(async (client) => {
-      await lockProfile(client);
-      const selected = await selectAttempt(client, suppliedAttempt.attemptRef, true);
-      if (!compare(selected.attempt, suppliedAttempt)) fail("provider_effect_attempt_conflict");
-      const submitted = assertResult(scope, input.result, selected.attempt, false);
-      const submittedResultSha256 = scope.contracts.PrincipalBinding.hash(submitted);
-      const prior = await existingReceipt(client, selected.attempt, "execution", submittedResultSha256);
-      if (prior) return prior;
-      const killSwitch = await currentKillSwitch(client, true);
-      const nowResult = await client.query("SELECT clock_timestamp() AS now");
-      const now = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
-      const result =
-        killSwitch.engaged || Number(killSwitch.revision) !== selected.attempt.killSwitchRevision
-          ? unknownResult(selected.attempt, "provider_kill_switch_changed_after_reservation")
-          : Date.parse(now) >= Date.parse(selected.attempt.leaseExpiresAt)
-            ? unknownResult(selected.attempt, "provider_attempt_lease_expired")
-            : submitted;
-      const completedAt = result.status === "outcome_unknown" ? null : now;
-      const semantic = receiptSemantic({
-        attempt: selected.attempt,
+  const persistAttemptHold = async (client, attempt, result, receipt) => {
+    await client.query(
+      `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.attempt_unknown_holds (
+         profile_ref, profile_sha256, attempt_ref, receipt_id,
+         receipt_sha256, result_sha256, status, error_code, receipt_json
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+      [
+        scope.profileRef,
+        scope.profileSha256,
+        attempt.attemptRef,
+        receipt.receiptId,
+        receipt.receiptSha256,
+        scope.contracts.PrincipalBinding.hash(result),
+        result.status,
+        result.errorCode,
+        canonicalJson(receipt),
+      ],
+    );
+  };
+
+  const selectAttemptHold = async (client, attempt) => {
+    const selected = await client.query(
+      `SELECT *
+       FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.attempt_unknown_holds
+       WHERE profile_ref = $1 AND profile_sha256 = $2 AND attempt_ref = $3`,
+      [scope.profileRef, scope.profileSha256, attempt.attemptRef],
+    );
+    if (selected.rowCount !== 1) fail("provider_effect_attempt_hold_unavailable");
+    const row = selected.rows[0];
+    const result = unknownResult(attempt, row.error_code);
+    const receipt = assertReceipt(
+      scope,
+      signer,
+      row.receipt_json,
+      receiptSemantic({
+        attempt,
+        result,
+        completedAt: null,
+        reconciliationRef: null,
+        priorReceiptSha256: null,
+      }),
+    );
+    if (
+      row.receipt_id !== receipt.receiptId ||
+      row.receipt_sha256 !== receipt.receiptSha256 ||
+      row.result_sha256 !== scope.contracts.PrincipalBinding.hash(result) ||
+      row.status !== result.status ||
+      row.error_code !== result.errorCode
+    ) {
+      fail("provider_effect_store_corrupt");
+    }
+    return { result, receipt };
+  };
+
+  const activateAttemptHold = async (client, attempt, submittedResultSha256) => {
+    const prior = await existingReceipt(client, attempt, "execution", submittedResultSha256);
+    if (prior) return prior;
+    const hold = await selectAttemptHold(client, attempt);
+    await persistReceipt(client, "execution", attempt, hold.result, submittedResultSha256, hold.receipt);
+    return hold.receipt;
+  };
+
+  const recoverAttemptCompletion = async (suppliedAttempt, submittedResultSha256) => {
+    let failure;
+    for (let recoveryAttempt = 0; recoveryAttempt < 4; recoveryAttempt += 1) {
+      try {
+        return await transaction(
+          async (client) => {
+            await lockProfile(client);
+            const selected = await selectAttempt(client, suppliedAttempt.attemptRef, true);
+            if (!compare(selected.attempt, suppliedAttempt)) fail("provider_effect_attempt_conflict");
+            return activateAttemptHold(client, selected.attempt, submittedResultSha256);
+          },
+          false,
+          false,
+        );
+      } catch (error) {
+        if (
+          error?.code === "provider_effect_attempt_conflict" ||
+          error?.code === "provider_effect_receipt_result_conflict" ||
+          error?.code === "provider_effect_store_corrupt"
+        ) {
+          throw error;
+        }
+        failure = error;
+      }
+    }
+    throw failure;
+  };
+
+  const completionCandidate = async (attempt, result, completedAt) => {
+    const receipt = await issueReceipt(
+      receiptSemantic({
+        attempt,
         result,
         completedAt,
         reconciliationRef: null,
         priorReceiptSha256: null,
-      });
-      const receipt = await issueReceipt(semantic);
-      await persistReceipt(client, "execution", selected.attempt, result, submittedResultSha256, receipt);
-      return receipt;
-    });
+      }),
+    );
+    return { result, receipt };
+  };
+
+  const completeAttempt = async (value) => {
+    const input = exact(clone(value), ["attempt", "result"], "provider_effect_completion_invalid");
+    const suppliedAttempt = exact(input.attempt, attemptFields, "provider_effect_attempt_invalid");
+    identifier(suppliedAttempt.attemptRef, "provider_effect_attempt_invalid");
+    const submitted = assertResult(scope, input.result, suppliedAttempt, false);
+    const submittedResultSha256 = scope.contracts.PrincipalBinding.hash(submitted);
+    let preparation;
+    try {
+      preparation = await transaction(async (client) => {
+        const selected = await selectAttempt(client, suppliedAttempt.attemptRef);
+        if (!compare(selected.attempt, suppliedAttempt)) fail("provider_effect_attempt_conflict");
+        const prior = await existingReceipt(client, selected.attempt, "execution", submittedResultSha256);
+        if (prior) return { prior };
+        const nowResult = await client.query("SELECT clock_timestamp() AS now");
+        return {
+          attempt: selected.attempt,
+          completedAt: databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure"),
+        };
+      }, true);
+    } catch {
+      return recoverAttemptCompletion(suppliedAttempt, submittedResultSha256);
+    }
+    if (preparation.prior) return preparation.prior;
+    let candidates;
+    try {
+      candidates = {
+        submitted: await completionCandidate(
+          preparation.attempt,
+          submitted,
+          submitted.status === "outcome_unknown" ? null : preparation.completedAt,
+        ),
+        killSwitch: await completionCandidate(
+          preparation.attempt,
+          unknownResult(preparation.attempt, "provider_kill_switch_changed_after_reservation"),
+          null,
+        ),
+        lease: await completionCandidate(
+          preparation.attempt,
+          unknownResult(preparation.attempt, "provider_attempt_lease_expired"),
+          null,
+        ),
+      };
+      ensureActive();
+    } catch {
+      return recoverAttemptCompletion(suppliedAttempt, submittedResultSha256);
+    }
+    try {
+      return await transaction(
+        async (client) => {
+          await lockProfile(client);
+          const selected = await selectAttempt(client, suppliedAttempt.attemptRef, true);
+          if (!compare(selected.attempt, suppliedAttempt)) fail("provider_effect_attempt_conflict");
+          const prior = await existingReceipt(client, selected.attempt, "execution", submittedResultSha256);
+          if (prior) return prior;
+          const killSwitch = await currentKillSwitch(client, true);
+          const nowResult = await client.query("SELECT clock_timestamp() AS now");
+          const now = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
+          const candidate =
+            killSwitch.engaged || Number(killSwitch.revision) !== selected.attempt.killSwitchRevision
+              ? candidates.killSwitch
+              : Date.parse(now) >= Date.parse(selected.attempt.leaseExpiresAt)
+                ? candidates.lease
+                : candidates.submitted;
+          if (
+            candidate.receipt.completedAt !== null &&
+            (Date.parse(candidate.receipt.completedAt) < Date.parse(selected.attempt.attemptedAt) ||
+              Date.parse(candidate.receipt.completedAt) > Date.parse(now))
+          ) {
+            fail("provider_effect_receipt_invalid");
+          }
+          await persistReceipt(
+            client,
+            "execution",
+            selected.attempt,
+            candidate.result,
+            submittedResultSha256,
+            candidate.receipt,
+          );
+          return candidate.receipt;
+        },
+        false,
+        false,
+      );
+    } catch {
+      return recoverAttemptCompletion(suppliedAttempt, submittedResultSha256);
+    }
   };
 
   const selectReconciliation = async (client, proposalId, revision = null, lock = false, includeResolved = false) => {
@@ -1112,8 +1349,8 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       row.kill_switch_json.profileSha256 !== row.profile_sha256 ||
       row.kill_switch_json.engaged !== row.kill_switch_engaged ||
       row.kill_switch_json.revision !== Number(row.reconciliation_kill_switch_revision) ||
-      row.kill_switch_json.checkedAt !== reconciliationDatabaseNow ||
       row.kill_switch_json.checkedAt !== killSwitchCheckedAt ||
+      Date.parse(row.kill_switch_json.checkedAt) > Date.parse(reconciliationDatabaseNow) ||
       row.provider_identity_json.receiptSha256 !== row.provider_identity_receipt_sha256 ||
       row.provider_identity_json.profileRef !== row.profile_ref ||
       row.provider_identity_json.profileSha256 !== row.profile_sha256 ||
@@ -1150,7 +1387,10 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
       row.reconciliation_identity_json.priorReceiptSha256 !== row.reconciliation_prior_receipt_sha256 ||
       row.reconciliation_identity_json.reconcilerPrincipalRef !== row.reconciler_principal_ref ||
       row.reconciliation_identity_json.authenticatedAt !== identityAuthenticatedAt ||
-      row.reconciliation_identity_json.expiresAt !== identityExpiresAt
+      row.reconciliation_identity_json.expiresAt !== identityExpiresAt ||
+      Date.parse(reconciliationDatabaseNow) < Date.parse(attempt.leaseExpiresAt) ||
+      Date.parse(reconciliationDatabaseNow) < Date.parse(identityAuthenticatedAt) ||
+      Date.parse(reconciliationDatabaseNow) >= Date.parse(identityExpiresAt)
     ) {
       fail("provider_effect_store_corrupt");
     }
@@ -1328,7 +1568,26 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     });
   };
 
-  const completeReconciliation = (value) => {
+  const selectReconciliationCompletion = async (client, input, suppliedLease, lock) => {
+    const leaseResult = await client.query(
+      `SELECT *
+       FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_leases
+       WHERE profile_ref = $1 AND profile_sha256 = $2 AND reconciliation_ref = $3${lock ? " FOR SHARE" : ""}`,
+      [scope.profileRef, scope.profileSha256, suppliedLease.reconciliationRef],
+    );
+    if (leaseResult.rowCount !== 1) fail("provider_effect_reconciliation_lease_unavailable");
+    const selected = await selectReconciliation(client, suppliedLease.proposalId, suppliedLease.revision, lock, true);
+    const lease = leaseFromRow(scope, leaseResult.rows[0], selected.attempt);
+    if (!compare(lease, suppliedLease) || !compare(selected.reconciliation, input.reconciliation)) {
+      fail("provider_effect_reconciliation_conflict");
+    }
+    const result = assertResult(scope, input.result, selected.attempt, true);
+    const submittedResultSha256 = scope.contracts.PrincipalBinding.hash(result);
+    const prior = await existingReceipt(client, selected.attempt, "reconciliation", submittedResultSha256);
+    return { reconciliationSelection: selected, lease, result, submittedResultSha256, prior };
+  };
+
+  const completeReconciliation = async (value) => {
     const input = exact(
       clone(value),
       ["reconciliation", "lease", "result"],
@@ -1336,47 +1595,75 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     );
     const suppliedLease = exact(input.lease, leaseFields, "provider_effect_reconciliation_lease_invalid");
     identifier(suppliedLease.reconciliationRef, "provider_effect_reconciliation_lease_invalid");
-    return transaction(async (client) => {
-      await lockProfile(client);
-      const leaseResult = await client.query(
-        `SELECT *
-         FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_leases
-         WHERE profile_ref = $1 AND profile_sha256 = $2 AND reconciliation_ref = $3
-         FOR SHARE`,
-        [scope.profileRef, scope.profileSha256, suppliedLease.reconciliationRef],
-      );
-      if (leaseResult.rowCount !== 1) fail("provider_effect_reconciliation_lease_unavailable");
-      const selected = await selectReconciliation(client, suppliedLease.proposalId, suppliedLease.revision, true, true);
-      const lease = leaseFromRow(scope, leaseResult.rows[0], selected.attempt);
-      if (!compare(lease, suppliedLease) || !compare(selected.reconciliation, input.reconciliation)) {
-        fail("provider_effect_reconciliation_conflict");
-      }
-      const result = assertResult(scope, input.result, selected.attempt, true);
-      const submittedResultSha256 = scope.contracts.PrincipalBinding.hash(result);
-      const prior = await existingReceipt(client, selected.attempt, "reconciliation", submittedResultSha256);
-      if (prior) return prior;
-      const current = await currentKillSwitch(client, true);
+    const preparation = await transaction(async (client) => {
+      const selected = await selectReconciliationCompletion(client, input, suppliedLease, false);
+      if (selected.prior) return selected;
       const nowResult = await client.query("SELECT clock_timestamp() AS now");
-      const completedAt = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
-      if (
-        current.engaged ||
-        Number(current.revision) !== lease.killSwitchRevision ||
-        Date.parse(completedAt) >= Date.parse(lease.expiresAt) ||
-        result.providerResourceRef !== selected.reconciliation.providerResourceRef
-      ) {
-        fail(current.engaged ? "provider_effect_kill_switch_engaged" : "provider_effect_reconciliation_conflict");
+      return {
+        ...selected,
+        completedAt: databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure"),
+      };
+    }, true);
+    if (preparation.prior) return preparation.prior;
+    const receipt = await issueReceipt(
+      receiptSemantic({
+        attempt: preparation.reconciliationSelection.attempt,
+        result: preparation.result,
+        completedAt: preparation.completedAt,
+        reconciliationRef: preparation.lease.reconciliationRef,
+        priorReceiptSha256: preparation.reconciliationSelection.reconciliation.priorReceiptSha256,
+      }),
+    );
+    ensureActive();
+    let failure;
+    for (let commitAttempt = 0; commitAttempt < 4; commitAttempt += 1) {
+      try {
+        return await transaction(
+          async (client) => {
+            await lockProfile(client);
+            const completion = await selectReconciliationCompletion(client, input, suppliedLease, true);
+            if (completion.prior) return completion.prior;
+            const current = await currentKillSwitch(client, true);
+            const nowResult = await client.query("SELECT clock_timestamp() AS now");
+            const databaseNow = databaseInstant(nowResult.rows[0].now, "provider_effect_store_failure");
+            if (
+              current.engaged ||
+              Number(current.revision) !== completion.lease.killSwitchRevision ||
+              Date.parse(databaseNow) >= Date.parse(completion.lease.expiresAt) ||
+              completion.result.providerResourceRef !==
+                completion.reconciliationSelection.reconciliation.providerResourceRef ||
+              Date.parse(receipt.completedAt) <
+                Date.parse(completion.reconciliationSelection.reconciliation.databaseNow) ||
+              Date.parse(receipt.completedAt) > Date.parse(databaseNow)
+            ) {
+              fail(current.engaged ? "provider_effect_kill_switch_engaged" : "provider_effect_reconciliation_conflict");
+            }
+            await persistReceipt(
+              client,
+              "reconciliation",
+              completion.reconciliationSelection.attempt,
+              completion.result,
+              completion.submittedResultSha256,
+              receipt,
+            );
+            return receipt;
+          },
+          false,
+          false,
+        );
+      } catch (error) {
+        if (
+          error?.code === "provider_effect_kill_switch_engaged" ||
+          error?.code === "provider_effect_reconciliation_conflict" ||
+          error?.code === "provider_effect_receipt_result_conflict" ||
+          error?.code === "provider_effect_store_corrupt"
+        ) {
+          throw error;
+        }
+        failure = error;
       }
-      const semantic = receiptSemantic({
-        attempt: selected.attempt,
-        result,
-        completedAt,
-        reconciliationRef: lease.reconciliationRef,
-        priorReceiptSha256: selected.reconciliation.priorReceiptSha256,
-      });
-      const receipt = await issueReceipt(semantic);
-      await persistReceipt(client, "reconciliation", selected.attempt, result, submittedResultSha256, receipt);
-      return receipt;
-    });
+    }
+    throw failure;
   };
 
   const port = {
@@ -1386,7 +1673,13 @@ export function createProviderEffectAuthorityStore({ pool, runtimeScope, receipt
     readReconciliation,
     reserveReconciliation,
     completeReconciliation,
-    isActive: () => active.isActive() === true,
+    isActive: () => {
+      try {
+        return active.isActive() === true;
+      } catch {
+        return false;
+      }
+    },
   };
   return Object.freeze(port);
 }

@@ -71,12 +71,16 @@ DECLARE
   v_policy_ref text := p_profile->>'providerEffectPolicyRef';
   v_policy_sha256 text := p_profile->>'providerEffectPolicySha256';
 BEGIN
-  IF jsonb_typeof(p_profile) <> 'object'
+  IF jsonb_typeof(p_profile) IS DISTINCT FROM 'object'
     OR v_profile_ref IS NULL
+    OR v_profile_ref = ''
+    OR v_profile_sha256 IS NULL
     OR v_profile_sha256 !~ '^[0-9a-f]{64}$'
     OR v_policy_ref IS NULL
+    OR v_policy_ref = ''
+    OR v_policy_sha256 IS NULL
     OR v_policy_sha256 !~ '^[0-9a-f]{64}$'
-    OR p_profile->'providerExecutionAllowed' <> 'false'::jsonb THEN
+    OR p_profile->'providerExecutionAllowed' IS DISTINCT FROM 'false'::jsonb THEN
     RAISE EXCEPTION 'provider_effect_profile_invalid' USING ERRCODE = '22023';
   END IF;
 
@@ -107,6 +111,10 @@ DECLARE
   v_checked_at timestamptz;
   v_state_sha256 text;
 BEGIN
+  IF p_expected_previous_revision IS NULL OR p_expected_previous_revision < 0 THEN
+    RAISE EXCEPTION 'provider_effect_kill_switch_head_invalid' USING ERRCODE = '22023';
+  END IF;
+
   PERFORM 1
   FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks
   WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256
@@ -120,25 +128,31 @@ BEGIN
   FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states
   WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256;
 
-  IF COALESCE(v_current_revision, 0) <> p_expected_previous_revision THEN
+  IF COALESCE(v_current_revision, 0) IS DISTINCT FROM p_expected_previous_revision THEN
     RAISE EXCEPTION 'provider_effect_kill_switch_head_conflict' USING ERRCODE = '40001';
   END IF;
 
-  IF jsonb_typeof(p_proof) <> 'object'
-    OR (SELECT count(*) FROM jsonb_object_keys(p_proof)) <> 9
-    OR jsonb_typeof(p_proof->'profileRef') <> 'string'
-    OR p_proof->>'profileRef' <> p_profile_ref
-    OR jsonb_typeof(p_proof->'profileSha256') <> 'string'
-    OR p_proof->>'profileSha256' <> p_profile_sha256
-    OR jsonb_typeof(p_proof->'revision') <> 'number'
-    OR jsonb_typeof(p_proof->'engaged') <> 'boolean'
-    OR jsonb_typeof(p_proof->'checkedAt') <> 'string'
-    OR p_proof->>'stateSha256' IS NULL
-    OR jsonb_typeof(p_proof->'stateSha256') <> 'string'
-    OR p_proof->>'stateSha256' !~ '^[0-9a-f]{64}$'
-    OR jsonb_typeof(p_proof->'keyId') <> 'string'
-    OR jsonb_typeof(p_proof->'issuerRef') <> 'string'
-    OR jsonb_typeof(p_proof->'signature') <> 'string' THEN
+  IF jsonb_typeof(p_proof) IS DISTINCT FROM 'object'
+    OR (SELECT array_agg(proof_key ORDER BY proof_key) FROM jsonb_object_keys(p_proof) AS proof_key)
+       IS DISTINCT FROM ARRAY[
+         'checkedAt', 'engaged', 'issuerRef', 'keyId', 'profileRef',
+         'profileSha256', 'revision', 'signature', 'stateSha256'
+       ]::text[]
+    OR jsonb_typeof(p_proof->'profileRef') IS DISTINCT FROM 'string'
+    OR p_proof->>'profileRef' IS DISTINCT FROM p_profile_ref
+    OR jsonb_typeof(p_proof->'profileSha256') IS DISTINCT FROM 'string'
+    OR p_proof->>'profileSha256' IS DISTINCT FROM p_profile_sha256
+    OR jsonb_typeof(p_proof->'revision') IS DISTINCT FROM 'number'
+    OR jsonb_typeof(p_proof->'engaged') IS DISTINCT FROM 'boolean'
+    OR jsonb_typeof(p_proof->'checkedAt') IS DISTINCT FROM 'string'
+    OR jsonb_typeof(p_proof->'stateSha256') IS DISTINCT FROM 'string'
+    OR COALESCE(p_proof->>'stateSha256', '') !~ '^[0-9a-f]{64}$'
+    OR jsonb_typeof(p_proof->'keyId') IS DISTINCT FROM 'string'
+    OR COALESCE(p_proof->>'keyId', '') = ''
+    OR jsonb_typeof(p_proof->'issuerRef') IS DISTINCT FROM 'string'
+    OR COALESCE(p_proof->>'issuerRef', '') = ''
+    OR jsonb_typeof(p_proof->'signature') IS DISTINCT FROM 'string'
+    OR COALESCE(p_proof->>'signature', '') !~ '^[A-Za-z0-9_-]{86}$' THEN
     RAISE EXCEPTION 'provider_effect_kill_switch_proof_invalid' USING ERRCODE = '22023';
   END IF;
 
@@ -151,7 +165,7 @@ BEGIN
     RAISE EXCEPTION 'provider_effect_kill_switch_proof_invalid' USING ERRCODE = '22023';
   END;
 
-  IF v_revision <> p_expected_previous_revision + 1 THEN
+  IF v_revision IS DISTINCT FROM p_expected_previous_revision + 1 THEN
     RAISE EXCEPTION 'provider_effect_kill_switch_revision_invalid' USING ERRCODE = '22023';
   END IF;
 
@@ -334,6 +348,24 @@ CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_attempts (
   CHECK (revision = authorization_revision + 1)
 );
 
+CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.attempt_unknown_holds (
+  profile_ref text NOT NULL,
+  profile_sha256 text NOT NULL,
+  attempt_ref text NOT NULL,
+  receipt_id text NOT NULL,
+  receipt_sha256 text NOT NULL CHECK (receipt_sha256 ~ '^[0-9a-f]{64}$'),
+  result_sha256 text NOT NULL CHECK (result_sha256 ~ '^[0-9a-f]{64}$'),
+  status text NOT NULL CHECK (status = 'outcome_unknown'),
+  error_code text NOT NULL CHECK (error_code = 'provider_completion_unavailable'),
+  receipt_json jsonb NOT NULL CHECK (jsonb_typeof(receipt_json) = 'object'),
+  PRIMARY KEY (profile_ref, profile_sha256, attempt_ref),
+  UNIQUE (profile_ref, profile_sha256, receipt_id),
+  UNIQUE (profile_ref, profile_sha256, receipt_sha256),
+  FOREIGN KEY (profile_ref, profile_sha256, attempt_ref)
+    REFERENCES ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_attempts (profile_ref, profile_sha256, attempt_ref)
+    DEFERRABLE INITIALLY DEFERRED
+);
+
 CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.approval_consumptions (
   profile_ref text NOT NULL,
   profile_sha256 text NOT NULL,
@@ -380,6 +412,98 @@ CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts (
   )
 );
 
+CREATE FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.materialize_expired_attempt_hold(
+  p_profile_ref text,
+  p_profile_sha256 text,
+  p_attempt_ref text
+) RETURNS text
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_attempted_at timestamptz;
+  v_lease_expires_at timestamptz;
+  v_database_now timestamptz;
+  v_existing_status text;
+  v_existing_receipt_sha256 text;
+  v_hold ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.attempt_unknown_holds%ROWTYPE;
+BEGIN
+  PERFORM 1
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks
+  WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'provider_effect_profile_lock_unavailable' USING ERRCODE = '55000';
+  END IF;
+
+  SELECT attempted_at, lease_expires_at
+  INTO v_attempted_at, v_lease_expires_at
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_attempts
+  WHERE profile_ref = p_profile_ref
+    AND profile_sha256 = p_profile_sha256
+    AND attempt_ref = p_attempt_ref;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'provider_effect_attempt_unavailable' USING ERRCODE = '55000';
+  END IF;
+
+  SELECT status, receipt_sha256
+  INTO v_existing_status, v_existing_receipt_sha256
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts
+  WHERE profile_ref = p_profile_ref
+    AND profile_sha256 = p_profile_sha256
+    AND attempt_ref = p_attempt_ref
+    AND receipt_kind = 'execution';
+
+  IF FOUND THEN
+    IF v_existing_status IS DISTINCT FROM 'outcome_unknown' THEN
+      RAISE EXCEPTION 'provider_effect_attempt_already_resolved' USING ERRCODE = '55000';
+    END IF;
+    RETURN v_existing_receipt_sha256;
+  END IF;
+
+  v_database_now := clock_timestamp();
+  IF v_lease_expires_at IS NULL OR v_database_now < v_lease_expires_at THEN
+    RAISE EXCEPTION 'provider_effect_attempt_hold_not_available' USING ERRCODE = '55000';
+  END IF;
+
+  SELECT * INTO v_hold
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.attempt_unknown_holds
+  WHERE profile_ref = p_profile_ref
+    AND profile_sha256 = p_profile_sha256
+    AND attempt_ref = p_attempt_ref;
+
+  IF NOT FOUND
+    OR v_hold.status IS DISTINCT FROM 'outcome_unknown'
+    OR v_hold.error_code IS DISTINCT FROM 'provider_completion_unavailable'
+    OR v_hold.receipt_json->>'receiptId' IS DISTINCT FROM v_hold.receipt_id
+    OR v_hold.receipt_json->>'receiptSha256' IS DISTINCT FROM v_hold.receipt_sha256
+    OR v_hold.receipt_json->>'attemptRef' IS DISTINCT FROM p_attempt_ref
+    OR v_hold.receipt_json->>'status' IS DISTINCT FROM 'outcome_unknown'
+    OR v_hold.receipt_json->>'errorCode' IS DISTINCT FROM v_hold.error_code
+    OR v_hold.receipt_json->>'attemptedAt' IS DISTINCT FROM to_char(v_attempted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+    OR v_hold.receipt_json->'completedAt' IS DISTINCT FROM 'null'::jsonb
+    OR v_hold.receipt_json->'providerResourceRef' IS DISTINCT FROM 'null'::jsonb THEN
+    RAISE EXCEPTION 'provider_effect_attempt_hold_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts
+    (profile_ref, profile_sha256, attempt_ref, receipt_kind, receipt_id,
+     receipt_sha256, status, submitted_result_sha256, provider_resource_ref,
+     attempted_at, completed_at, reconciliation_ref, prior_receipt_sha256, receipt_json)
+  VALUES
+    (p_profile_ref, p_profile_sha256, p_attempt_ref, 'execution', v_hold.receipt_id,
+     v_hold.receipt_sha256, v_hold.status, v_hold.result_sha256, NULL,
+     v_attempted_at, NULL, NULL, NULL, v_hold.receipt_json);
+
+  RETURN v_hold.receipt_sha256;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.materialize_expired_attempt_hold(text, text, text) FROM PUBLIC;
+
 CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_identities (
   profile_ref text NOT NULL,
   profile_sha256 text NOT NULL,
@@ -423,6 +547,121 @@ CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_authorizations (
       (profile_ref, profile_sha256, attempt_ref, proposal_id),
   CHECK (database_now IS NOT NULL)
 );
+
+CREATE FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.derive_reconciliation_database_now() RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_attempted_at timestamptz;
+  v_lease_expires_at timestamptz;
+BEGIN
+  NEW.database_now := clock_timestamp();
+
+  SELECT attempted_at, lease_expires_at
+  INTO v_attempted_at, v_lease_expires_at
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_attempts
+  WHERE profile_ref = NEW.profile_ref
+    AND profile_sha256 = NEW.profile_sha256
+    AND attempt_ref = NEW.attempt_ref
+    AND proposal_id = NEW.proposal_id;
+
+  IF NOT FOUND
+    OR NEW.database_now < v_attempted_at
+    OR NEW.database_now < v_lease_expires_at THEN
+    RAISE EXCEPTION 'provider_effect_reconciliation_time_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER reconciliation_authorizations_database_now
+BEFORE INSERT ON ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_authorizations
+FOR EACH ROW EXECUTE FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.derive_reconciliation_database_now();
+
+CREATE FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_reconciliation_authorization(
+  p_profile_ref text,
+  p_profile_sha256 text,
+  p_proposal_id text,
+  p_attempt_ref text,
+  p_prior_receipt_sha256 text,
+  p_authentication_sha256 text,
+  p_kill_switch_revision bigint,
+  p_revision bigint
+) RETURNS timestamptz
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  v_database_now timestamptz;
+  v_authenticated_at timestamptz;
+  v_identity_expires_at timestamptz;
+  v_kill_switch_revision bigint;
+  v_kill_switch_engaged boolean;
+  v_kill_switch_checked_at timestamptz;
+BEGIN
+  IF p_kill_switch_revision IS NULL OR p_kill_switch_revision < 0 OR p_revision IS NULL OR p_revision < 1 THEN
+    RAISE EXCEPTION 'provider_effect_reconciliation_authorization_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  PERFORM 1
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.profile_serialization_locks
+  WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'provider_effect_profile_lock_unavailable' USING ERRCODE = '55000';
+  END IF;
+
+  SELECT authenticated_at, expires_at
+  INTO v_authenticated_at, v_identity_expires_at
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_identities
+  WHERE profile_ref = p_profile_ref
+    AND profile_sha256 = p_profile_sha256
+    AND attempt_ref = p_attempt_ref
+    AND prior_receipt_sha256 = p_prior_receipt_sha256
+    AND authentication_sha256 = p_authentication_sha256;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'provider_effect_reconciliation_identity_unavailable' USING ERRCODE = '55000';
+  END IF;
+
+  SELECT revision, engaged, checked_at
+  INTO v_kill_switch_revision, v_kill_switch_engaged, v_kill_switch_checked_at
+  FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.kill_switch_states
+  WHERE profile_ref = p_profile_ref AND profile_sha256 = p_profile_sha256
+  ORDER BY revision DESC
+  LIMIT 1;
+
+  v_database_now := clock_timestamp();
+  IF v_kill_switch_revision IS DISTINCT FROM p_kill_switch_revision
+    OR v_kill_switch_engaged IS DISTINCT FROM false
+    OR v_kill_switch_checked_at IS NULL
+    OR v_database_now < v_kill_switch_checked_at
+    OR v_authenticated_at IS NULL
+    OR v_identity_expires_at IS NULL
+    OR v_database_now < v_authenticated_at
+    OR v_database_now >= v_identity_expires_at THEN
+    RAISE EXCEPTION 'provider_effect_reconciliation_authorization_invalid' USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_authorizations
+    (profile_ref, profile_sha256, proposal_id, attempt_ref, prior_receipt_sha256,
+     authentication_sha256, kill_switch_revision, revision)
+  VALUES
+    (p_profile_ref, p_profile_sha256, p_proposal_id, p_attempt_ref, p_prior_receipt_sha256,
+     p_authentication_sha256, p_kill_switch_revision, p_revision)
+  RETURNING database_now INTO v_database_now;
+
+  RETURN v_database_now;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.derive_reconciliation_database_now() FROM PUBLIC;
+REVOKE ALL ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_reconciliation_authorization(text, text, text, text, text, text, bigint, bigint) FROM PUBLIC;
 
 CREATE TABLE ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_leases (
   profile_ref text NOT NULL,
@@ -471,6 +710,7 @@ ${[
   "approvals",
   "authorization_snapshots",
   "effect_attempts",
+  "attempt_unknown_holds",
   "approval_consumptions",
   "effect_receipts",
   "reconciliation_identities",

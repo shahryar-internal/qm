@@ -123,7 +123,9 @@ test(
     await pool.query(`GRANT USAGE ON SCHEMA ${PROVIDER_EFFECT_AUTHORITY_SCHEMA} TO provider_effect_writer`);
     await pool.query(
       `GRANT EXECUTE ON FUNCTION ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.register_deployment_profile(jsonb),
-         ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch(text, text, bigint, jsonb)
+         ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch(text, text, bigint, jsonb),
+         ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.materialize_expired_attempt_hold(text, text, text),
+         ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_reconciliation_authorization(text, text, text, text, text, text, bigint, bigint)
        TO provider_effect_writer`,
     );
     writerPool = new Pool({
@@ -315,11 +317,11 @@ test(
         "kill_switch",
       );
 
-    const appendKillSwitch = async (client, scope, killSwitch) => {
+    const appendKillSwitch = async (client, scope, killSwitch, expectedPreviousRevision = killSwitch.revision - 1) => {
       await client.query(`SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch($1, $2, $3, $4::jsonb)`, [
         scope.profileRef,
         scope.profileSha256,
-        killSwitch.revision - 1,
+        expectedPreviousRevision,
         canonicalJson(killSwitch),
       ]);
     };
@@ -609,6 +611,34 @@ test(
     assert.equal(writerBypass.code, "42501");
 
     const crossCheckedAt = iso(now - 1_000);
+    const nullHeadProof = killSwitchProof(ceoScope, Number.MAX_SAFE_INTEGER, crossCheckedAt);
+    const highRevisionProofJson = canonicalJson(nullHeadProof).replace(
+      `${Number.MAX_SAFE_INTEGER}`,
+      "9223372036854775807",
+    );
+    const nullHeadError = await writerPool
+      .query(`SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_kill_switch($1, $2, NULL, $3::jsonb)`, [
+        ceoScope.profileRef,
+        ceoScope.profileSha256,
+        highRevisionProofJson,
+      ])
+      .catch((error) => error);
+    assert.equal(nullHeadError.code, "22023");
+    const exactKeyProof = killSwitchProof(ceoScope, 1, crossCheckedAt);
+    const missingAndExtraKeyProof = { ...exactKeyProof, unexpectedKey: exactKeyProof.keyId };
+    delete missingAndExtraKeyProof.keyId;
+    const exactKeyError = await appendKillSwitch(writerPool, ceoScope, missingAndExtraKeyProof, 0).catch(
+      (error) => error,
+    );
+    assert.equal(exactKeyError.code, "22023");
+    const noncanonicalSignatureProof = { ...exactKeyProof, signature: `${exactKeyProof.signature}=` };
+    const noncanonicalSignatureError = await appendKillSwitch(
+      writerPool,
+      ceoScope,
+      noncanonicalSignatureProof,
+      0,
+    ).catch((error) => error);
+    assert.equal(noncanonicalSignatureError.code, "22023");
     const ceoKillOne = await insertKillSwitch(ceoScope, 1, crossCheckedAt);
     const syntheticKillOne = await insertKillSwitch(syntheticScope, 1, crossCheckedAt);
     const sharedProposalId = "proposal:cross-profile-pg16";
@@ -733,7 +763,10 @@ test(
       code: "provider_effect_store_corrupt",
     });
 
-    const signatureTamper = { ...killSwitchProof(syntheticScope, 4, await databaseNow()), signature: "AA" };
+    const signatureTamper = {
+      ...killSwitchProof(syntheticScope, 4, await databaseNow()),
+      signature: "A".repeat(86),
+    };
     await appendKillSwitch(writerPool, syntheticScope, signatureTamper);
     const signatureTamperProposal = draftProposal(
       syntheticScope,
@@ -963,11 +996,58 @@ test(
         canonicalJson(reconciliationIdentity),
       ],
     );
-    await pool.query(
-      `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_authorizations
-         (profile_ref, profile_sha256, proposal_id, attempt_ref, prior_receipt_sha256,
-          authentication_sha256, kill_switch_revision, database_now, revision)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
+    const reconciliationTimeBypass = await writerPool
+      .query(
+        `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_authorizations
+           (profile_ref, profile_sha256, proposal_id, attempt_ref, prior_receipt_sha256,
+            authentication_sha256, kill_switch_revision, database_now, revision)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, '1900-01-01T00:00:00.000Z'::timestamptz, $8)`,
+        [
+          ceoScope.profileRef,
+          ceoScope.profileSha256,
+          unknownProposal.proposalId,
+          unknownAttempt.attempt_ref,
+          unknownReceipt.receiptSha256,
+          reconciliationIdentity.authenticationSha256,
+          reconciliationKill.revision,
+          Number(unknownAttempt.revision) + 1,
+        ],
+      )
+      .catch((error) => error);
+    assert.equal(reconciliationTimeBypass.code, "42501");
+    const timestampProbeClient = await pool.connect();
+    try {
+      await timestampProbeClient.query("BEGIN");
+      const timestampProbe = await timestampProbeClient.query(
+        `INSERT INTO ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.reconciliation_authorizations
+           (profile_ref, profile_sha256, proposal_id, attempt_ref, prior_receipt_sha256,
+            authentication_sha256, kill_switch_revision, database_now, revision)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, '1900-01-01T00:00:00.000Z'::timestamptz, $8)
+         RETURNING database_now`,
+        [
+          ceoScope.profileRef,
+          ceoScope.profileSha256,
+          unknownProposal.proposalId,
+          unknownAttempt.attempt_ref,
+          unknownReceipt.receiptSha256,
+          reconciliationIdentity.authenticationSha256,
+          reconciliationKill.revision,
+          Number(unknownAttempt.revision) + 1,
+        ],
+      );
+      assert.equal(
+        Date.parse(timestampProbe.rows[0].database_now.toISOString()) >=
+          Date.parse(unknownAttempt.lease_expires_at.toISOString()),
+        true,
+      );
+    } finally {
+      await timestampProbeClient.query("ROLLBACK").catch(() => {});
+      timestampProbeClient.release();
+    }
+    const reconciliationAuthorization = await writerPool.query(
+      `SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.append_reconciliation_authorization(
+         $1, $2, $3, $4, $5, $6, $7, $8
+       ) AS database_now`,
       [
         ceoScope.profileRef,
         ceoScope.profileSha256,
@@ -976,11 +1056,17 @@ test(
         unknownReceipt.receiptSha256,
         reconciliationIdentity.authenticationSha256,
         reconciliationKill.revision,
-        reconciliationNow,
         Number(unknownAttempt.revision) + 1,
       ],
     );
+    const reconciliationDatabaseNow = reconciliationAuthorization.rows[0].database_now.toISOString();
+    assert.equal(
+      Date.parse(reconciliationDatabaseNow) >= Date.parse(unknownAttempt.lease_expires_at.toISOString()),
+      true,
+    );
+    assert.equal(Date.parse(reconciliationDatabaseNow) >= Date.parse(reconciliationNow), true);
     const reconciliation = await ceoStore.readReconciliation(unknownProposal.proposalId);
+    assert.equal(reconciliation.databaseNow, reconciliationDatabaseNow);
     const reconciliationRequest = {
       proposalId: reconciliation.proposal.proposalId,
       proposalHash: reconciliation.proposal.proposalHash,
@@ -1056,63 +1142,281 @@ test(
       .catch((error) => error);
     assert.equal(tamper.code, "55000");
 
-    const rollbackNow = Date.parse(await databaseNow());
-    const rollbackCheckedAt = iso(rollbackNow);
-    const rollbackKill = await insertKillSwitch(ceoScope, 9, rollbackCheckedAt);
-    const rollbackProposal = draftProposal(
+    const failureNow = Date.parse(await databaseNow());
+    const failureCheckedAt = iso(failureNow);
+    const failureKill = await insertKillSwitch(ceoScope, 9, failureCheckedAt);
+    const activationBoundaryProposal = draftProposal(
       ceoScope,
-      "proposal:receipt-rollback-pg16",
-      iso(rollbackNow - 1_000),
-      iso(rollbackNow + 120_000),
-      "receipt-rollback",
+      "proposal:activation-boundary-durable-hold-pg16",
+      iso(failureNow - 1_000),
+      iso(failureNow + 1_500),
+      "activation-boundary-durable-hold",
     );
-    const rollbackAuthorization = await installAuthorization({
+    await installAuthorization({
       scope: ceoScope,
-      proposal: rollbackProposal,
-      killSwitch: rollbackKill,
+      proposal: activationBoundaryProposal,
+      killSwitch: failureKill,
     });
+    let activationBoundaryActive = true;
+    const activationBoundaryStore = createProviderEffectAuthorityStore({
+      pool,
+      runtimeScope: ceoScope,
+      receiptAuthority,
+      activation: Object.freeze({ isActive: () => activationBoundaryActive }),
+    });
+    let activationBoundaryProviderCalls = 0;
+    const activationBoundaryAuthority = authorityFor(ceoScope, activationBoundaryStore, async ({ attempt }) => {
+      activationBoundaryProviderCalls += 1;
+      activationBoundaryActive = false;
+      return {
+        status: "verified",
+        provider: attempt.provider,
+        operation: attempt.operation,
+        providerOwnerRef: attempt.providerOwnerRef,
+        providerResourceRef: "gmail-draft:activation-boundary-durable-hold-pg16",
+        responseSha256: "e".repeat(64),
+        errorCode: null,
+        observationMode: "effect_execution",
+        providerMutationCount: 1,
+      };
+    });
+    await assert.rejects(() => activationBoundaryAuthority.execute(activationBoundaryProposal.proposalId), {
+      code: "provider_effect_store_unavailable",
+    });
+    await assert.rejects(() => activationBoundaryAuthority.execute(activationBoundaryProposal.proposalId), {
+      code: "provider_effect_store_unavailable",
+    });
+    assert.equal(activationBoundaryProviderCalls, 1);
+    const activationBoundaryAttempt = (
+      await pool.query(
+        `SELECT *
+         FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_attempts
+         WHERE profile_ref = $1 AND profile_sha256 = $2 AND proposal_id = $3`,
+        [ceoScope.profileRef, ceoScope.profileSha256, activationBoundaryProposal.proposalId],
+      )
+    ).rows[0];
+    const signerFailureProposal = draftProposal(
+      ceoScope,
+      "proposal:receipt-signer-failure-pg16",
+      iso(failureNow - 1_000),
+      iso(failureNow + 120_000),
+      "receipt-signer-failure",
+    );
+    await installAuthorization({
+      scope: ceoScope,
+      proposal: signerFailureProposal,
+      killSwitch: failureKill,
+    });
+    let signerIssueCalls = 0;
     const invalidReceiptAuthority = Object.freeze({
       ...receiptAuthority,
       async issue(semantic) {
+        signerIssueCalls += 1;
         const receipt = await receiptAuthority.issue(semantic);
-        return { ...receipt, responseSha256: "f".repeat(64) };
+        return signerIssueCalls === 1 ? receipt : { ...receipt, responseSha256: "f".repeat(64) };
       },
     });
-    const rollbackStore = storeFor(ceoScope, invalidReceiptAuthority);
-    const rollbackAttempt = await rollbackStore.reserveAttempt(requestFor(ceoScope, rollbackAuthorization));
-    const rollbackResult = {
-      status: "verified",
-      provider: rollbackAttempt.provider,
-      operation: rollbackAttempt.operation,
-      providerOwnerRef: rollbackAttempt.providerOwnerRef,
-      providerResourceRef: "gmail-draft:rollback-pg16",
-      responseSha256: "7".repeat(64),
-      errorCode: null,
-      observationMode: "effect_execution",
-      providerMutationCount: 1,
-    };
-    await assert.rejects(() => rollbackStore.completeAttempt({ attempt: rollbackAttempt, result: rollbackResult }), {
-      code: "provider_effect_receipt_invalid",
+    const signerFailureStore = storeFor(ceoScope, invalidReceiptAuthority);
+    let signerFailureProviderCalls = 0;
+    const signerFailureAuthority = authorityFor(ceoScope, signerFailureStore, async ({ attempt }) => {
+      signerFailureProviderCalls += 1;
+      return {
+        status: "verified",
+        provider: attempt.provider,
+        operation: attempt.operation,
+        providerOwnerRef: attempt.providerOwnerRef,
+        providerResourceRef: "gmail-draft:receipt-signer-failure-pg16",
+        responseSha256: "7".repeat(64),
+        errorCode: null,
+        observationMode: "effect_execution",
+        providerMutationCount: 1,
+      };
     });
-    const rolledBackReceipts = await pool.query(
-      `SELECT count(*)::integer AS count FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts
-       WHERE profile_ref = $1 AND profile_sha256 = $2 AND attempt_ref = $3`,
-      [ceoScope.profileRef, ceoScope.profileSha256, rollbackAttempt.attemptRef],
+    const signerFailureReceipt = await signerFailureAuthority.execute(signerFailureProposal.proposalId);
+    assert.equal(signerFailureReceipt.status, "outcome_unknown");
+    assert.equal(signerFailureReceipt.errorCode, "provider_completion_unavailable");
+    await assert.rejects(() => signerFailureAuthority.execute(signerFailureProposal.proposalId));
+    assert.equal(signerFailureProviderCalls, 1);
+    assert.equal(signerIssueCalls, 2);
+
+    const activationFailureProposal = draftProposal(
+      ceoScope,
+      "proposal:post-network-activation-failure-pg16",
+      iso(failureNow - 1_000),
+      iso(failureNow + 120_000),
+      "post-network-activation-failure",
     );
-    assert.equal(rolledBackReceipts.rows[0].count, 0);
+    const activationFailureAuthorization = await installAuthorization({
+      scope: ceoScope,
+      proposal: activationFailureProposal,
+      killSwitch: failureKill,
+    });
+    let completionActive = true;
+    const activationFailureStore = createProviderEffectAuthorityStore({
+      pool,
+      runtimeScope: ceoScope,
+      receiptAuthority,
+      activation: Object.freeze({ isActive: () => completionActive }),
+    });
+    const activationFailureAttempt = await activationFailureStore.reserveAttempt(
+      requestFor(ceoScope, activationFailureAuthorization),
+    );
+    completionActive = false;
+    const activationFailureReceipt = await activationFailureStore.completeAttempt({
+      attempt: activationFailureAttempt,
+      result: {
+        status: "verified",
+        provider: activationFailureAttempt.provider,
+        operation: activationFailureAttempt.operation,
+        providerOwnerRef: activationFailureAttempt.providerOwnerRef,
+        providerResourceRef: "gmail-draft:post-network-activation-failure-pg16",
+        responseSha256: "5".repeat(64),
+        errorCode: null,
+        observationMode: "effect_execution",
+        providerMutationCount: 1,
+      },
+    });
+    assert.equal(activationFailureReceipt.status, "outcome_unknown");
+    assert.equal(activationFailureReceipt.errorCode, "provider_completion_unavailable");
+
+    const commitFailureProposal = draftProposal(
+      ceoScope,
+      "proposal:post-network-commit-failure-pg16",
+      iso(failureNow - 1_000),
+      iso(failureNow + 120_000),
+      "post-network-commit-failure",
+    );
+    await installAuthorization({
+      scope: ceoScope,
+      proposal: commitFailureProposal,
+      killSwitch: failureKill,
+    });
+    let commitsUntilFailure = 0;
+    const commitFailurePool = Object.freeze({
+      async connect() {
+        const client = await pool.connect();
+        return {
+          async query(...args) {
+            if (commitsUntilFailure > 0 && args[0] === "COMMIT") {
+              commitsUntilFailure -= 1;
+              if (commitsUntilFailure === 0) throw new Error("injected commit failure");
+            }
+            return client.query(...args);
+          },
+          release: () => client.release(),
+        };
+      },
+    });
+    const commitFailureStore = createProviderEffectAuthorityStore({
+      pool: commitFailurePool,
+      runtimeScope: ceoScope,
+      receiptAuthority,
+      activation,
+    });
+    let commitFailureProviderCalls = 0;
+    const commitFailureAuthority = authorityFor(ceoScope, commitFailureStore, async ({ attempt }) => {
+      commitFailureProviderCalls += 1;
+      commitsUntilFailure = 2;
+      return {
+        status: "verified",
+        provider: attempt.provider,
+        operation: attempt.operation,
+        providerOwnerRef: attempt.providerOwnerRef,
+        providerResourceRef: "gmail-draft:post-network-commit-failure-pg16",
+        responseSha256: "4".repeat(64),
+        errorCode: null,
+        observationMode: "effect_execution",
+        providerMutationCount: 1,
+      };
+    });
+    const commitFailureReceipt = await commitFailureAuthority.execute(commitFailureProposal.proposalId);
+    assert.equal(commitFailureReceipt.status, "outcome_unknown");
+    assert.equal(commitFailureReceipt.errorCode, "provider_completion_unavailable");
+    assert.equal(commitsUntilFailure, 0);
+    await assert.rejects(() => commitFailureAuthority.execute(commitFailureProposal.proposalId));
+    assert.equal(commitFailureProviderCalls, 1);
+
+    const durableFailureState = await pool.query(
+      `SELECT
+         count(DISTINCT hold.attempt_ref)::integer AS holds,
+         count(DISTINCT receipt.attempt_ref)::integer AS receipts
+       FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.attempt_unknown_holds hold
+       LEFT JOIN ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts receipt
+         ON receipt.profile_ref = hold.profile_ref
+        AND receipt.profile_sha256 = hold.profile_sha256
+        AND receipt.attempt_ref = hold.attempt_ref
+        AND receipt.receipt_kind = 'execution'
+       WHERE hold.profile_ref = $1
+         AND hold.profile_sha256 = $2
+         AND hold.attempt_ref IN ($3, $4, $5)`,
+      [
+        ceoScope.profileRef,
+        ceoScope.profileSha256,
+        signerFailureReceipt.attemptRef,
+        activationFailureReceipt.attemptRef,
+        commitFailureReceipt.attemptRef,
+      ],
+    );
+    assert.deepEqual(durableFailureState.rows[0], { holds: 3, receipts: 3 });
+
+    while (Date.parse(await databaseNow()) <= Date.parse(activationBoundaryAttempt.lease_expires_at.toISOString())) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const materializedHold = await writerPool.query(
+      `SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.materialize_expired_attempt_hold($1, $2, $3) AS receipt_sha256`,
+      [ceoScope.profileRef, ceoScope.profileSha256, activationBoundaryAttempt.attempt_ref],
+    );
+    const materializedReceipt = await pool.query(
+      `SELECT status, receipt_sha256, receipt_json
+       FROM ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.effect_receipts
+       WHERE profile_ref = $1 AND profile_sha256 = $2 AND attempt_ref = $3 AND receipt_kind = 'execution'`,
+      [ceoScope.profileRef, ceoScope.profileSha256, activationBoundaryAttempt.attempt_ref],
+    );
+    assert.equal(materializedReceipt.rows[0].status, "outcome_unknown");
+    assert.equal(materializedReceipt.rows[0].receipt_json.errorCode, "provider_completion_unavailable");
+    assert.equal(materializedReceipt.rows[0].receipt_sha256, materializedHold.rows[0].receipt_sha256);
+    assert.equal(
+      (
+        await writerPool.query(
+          `SELECT ${PROVIDER_EFFECT_AUTHORITY_SCHEMA}.materialize_expired_attempt_hold($1, $2, $3) AS receipt_sha256`,
+          [ceoScope.profileRef, ceoScope.profileSha256, activationBoundaryAttempt.attempt_ref],
+        )
+      ).rows[0].receipt_sha256,
+      materializedHold.rows[0].receipt_sha256,
+    );
 
     const driftProposal = draftProposal(
       ceoScope,
       "proposal:post-network-authority-drift-pg16",
-      iso(rollbackNow - 1_000),
-      iso(rollbackNow + 120_000),
+      iso(failureNow - 1_000),
+      iso(failureNow + 120_000),
       "post-network-authority-drift",
     );
-    await installAuthorization({ scope: ceoScope, proposal: driftProposal, killSwitch: rollbackKill });
+    await installAuthorization({ scope: ceoScope, proposal: driftProposal, killSwitch: failureKill });
+    let releaseHangingSigner;
+    let hangingSignerEntered;
+    const hangingSignerStarted = new Promise((resolve) => {
+      hangingSignerEntered = resolve;
+    });
+    const hangingSignerRelease = new Promise((resolve) => {
+      releaseHangingSigner = resolve;
+    });
+    let hangingSignerCalls = 0;
+    const hangingReceiptAuthority = Object.freeze({
+      ...receiptAuthority,
+      async issue(semantic) {
+        hangingSignerCalls += 1;
+        if (hangingSignerCalls === 2) {
+          hangingSignerEntered();
+          await hangingSignerRelease;
+        }
+        return receiptAuthority.issue(semantic);
+      },
+    });
+    const hangingSignerStore = storeFor(ceoScope, hangingReceiptAuthority);
     let driftProviderCalls = 0;
-    const driftAuthority = authorityFor(ceoScope, ceoStore, async ({ attempt }) => {
+    const driftAuthority = authorityFor(ceoScope, hangingSignerStore, async ({ attempt }) => {
       driftProviderCalls += 1;
-      await insertKillSwitch(ceoScope, 10, await databaseNow());
       return {
         status: "verified",
         provider: attempt.provider,
@@ -1125,18 +1429,33 @@ test(
         providerMutationCount: 1,
       };
     });
-    const driftReceipt = await driftAuthority.execute(driftProposal.proposalId);
+    const driftExecution = driftAuthority.execute(driftProposal.proposalId);
+    await hangingSignerStarted;
+    const driftKillAppend = insertKillSwitch(ceoScope, 10, await databaseNow());
+    let appendTimeout;
+    const appendState = await Promise.race([
+      driftKillAppend.then(() => "committed"),
+      new Promise((resolve) => {
+        appendTimeout = setTimeout(() => resolve("blocked"), 1_000);
+      }),
+    ]);
+    clearTimeout(appendTimeout);
+    releaseHangingSigner();
+    await driftKillAppend;
+    const driftReceipt = await driftExecution;
+    assert.equal(appendState, "committed");
     assert.equal(driftReceipt.status, "outcome_unknown");
     assert.equal(driftReceipt.completedAt, null);
     assert.equal(driftReceipt.providerResourceRef, null);
     assert.equal(driftReceipt.errorCode, "provider_kill_switch_changed_after_reservation");
     await assert.rejects(() => driftAuthority.execute(driftProposal.proposalId));
     assert.equal(driftProviderCalls, 1);
+    assert.equal(hangingSignerCalls, 4);
 
     const catalog = await pool.query(
       `SELECT
-         count(*) FILTER (WHERE relation.relkind = 'r')::integer AS tables,
-         count(trigger_record.oid)::integer AS triggers
+         count(DISTINCT relation.oid) FILTER (WHERE relation.relkind = 'r')::integer AS tables,
+         count(DISTINCT trigger_record.oid)::integer AS triggers
        FROM pg_catalog.pg_class relation
        JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
        LEFT JOIN pg_catalog.pg_trigger trigger_record
@@ -1144,7 +1463,22 @@ test(
        WHERE namespace.nspname = $1`,
       [PROVIDER_EFFECT_AUTHORITY_SCHEMA],
     );
-    assert.equal(catalog.rows[0].tables, 15);
-    assert.equal(catalog.rows[0].triggers, 15);
+    assert.equal(catalog.rows[0].tables, 16);
+    assert.equal(catalog.rows[0].triggers, 17);
+    const writerTableAuthority = await pool.query(
+      `SELECT count(*)::integer AS count
+       FROM pg_catalog.pg_class relation
+       JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace
+       WHERE namespace.nspname = $1
+         AND relation.relkind = 'r'
+         AND (
+           has_table_privilege('provider_effect_writer', relation.oid, 'SELECT')
+           OR has_table_privilege('provider_effect_writer', relation.oid, 'INSERT')
+           OR has_table_privilege('provider_effect_writer', relation.oid, 'UPDATE')
+           OR has_table_privilege('provider_effect_writer', relation.oid, 'DELETE')
+         )`,
+      [PROVIDER_EFFECT_AUTHORITY_SCHEMA],
+    );
+    assert.equal(writerTableAuthority.rows[0].count, 0);
   },
 );

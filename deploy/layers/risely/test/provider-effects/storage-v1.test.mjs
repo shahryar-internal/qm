@@ -45,9 +45,15 @@ test("future schema is one-shot, append-only, proof-linked, and fail-closed", ()
   assert.match(sql, /provider_effect_authority_append_only/u);
   assert.match(sql, /profile_serialization_locks/u);
   assert.match(sql, /append_kill_switch/u);
+  assert.match(sql, /IS DISTINCT FROM ARRAY/u);
+  assert.match(sql, /\^\[A-Za-z0-9_-\]\{86\}\$/u);
+  assert.match(sql, /attempt_unknown_holds/u);
+  assert.match(sql, /materialize_expired_attempt_hold/u);
+  assert.match(sql, /append_reconciliation_authorization/u);
+  assert.match(sql, /NEW\.database_now := clock_timestamp\(\)/u);
   assert.match(sql, /FOR UPDATE/u);
   assert.match(sql, /REVOKE ALL ON SCHEMA .* FROM PUBLIC/u);
-  assert.equal((sql.match(/BEFORE UPDATE OR DELETE/gu) ?? []).length, 15);
+  assert.equal((sql.match(/BEFORE UPDATE OR DELETE/gu) ?? []).length, 16);
 });
 
 test("store exposes no adapter, provider credential, or network construction surface", () => {
