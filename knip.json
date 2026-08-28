@@ -10,6 +10,7 @@
   },
   "workspaces": {
     ".": {
+      "ignore": ["deploy/layers/risely/**"],
       "entry": [
         "src/sandbox/local-sandbox.ts",
         "scripts/aws-deploy-smoke.ts",

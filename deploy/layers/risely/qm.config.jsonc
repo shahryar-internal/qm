@@ -1,0 +1,131 @@
+{
+  // The deployment contract major this directory conforms to.
+  "contract": 1,
+
+  // Short identifier for your organization; app and container names derive from it.
+  "orgId": "risely",
+
+  // The one public address of the deployment; the service URLs derive from it.
+  "publicUrl": "https://d2arqymlq4fdoe.cloudfront.net",
+
+  // Optional bot identity. "botName" is what the bot is called everywhere users
+  // see it — the Slack app, the prompt identity, sign-in pages — and "orgName"
+  // is how the bot refers to your organization. Both default to neutral values
+  // ("qm" / "this organization") and can be changed live from the Admin page.
+  "botName": "Risely",
+  "orgName": "Risely",
+
+  // Where to deploy: "docker" runs local containers, "fly" deploys Fly apps,
+  // and "aws" runs the control plane on ECS and agent computers on Lambda MicroVMs.
+  "target": "aws",
+
+  // Gemini is registered as an encrypted OpenAI-compatible custom provider
+  // during setup, so modelProvider is intentionally omitted.
+  "model": "gemini-3.7-flash",
+
+  // AWS coordinates. Replace the account id and public URL before applying infra/.
+  // imageLabel identifies the deployment manifest used by rollback and live checks.
+  "aws": {
+    "accountId": "075343201918",
+    "region": "us-west-2",
+    "cluster": "risely-qm-pilot",
+    "deployRoleArn": "arn:aws:iam::075343201918:role/risely-qm-pilot-github-deploy",
+    "secretsPrefix": "risely/qm-pilot/",
+    "imageLabel": "latest",
+    "networking": { "cloudMapNamespace": "risely-qm-pilot.internal" },
+    "services": {
+      "core": {
+        "ecrRepository": "risely-qm-pilot-core",
+        "ecsService": "risely-qm-pilot-core",
+        "cpu": 2048,
+        "memory": 4096,
+        "architecture": "amd64",
+      },
+      "web-ui": {
+        "ecrRepository": "risely-qm-pilot-web-ui",
+        "ecsService": "risely-qm-pilot-web-ui",
+        "cpu": 512,
+        "memory": 1024,
+        "architecture": "amd64",
+      },
+      "admin": {
+        "ecrRepository": "risely-qm-pilot-admin",
+        "ecsService": "risely-qm-pilot-admin",
+        "cpu": 512,
+        "memory": 1024,
+        "architecture": "amd64",
+      },
+      "portal": {
+        "ecrRepository": "risely-qm-pilot-portal",
+        "ecsService": "risely-qm-pilot-portal",
+        "cpu": 512,
+        "memory": 1024,
+        "architecture": "amd64",
+      },
+      "auth": {
+        "ecrRepository": "risely-qm-pilot-auth",
+        "ecsService": "risely-qm-pilot-auth",
+        "cpu": 256,
+        "memory": 512,
+        "architecture": "amd64",
+      },
+      "gemini-compat": {
+        "ecrRepository": "risely-qm-pilot-gemini-compat",
+        "ecsService": "risely-qm-pilot-gemini-compat",
+        "cpu": 256,
+        "memory": 512,
+        "architecture": "amd64",
+      },
+    },
+  },
+
+  // First-party services to run. The full set: "core" (the agent runtime and API,
+  // always required), "slack" (the Slack surface, runs inside the core process),
+  // "web-ui" (a browser chat UI), "admin" (the operator dashboard), "portal"
+  // (the public sign-in front door), and "auth" (the built-in sign-in broker that
+  // emails one-time links; drop it to sign in through an external OIDC provider).
+  "services": ["core", "slack", "web-ui", "admin", "portal", "auth"],
+
+  // Extra plugins to run alongside the services. A prebuilt image runs with
+  // { "name": "linear", "image": "ghcr.io/you/qm-linear:1.0" }. A plugin with a
+  // Dockerfile at plugins/<name>/ in this directory needs no entry here at all.
+  "plugins": [],
+
+  "imageOverrides": {
+    "portal": "075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-portal@sha256:eedc2a58d758344b383fd5680545f18f3392f1dbd6b653ef4bc62ea44cd7547f",
+  },
+
+  // Extra directories of SKILL.md files, mounted into the agent.
+  "skills": [],
+
+  // Non-secret env overrides, per service. HARNESS "pi" runs real agent turns
+  // against the base model selected by "modelProvider" above. "mock" runs the
+  // whole stack with fake turns and no model calls.
+  "env": {
+    "core": {
+      "AWS_DEPLOY_IMAGE_VERSION": "2.0",
+      "AWS_DEPLOY_EXEC_ROLE_ARN": "arn:aws:iam::075343201918:role/risely-qm-pilot-microvm-exec",
+      "HARNESS": "pi",
+      "HARNESS_SECURITY_POSTURE": "strict",
+      "ORG_BUDGET_USD_PER_WINDOW": "10",
+      "BUDGET_WINDOW_MS": "86400000",
+      "AWS_DEPLOY_IMAGE": "risely-qm-pilot-sandbox",
+      "AWS_PUBLIC_ORIGIN_URL": "http://risely-qm-pilot-d3719528-485563767.us-west-2.elb.amazonaws.com",
+    },
+    "slack": { "SLACK_IDENTITY_EMAIL": "1" },
+    "portal": { "RISELY_CUSTOM_PROVIDER_READY": "1" },
+    "auth": {
+      "AUTH_EMAIL_TRANSPORT": "smtp",
+      "SMTP_PORT": "587",
+      "SMTP_TLS": "starttls",
+    },
+  },
+
+  // The initial admin seed is kept in the provider secret store, never in config.
+  "secretEnv": { "core": { "ADMIN_GRANTS": "ADMIN_GRANTS" } },
+
+  // Where agent sandboxes execute. Omitting "sandbox" entirely runs AWS Lambda MicroVMs
+  // (published by `qm infra build-image`). To boot an operator-published sandbox layer
+  // image in a Fly app instead (published by `qm sandbox publish`), declare it explicitly:
+  //   "sandbox": { "backend": "sprites", "app": "risely-sandboxes" }
+}

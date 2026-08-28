@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "accountId": "075343201918",
+  "region": "us-west-2",
+  "clusterName": "risely-qm-pilot",
+  "serviceName": "ceo-canary",
+  "family": "risely-qm-pilot-ceo-canary",
+  "ecrRepository": "risely-qm-pilot-ceo-canary",
+  "cloudMapNamespace": "risely-qm-pilot.internal",
+  "secretsPrefix": "risely/qm-pilot/",
+  "deploymentProfileRef": "deployment-profile:risely:ceo:v1",
+  "database": {
+    "name": "qm",
+    "port": 5432,
+    "schema": "risely_agent_runtime",
+    "runtimeUser": "risely_agent_runtime_runtime"
+  },
+  "container": {
+    "name": "ceo-canary",
+    "port": 8080,
+    "cpu": 256,
+    "memory": 512,
+    "architecture": "X86_64",
+    "user": "node",
+    "readOnlyRootFilesystem": true,
+    "privileged": false,
+    "dropCapabilities": ["ALL"],
+    "healthPath": "/readyz",
+    "healthIntervalSeconds": 30,
+    "healthTimeoutSeconds": 5,
+    "healthRetries": 3,
+    "healthStartPeriodSeconds": 20
+  },
+  "environment": {
+    "CANARY_DEPLOYMENT_PROFILE_REF": "deployment-profile:risely:ceo:v1",
+    "CANARY_INGRESS_ISSUER": "risely-ceo-canary-caller-v1",
+    "CANARY_INGRESS_AUDIENCE": "risely-ceo-canary",
+    "CANARY_INGRESS_KEY_ID": "ceo-canary-ingress-v1",
+    "CANARY_MUTATIONS_ENABLED": "0",
+    "CANARY_PROVIDER_EXECUTION_ENABLED": "0",
+    "NODE_ENV": "production",
+    "PORT": "8080"
+  },
+  "secretBindings": [
+    {
+      "environmentName": "CANARY_DATABASE_URL",
+      "secretName": "CANARY_DATABASE_URL"
+    },
+    {
+      "environmentName": "CANARY_INGRESS_SECRET",
+      "secretName": "CANARY_INGRESS_SECRET"
+    },
+    {
+      "environmentName": "DATABASE_CA_CERT",
+      "secretName": "CANARY_DATABASE_CA_CERT"
+    }
+  ],
+  "network": {
+    "assignPublicIp": false,
+    "publicListener": false,
+    "providerEgress": false
+  },
+  "service": {
+    "desiredCount": 0,
+    "enableExecuteCommand": false
+  }
+}

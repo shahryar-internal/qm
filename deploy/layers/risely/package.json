@@ -1,0 +1,29 @@
+{
+  "name": "risely-qm-deployment",
+  "version": "0.0.0",
+  "dependencies": {
+    "@yc-software/qm": "0.1.5",
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "pg": "8.22.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "qm": "qm",
+    "check": "qm check",
+    "plan": "qm plan",
+    "deploy": "qm up",
+    "status": "qm status",
+    "conformance": "qm conformance --static",
+    "governance:lock": "node --env-file=.env scripts/lock-pilot-governance.mjs",
+    "slack:render": "qm slack render",
+    "aws:image:build": "node scripts/build-aws-microvm-image.mjs",
+    "gemini:check": "node scripts/check-gemini.mjs",
+    "public-chat:check": "node --env-file=.env scripts/check-public-chat.mjs",
+    "test": "node --test"
+  }
+}

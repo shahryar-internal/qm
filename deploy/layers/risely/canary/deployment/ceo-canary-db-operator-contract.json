@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "accountId": "075343201918",
+  "region": "us-west-2",
+  "clusterName": "risely-qm-pilot",
+  "familyPrefix": "risely-qm-pilot-ceo-canary-db",
+  "ecrRepository": "risely-qm-pilot-ceo-canary",
+  "database": {
+    "name": "qm",
+    "port": 5432,
+    "schema": "risely_agent_runtime",
+    "bootstrapAdminUser": "qm",
+    "ownerUser": "risely_agent_runtime_owner",
+    "migrationUser": "risely_agent_runtime_migrator",
+    "runtimeUser": "risely_agent_runtime_runtime",
+    "evaluationWriterUser": "risely_agent_runtime_evaluation_writer"
+  },
+  "container": {
+    "namePrefix": "ceo-canary-db",
+    "cpu": 256,
+    "memory": 512,
+    "architecture": "X86_64",
+    "user": "node",
+    "readOnlyRootFilesystem": false,
+    "privileged": false,
+    "dropCapabilities": ["ALL"],
+    "entrypoint": "/app/canary/service/ceo-canary/src/db-operator.mjs"
+  },
+  "environment": {
+    "CANARY_MUTATIONS_ENABLED": "0",
+    "CANARY_PROVIDER_EXECUTION_ENABLED": "0",
+    "NODE_ENV": "production"
+  },
+  "phases": {
+    "inventory": {
+      "readOnly": true,
+      "secretBindings": [
+        {
+          "environmentName": "CANARY_BOOTSTRAP_DATABASE_URL",
+          "secretName": "CANARY_BOOTSTRAP_DATABASE_URL"
+        },
+        {
+          "environmentName": "DATABASE_CA_CERT",
+          "secretName": "CANARY_DATABASE_CA_CERT"
+        }
+      ]
+    },
+    "bootstrap": {
+      "readOnly": false,
+      "secretBindings": [
+        {
+          "environmentName": "CANARY_BOOTSTRAP_DATABASE_URL",
+          "secretName": "CANARY_BOOTSTRAP_DATABASE_URL"
+        },
+        {
+          "environmentName": "DATABASE_CA_CERT",
+          "secretName": "CANARY_DATABASE_CA_CERT"
+        }
+      ]
+    },
+    "provision": {
+      "readOnly": false,
+      "secretBindings": [
+        {
+          "environmentName": "CANARY_BOOTSTRAP_DATABASE_URL",
+          "secretName": "CANARY_BOOTSTRAP_DATABASE_URL"
+        },
+        {
+          "environmentName": "CANARY_MIGRATION_DATABASE_URL",
+          "secretName": "CANARY_MIGRATION_DATABASE_URL"
+        },
+        {
+          "environmentName": "CANARY_DATABASE_URL",
+          "secretName": "CANARY_DATABASE_URL"
+        },
+        {
+          "environmentName": "DATABASE_CA_CERT",
+          "secretName": "CANARY_DATABASE_CA_CERT"
+        }
+      ]
+    },
+    "migrate": {
+      "readOnly": false,
+      "secretBindings": [
+        {
+          "environmentName": "CANARY_MIGRATION_DATABASE_URL",
+          "secretName": "CANARY_MIGRATION_DATABASE_URL"
+        },
+        {
+          "environmentName": "DATABASE_CA_CERT",
+          "secretName": "CANARY_DATABASE_CA_CERT"
+        }
+      ]
+    },
+    "readiness": {
+      "readOnly": true,
+      "secretBindings": [
+        {
+          "environmentName": "CANARY_DATABASE_URL",
+          "secretName": "CANARY_DATABASE_URL"
+        },
+        {
+          "environmentName": "DATABASE_CA_CERT",
+          "secretName": "CANARY_DATABASE_CA_CERT"
+        }
+      ]
+    }
+  },
+  "network": {
+    "assignPublicIp": false,
+    "publicListener": false,
+    "providerEgress": false
+  },
+  "launch": {
+    "serviceCreated": false,
+    "scheduleCreated": false,
+    "deploymentPrincipalAvailable": false,
+    "executeCommandEnabled": false
+  }
+}

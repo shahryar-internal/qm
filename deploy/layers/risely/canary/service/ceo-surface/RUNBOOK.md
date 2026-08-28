@@ -1,0 +1,31 @@
+# CEO private surface shadow runbook
+
+## Current safe use
+
+Run the focused tests from `deploy/layers/risely` with `node --test test/ceo-surface/*.test.mjs test/ceo-canary/*.test.mjs`. The compiler and Postgres adapters may be used for deterministic review fixtures and disposable-database verification only. The adapters have no environment reader and accept only an explicitly supplied pool bound to the fixed canary schema inside database `qm`. They must not be wrapped in an HTTP server, scheduled, connected to Slack, added to QM configuration, added to plugin discovery, registered as an ECS task, or given credentials.
+
+The disposable integration accepts only `TEST_CANARY_MIGRATION_DATABASE_URL` and `TEST_CANARY_RUNTIME_DATABASE_URL`, requires both bootstrap identity sentinels to equal trusted database-owner role `qm`, an owner-set database-comment marker matching `TEST_CANARY_DISPOSABLE_DATABASE_MARKER`, and an empty canary schema owned by the fixed `NOLOGIN` owner. It is run only on a separately isolated PostgreSQL 16 host whose database is named `qm`; it never drops or recreates that schema and is single-use. It exercises enqueue idempotency, competing claims and reservations, claim compare-and-swap, lease renewal, exact identity and compiler-authentic publication reservation, dispatch-start durability, outcome-unknown receipt storage, owner-bound reconciliation, terminal delivery tombstones, post-retention duplicate refusal, immutable relations, attempting and outcome-unknown retention protection, and reconciliation plus tombstone reads for contracts whose actual evaluation, identity, outbox, reservation, attempt, and receipt timestamps are 200 days old. Provider-free tests separately assert both expiry tombstone variants, their complete conflict-digest catalog, tuple-reuse refusal, and post-180-day retention requirement without invoking a live database. Inert contract tests also switch a pool's future client target from the expected database identity to a foreign identity after successful initialization and require the same-client immutable sentinel to stop before surface SQL. Never set the marker or run this integration on the configured production QM host.
+
+## Required activation evidence
+
+Before any production implementation, record all of the following in an independent review:
+
+1. The sole fixed `CANARY_DEPLOYMENT_PROFILE_REF` rendered as `deployment-profile:risely:ceo:v1` and resolved through the immutable production registry to a canonical `PrincipalBinding` whose organization, deployment, CEO principal, email, QM principal, credential owner, audience, Slack team, evaluation authority and policy, and resolver authority are anchored outside request and outbox data and verified out of band. No legacy Docker identity alias or migration-ingress mapping is accepted as identity evidence.
+2. An authenticated evaluation-release ingress and authenticated durable-outbox writer limited to the pinned authority, policy, deployment binding, and CEO-private audience. The runtime image must contain the exact production evaluation dependencies while excluding test roots, keys, and stores. The provider-free authority must accept only the authentic frozen append-only PostgreSQL result-store port issued by an initialized, separately credentialed `PostgresEvaluationWriter`, reject runtime stores, inert testing stores, cloned ports, and caller-shaped lookalikes, verify the complete deterministic gate set and two independently signed judge results, persist its candidate, results, and release through one atomic profile-bound routine, retain replay tombstones permanently, and keep every release ineligible for provider execution. The runtime role cannot execute that routine, and the evaluation-writer role stays `NOLOGIN` and unavailable in production until separately provisioned and reviewed. Provider execution remains hard-disabled.
+3. An authenticated identity resolver that proves the CEO Slack user and private direct-message conversation in that exact workspace, returns a short-lived receipt, and cannot resolve channels or arbitrary recipients.
+4. Successful sole version-8 migration from the exact empty bootstrap state, exact readiness verification, and isolated-Postgres integration evidence for the durable outbox, reservation, and receipt relations.
+5. Authenticated composition around the durable adapters. The current structural receipt validator does not authenticate a Slack adapter and therefore cannot confer delivery authority.
+6. A Slack Web API adapter limited to the deployment credential owner and team, with no socket token and no token accepted in request data.
+7. Revocation, credential rotation, rate limiting, spend limits, audit retention, reconciliation, and two-account negative tests.
+8. Rendered Slack QA in the development workspace proving the DM is actionless and has only the authenticated QM root link.
+9. An independent fresh-context security approval for the complete adapter composition and infrastructure definition.
+
+Live composition must discard each original adapter object after validation and retain only the returned immutable facade. The current package provides no live composition or startup path.
+
+## Failure posture
+
+An invalid hash, non-derived event id, expired evaluation, expired identity resolution, identity mismatch, unknown field, artifact-selected destination, non-DM Slack destination, additional URL, action block, stale revision, expired claim, or conflicting reservation stops compilation or state progression. The reservation is moved to `attempting` durably before any future provider invocation. A crash from that point is ambiguous, cannot return to the delivery claim path, and becomes reconciliation-eligible only after the fixed uncertainty interval. An ambiguous Slack outcome remains outcome-unknown and cannot be retried until reconciled against Slack. A changed artifact creates a new revision digest and must return through evaluation and a new outbox event.
+
+## Rollback posture
+
+The current boundary has no deployed state to roll back. For a future deployment, rollback means disabling claims while preserving the outbox, delivery-key reservations, receipts, permanent delivery and event-identity tombstones, and audit history. Never delete an unresolved reservation or a tombstone to force a retry.

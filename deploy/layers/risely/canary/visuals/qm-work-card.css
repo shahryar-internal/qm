@@ -1,0 +1,248 @@
+:root {
+  --risely-ink: #172336;
+  --risely-ink-soft: #526075;
+  --risely-muted: #728096;
+  --risely-line: #dfe4ec;
+  --risely-paper: #f7f8fb;
+  --risely-surface: #ffffff;
+  --risely-purple: #5533e2;
+  --risely-purple-soft: #f0edff;
+  --risely-coral: #dc5267;
+  --risely-coral-soft: #fff0f2;
+  --risely-teal: #087b6d;
+  --risely-teal-soft: #e7f5f2;
+  --risely-amber: #9a5600;
+  --risely-amber-soft: #fff4dd;
+  --risely-navy: #1e3a5f;
+  --risely-shadow: 0 16px 42px rgba(30, 47, 75, 0.1);
+}
+
+.risely-work-card,
+.risely-work-card * {
+  box-sizing: border-box;
+}
+
+.risely-work-card {
+  color: var(--risely-ink);
+  background: var(--risely-surface);
+  border: 1px solid var(--risely-line);
+  border-radius: 18px;
+  box-shadow: var(--risely-shadow);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  overflow: hidden;
+}
+
+.risely-work-card__topline,
+.risely-work-card__meta,
+.risely-work-card__facts,
+.risely-work-card__sources {
+  display: flex;
+  align-items: center;
+}
+
+.risely-work-card__topline {
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 0;
+}
+
+.risely-work-card__state,
+.risely-work-card__kind,
+.risely-work-card__source,
+.risely-work-card__revision {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.risely-work-card__state {
+  color: var(--risely-teal);
+  background: var(--risely-teal-soft);
+}
+
+.risely-work-card__state--waiting,
+.risely-work-card__state--expired {
+  color: var(--risely-amber);
+  background: var(--risely-amber-soft);
+}
+
+.risely-work-card__state--failed {
+  color: #a12d42;
+  background: var(--risely-coral-soft);
+}
+
+.risely-work-card__state--superseded {
+  color: #5f54a5;
+  background: var(--risely-purple-soft);
+}
+
+.risely-work-card__kind,
+.risely-work-card__revision {
+  color: var(--risely-muted);
+  background: var(--risely-paper);
+}
+
+.risely-work-card__body {
+  padding: 15px 18px 18px;
+}
+
+.risely-work-card__eyebrow {
+  margin: 0 0 6px;
+  color: var(--risely-purple);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.risely-work-card__title {
+  margin: 0;
+  color: var(--risely-ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(22px, 3vw, 30px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1.08;
+}
+
+.risely-work-card__summary {
+  max-width: 68ch;
+  margin: 12px 0 0;
+  color: var(--risely-ink-soft);
+  font-size: 14px;
+  line-height: 1.58;
+}
+
+.risely-work-card__notice {
+  margin-top: 16px;
+  padding: 11px 12px;
+  color: #74450b;
+  border: 1px solid #f2d59a;
+  border-radius: 10px;
+  background: #fff9e9;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.risely-work-card__facts {
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 0;
+}
+
+.risely-work-card__fact {
+  min-width: min(100%, 178px);
+  flex: 1 1 178px;
+  padding: 12px;
+  border: 1px solid var(--risely-line);
+  border-radius: 11px;
+  background: #fcfcfe;
+}
+
+.risely-work-card__fact dt {
+  color: var(--risely-muted);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.risely-work-card__fact dd {
+  margin: 5px 0 0;
+  color: var(--risely-ink);
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.4;
+}
+
+.risely-work-card__sources {
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.risely-work-card__source {
+  color: #396173;
+  border: 1px solid #cce3e1;
+  background: #f3fbfa;
+}
+
+.risely-work-card__source::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #32a18e;
+  content: "";
+}
+
+.risely-work-card__footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 18px;
+  border-top: 1px solid var(--risely-line);
+  background: #fbfbfd;
+}
+
+.risely-work-card__meta {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--risely-muted);
+  font-size: 11px;
+}
+
+.risely-work-card a:focus-visible {
+  outline: 3px solid rgba(85, 51, 226, 0.35);
+  outline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  .risely-work-card__topline,
+  .risely-work-card__body,
+  .risely-work-card__footer {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .risely-work-card__topline,
+  .risely-work-card__footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .risely-work-card__footer {
+    display: flex;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .risely-work-card {
+    transition:
+      border-color 160ms ease,
+      box-shadow 160ms ease,
+      transform 160ms ease;
+  }
+
+  .risely-work-card:hover {
+    border-color: #c7bfef;
+    box-shadow: 0 20px 48px rgba(30, 47, 75, 0.14);
+    transform: translateY(-1px);
+  }
+}

@@ -1,0 +1,654 @@
+{
+  "schemaVersion": 1,
+  "manifestId": "risely.ceo.activation-gates.offline.v1",
+  "assessmentMode": "offline_source_and_test_evidence",
+  "semanticContracts": {
+    "notionPrivateRoot": {
+      "parentRef": "notion:ceo-private-root-v1",
+      "audienceRef": "audience:ceo-private",
+      "scope": "private_ceo",
+      "providerInvocationAllowed": false
+    }
+  },
+  "externalRequirements": [
+    {
+      "id": "production_postgres_deployment_sentinel",
+      "gateId": "disposable_postgres_sentinel",
+      "state": "unmet",
+      "evidenceClass": "external_production_deployment_sentinel",
+      "offlineEvidenceCanSatisfy": false,
+      "blocker": "production_postgres_deployment_sentinel_contract_unmet"
+    },
+    {
+      "id": "ceo_canary_task_host_provenance",
+      "gateId": "disposable_postgres_sentinel",
+      "state": "unmet",
+      "evidenceClass": "external_task_definition_host_provenance",
+      "offlineEvidenceCanSatisfy": false,
+      "blocker": "ceo_canary_task_host_provenance_unverified"
+    },
+    {
+      "id": "ceo_canary_iam_role_inventory",
+      "gateId": "disposable_postgres_sentinel",
+      "state": "unmet",
+      "evidenceClass": "external_iam_role_inventory",
+      "offlineEvidenceCanSatisfy": false,
+      "blocker": "ceo_canary_iam_role_inventory_unverified"
+    },
+    {
+      "id": "ceo_canary_private_dns_compatibility",
+      "gateId": "disposable_postgres_sentinel",
+      "state": "unmet",
+      "evidenceClass": "external_vpc_private_dns_resolution",
+      "offlineEvidenceCanSatisfy": false,
+      "blocker": "ceo_canary_private_dns_compatibility_unverified"
+    },
+    {
+      "id": "ceo_canary_state_plan_lineage",
+      "gateId": "disposable_postgres_sentinel",
+      "state": "unmet",
+      "evidenceClass": "external_terraform_state_plan_backend_workspace_lineage",
+      "offlineEvidenceCanSatisfy": false,
+      "blocker": "ceo_canary_state_plan_lineage_unverified"
+    },
+    {
+      "id": "ceo_canary_runtime_image_security",
+      "gateId": "disposable_postgres_sentinel",
+      "state": "unmet",
+      "evidenceClass": "external_ecr_enhanced_image_scan",
+      "offlineEvidenceCanSatisfy": false,
+      "blocker": "ceo_canary_runtime_image_security_unverified"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "shadow_v6_source",
+      "path": "canary/acceptance-shadow/provider-free-v6.mjs",
+      "kind": "source",
+      "sha256": "f0339a808d0b24830292a441212b27cc4abaf20a1f6db787d3946e8d893c67d4",
+      "maxBytes": 65536
+    },
+    {
+      "id": "shadow_v6_test",
+      "path": "test/shared-contracts/shared-contracts.test.mjs",
+      "kind": "test",
+      "sha256": "51c324a568f5327a495a926dd839539dc1aa3dd3b39ecf5552b8e1a39dc0ca4a",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_store_source",
+      "path": "canary/service/ceo-canary/src/postgres-store.mjs",
+      "kind": "source",
+      "sha256": "d5caa6a991ef8f48251cb66c1206f8fb8146fe2946667fd3d3697c07463f653b",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_evaluation_writer_source",
+      "path": "canary/service/ceo-canary/src/evaluation-writer.mjs",
+      "kind": "source",
+      "sha256": "7e3e1fb6cb4cc58f15c283ee61764e04f71b749930235f63fda14e732f47d351",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_database_security_source",
+      "path": "canary/service/ceo-canary/src/database-security.mjs",
+      "kind": "source",
+      "sha256": "5505cf452f69ed09073b064a22a3ec32f046bba2e46391923ca75ae4e6de253f",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_database_boundary_source",
+      "path": "canary/service/ceo-canary/src/index.mjs",
+      "kind": "source",
+      "sha256": "8478f4c17b36f388d007422e75464b416ccf93c0d30d4266a2ab172a48f6c4e1",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_schema_source",
+      "path": "canary/service/ceo-canary/src/schema.mjs",
+      "kind": "source",
+      "sha256": "9e8278f1967f743e8cd3ffdf4dc724e905cc4dc9515fa7e89d69648287bec710",
+      "maxBytes": 131072
+    },
+    {
+      "id": "postgres_catalog_authority_source",
+      "path": "canary/service/ceo-canary/src/catalog-authority-v8.mjs",
+      "kind": "source",
+      "sha256": "a0b1d9259d6f72146aaf5bce5d30bc45762f9cb8bdc48bfa45afd980b2d92459",
+      "maxBytes": 262144
+    },
+    {
+      "id": "postgres_bootstrap_source",
+      "path": "canary/service/ceo-canary/migrations/bootstrap.sql",
+      "kind": "source",
+      "sha256": "4d84811bca745f4a5e8c43caeb23a513432ae7514e481838e9354ee7eb7ce71a",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_bootstrap_test",
+      "path": "test/ceo-canary/bootstrap.pg16.integration.test.mjs",
+      "kind": "test",
+      "sha256": "4c1e5c018168644c611ba2649ba979e6b8f07b956bfcd77c62c4a05676937b8d",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_db_operator_source",
+      "path": "canary/service/ceo-canary/src/db-operator.mjs",
+      "kind": "source",
+      "sha256": "9ca869be46a8a6b3b01b0ba80e5e5067a1c43666e28ddf2ca68f64ea432e775e",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_db_operator_bootstrap_source",
+      "path": "canary/service/ceo-canary/src/db-operator-bootstrap-sql.mjs",
+      "kind": "source",
+      "sha256": "5bd1059b1bbace699afd0b2ea69e3db288cc71208bb38c068ef5e5789000bcba",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_migrate_source",
+      "path": "canary/service/ceo-canary/src/migrate.mjs",
+      "kind": "source",
+      "sha256": "062fa7de10e8a7f341370e411b19be651f6344abc7e3bd800d7a10337af7f251",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_credential_provisioner_source",
+      "path": "canary/service/ceo-canary/src/provision-credentials.mjs",
+      "kind": "source",
+      "sha256": "bbef16478bd25ed0cb93c833b99cbe4b650cf730874ade0a2e4032baf3573180",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_credential_test",
+      "path": "test/ceo-canary/credential-provisioning.test.mjs",
+      "kind": "test",
+      "sha256": "2dfc150217099c5cea8f5a4a45b8cb66895cb503b0fc2d7198f2aecf3569ba18",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_lifecycle_test",
+      "path": "test/ceo-canary/lifecycle.pg16.integration.test.mjs",
+      "kind": "test",
+      "sha256": "9b17218cfaea4802c92501fa3beffc2f26d03719f3d808529e38f3d98de37b69",
+      "maxBytes": 131072
+    },
+    {
+      "id": "postgres_retention_source",
+      "path": "canary/service/ceo-canary/src/retention.mjs",
+      "kind": "source",
+      "sha256": "a5db608cfcef00b89d28b7f104e9b91ca8a503594c2e2317ebdf163dff19aad1",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_security_doc",
+      "path": "canary/service/ceo-canary/SECURITY.md",
+      "kind": "source",
+      "sha256": "5bb332a6f7c28db87e6b0ca86f6a0558cdd1798f84c51bf7c85783074c0a7eb2",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_migration_runbook",
+      "path": "canary/service/ceo-canary/migrations/RUNBOOK.md",
+      "kind": "source",
+      "sha256": "517dc6fdfe39a217edcde9b7431769fb43a839238fba38d81d7d7c1b3f3c3a74",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_infra_host_source",
+      "path": "infra/outputs.tf",
+      "kind": "source",
+      "sha256": "d22239cd5a015cca4080f1714717c939690af9aec1e5e7e9c8e281c03dad195c",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_contract_data",
+      "path": "canary/deployment/ceo-canary-task-contract.json",
+      "kind": "source",
+      "sha256": "cb606898c89a02875f699671db6b492c766124a7bbd21246d332333161d03f3a",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_renderer_source",
+      "path": "canary/deployment/task-definition.mjs",
+      "kind": "source",
+      "sha256": "99fcc85a7eb947b64ea12c107e49cd53270c63edfedc2d333bbd70b066189690",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_sealed_provenance_source",
+      "path": "canary/deployment/sealed-provenance.mjs",
+      "kind": "source",
+      "sha256": "b085b5a610b9da04748fdea3e846645529f0a08c0bf4adde28f72707bc788382",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_infra_source",
+      "path": "infra/ceo-canary.tf",
+      "kind": "source",
+      "sha256": "77dbf53c26db46f2421fa89ebb665922917a7b16c360e41a6b6434e75a28e8c9",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_infra_main_hash_only",
+      "path": "infra/main.tf",
+      "kind": "source",
+      "sha256": "6c815db87b55a78b9eb001bf880118c6fe4f34d7a51f4f7f3542fe554a1cafe0",
+      "maxBytes": 131072
+    },
+    {
+      "id": "ceo_canary_tfvars_hash_only",
+      "path": "infra/terraform.tfvars",
+      "kind": "source",
+      "sha256": "3e0f2bec2286d29f9b1dd6e6d2ed5c23b485c9d230bdd92c53dccc146590bf9c",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_terraform_versions_hash_only",
+      "path": "infra/versions.tf",
+      "kind": "source",
+      "sha256": "08c70acd458a956374d2b79b0dcb9296ad33a36c5fd45399485376b5db9f1d70",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_terraform_lock_hash_only",
+      "path": "infra/.terraform.lock.hcl",
+      "kind": "source",
+      "sha256": "e47df301e05bb8dd5ae1fb572f2090140891f49b1b2a642fb6f0adf886bac01e",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_variables_source",
+      "path": "infra/variables.tf",
+      "kind": "source",
+      "sha256": "bbe96a34a5b9489b6554a3c9b2632fe16a9b57886787c0575fa442f9c5ce3f5d",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_test",
+      "path": "test/ceo-canary/task-definition.test.mjs",
+      "kind": "test",
+      "sha256": "497802b771dff98cd6dbbb7eb8b8aa14394c1c4ef122b33c12ad71c9982d2d5a",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_task_runbook",
+      "path": "canary/deployment/RUNBOOK.md",
+      "kind": "source",
+      "sha256": "0d8e4f79436b13452ef5ee82f4825df4bd0d8f6326fd9632e141e71997f50e5b",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_db_operator_contract_data",
+      "path": "canary/deployment/ceo-canary-db-operator-contract.json",
+      "kind": "source",
+      "sha256": "e7798c2df0db35f39d59a1f27f0be5b26d1684cf1a54dff96c8a0492d34c1acd",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_db_operator_infra_source",
+      "path": "infra/ceo-canary-db-operator.tf",
+      "kind": "source",
+      "sha256": "b6512bba03c0d66e42e2e2c06c707ee8d45bd4fb65b38e43b03358f5ef0a01da",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_db_operator_test",
+      "path": "test/ceo-canary/db-operator.test.mjs",
+      "kind": "test",
+      "sha256": "ebc32707b1b558a16f18aa188c578a764d8d19470ee56409ca55f37657c887cc",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_canary_db_operator_runbook",
+      "path": "canary/deployment/DB-OPERATOR-RUNBOOK.md",
+      "kind": "source",
+      "sha256": "40bfd4d759b6cd05455854ff0d67c143f3cbc3ce337496e84bf6fdd229c0423f",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_sentinel_test",
+      "path": "test/ceo-canary/postgres.integration.test.mjs",
+      "kind": "test",
+      "sha256": "2101f0ea2c08b14f1b2642ae39a54fe483b79cda711fe3ec18b5073ae08c349c",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_dockerfile_source",
+      "path": "canary/service/ceo-canary/Dockerfile",
+      "kind": "source",
+      "sha256": "e5bfc83e256839166ec3f8faae991747fba32c124aab5814a1d9e5f630d8a5f2",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_container_test",
+      "path": "test/ceo-canary/container.integration.test.mjs",
+      "kind": "test",
+      "sha256": "337520bf6fb95ff2ca25e68387ea751ddd0323eff8760e10dfa60e148c2d14fc",
+      "maxBytes": 65536
+    },
+    {
+      "id": "secret_boundary_source",
+      "path": "canary/service/ceo-canary/src/auth.mjs",
+      "kind": "source",
+      "sha256": "48d92e4e0629d9f932d02835925b28bd5e8a3b0570b63325f484121d6739abaf",
+      "maxBytes": 65536
+    },
+    {
+      "id": "secret_boundary_test",
+      "path": "test/ceo-canary/security-contract.test.mjs",
+      "kind": "test",
+      "sha256": "fc792bff578e11eabd4cec9cb23a3df7ed4acf2f3006e2e7ff36617e4c1248cf",
+      "maxBytes": 131072
+    },
+    {
+      "id": "deployment_profile_contract_source",
+      "path": "canary/deployment-profiles/contract.mjs",
+      "kind": "source",
+      "sha256": "b84b10d6cc7278bcd3bbeb392e036ccb2852871930bd00e4064c4f1490290332",
+      "maxBytes": 65536
+    },
+    {
+      "id": "deployment_profile_registry_source",
+      "path": "canary/deployment-profiles/index.mjs",
+      "kind": "source",
+      "sha256": "c7c5c268fc28fbbb7d338d3f6996d81bf65a46598ac1c4c0b6ac42afea258d50",
+      "maxBytes": 65536
+    },
+    {
+      "id": "deployment_profile_synthetic_fixture",
+      "path": "canary/deployment-profiles/testing.mjs",
+      "kind": "test",
+      "sha256": "e2debd2bf6c5a491e6d4cf346be42f6806c289c48c368786cedf091588170171",
+      "maxBytes": 65536
+    },
+    {
+      "id": "runtime_scope_source",
+      "path": "canary/runtime-scope/index.mjs",
+      "kind": "source",
+      "sha256": "2d8ebdafdca4abe0fa22c9b6f0f6584ec7ca4f066646927940819a1f6aa0f957",
+      "maxBytes": 65536
+    },
+    {
+      "id": "deployment_profile_registry_test",
+      "path": "test/deployment-profiles/deployment-profiles.test.mjs",
+      "kind": "test",
+      "sha256": "9dfe973d489aeb9032c17689ada5382b261ddc93038e53f3404d6398015c9c14",
+      "maxBytes": 65536
+    },
+    {
+      "id": "google_broker_source",
+      "path": "canary/google-broker/contracts.mjs",
+      "kind": "source",
+      "sha256": "d2bfaa82566509be9a5d9067cca0e136ace5e6a03115e05b683a25f1a91aba47",
+      "maxBytes": 65536
+    },
+    {
+      "id": "google_broker_test",
+      "path": "test/google-broker/static-surface.test.mjs",
+      "kind": "test",
+      "sha256": "6923c0693084ef83e7fe0dbc387b3636f45d2e5f6a69456a93b296cc00b01051",
+      "maxBytes": 65536
+    },
+    {
+      "id": "provider_effect_policy_source",
+      "path": "canary/deployment-profiles/provider-effect-policy.mjs",
+      "kind": "source",
+      "sha256": "88fc7a2c21fa499b7805ce11e6d254a692dc5aa06a14da8a68d44af46a4d3128",
+      "maxBytes": 65536
+    },
+    {
+      "id": "provider_effect_contract_source",
+      "path": "canary/provider-effects/index.mjs",
+      "kind": "source",
+      "sha256": "c557751d468870d7408b8f5439873c0a557f072a17e9ef49fa1a4730a6c19a1b",
+      "maxBytes": 65536
+    },
+    {
+      "id": "provider_effect_shared_validation_source",
+      "path": "canary/contracts/validation.mjs",
+      "kind": "source",
+      "sha256": "b61dbb506a34134a0231ab855bf31aaba78bdc03632a907c8dfd78fe9e0d7e77",
+      "maxBytes": 65536
+    },
+    {
+      "id": "provider_effect_runtime_domain_source",
+      "path": "canary/service/ceo-canary/src/domain.mjs",
+      "kind": "source",
+      "sha256": "c0ca4cf60eeabea8844609cbec15896faeb0c0f0d16f805175022b1f2a5c6104",
+      "maxBytes": 65536
+    },
+    {
+      "id": "provider_effect_contract_test",
+      "path": "test/provider-effects/provider-effects.test.mjs",
+      "kind": "test",
+      "sha256": "a28f872f582cf30aaf09ea8ba64a175080b9b4e27c41cb648b09f1016aef7b89",
+      "maxBytes": 65536
+    },
+    {
+      "id": "provider_effect_runtime_test",
+      "path": "test/ceo-canary/domain.test.mjs",
+      "kind": "test",
+      "sha256": "b1c1f68f3cc895516883d2f8a8ce6571173fb29c572a6222a8a28ad199c599a8",
+      "maxBytes": 65536
+    },
+    {
+      "id": "slack_outbox_source",
+      "path": "canary/shared-contracts/index.mjs",
+      "kind": "source",
+      "sha256": "12d05d6f2ff6fc1f4c99e397b851d8de352d4a42789d046a166b33c895e1e58d",
+      "maxBytes": 65536
+    },
+    {
+      "id": "eval_result_store_source",
+      "path": "canary/evals/result-store.mjs",
+      "kind": "source",
+      "sha256": "1b6377d18827fe28cc9bcd20bf2a96bb36e021541be273c8ac616d07d56e0bf3",
+      "maxBytes": 65536
+    },
+    {
+      "id": "eval_release_authority_source",
+      "path": "canary/evals/release-authority.mjs",
+      "kind": "source",
+      "sha256": "37e6484abb116babf7f67f4068a99ce9cc00bf29b877a1b3bd418d724905428c",
+      "maxBytes": 65536
+    },
+    {
+      "id": "eval_testing_result_store_source",
+      "path": "canary/evals/testing-result-store.mjs",
+      "kind": "test",
+      "sha256": "324ce59870cd28e837bcd90ec0de0a6e246dae50115eb9ae401d0166f68d8bc4",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_surface_security_doc",
+      "path": "canary/service/ceo-surface/SECURITY.md",
+      "kind": "source",
+      "sha256": "6a754070caaa973e4652a744d85afd25746b3b4bfecd5bdce649bca6cc41fab6",
+      "maxBytes": 65536
+    },
+    {
+      "id": "ceo_surface_runbook",
+      "path": "canary/service/ceo-surface/RUNBOOK.md",
+      "kind": "source",
+      "sha256": "ee442d5439be10647799d8cbd9e46df287cd16eea54d921d4cc7696524d09c08",
+      "maxBytes": 65536
+    },
+    {
+      "id": "slack_outbox_test",
+      "path": "test/integration/canonical-integration.test.mjs",
+      "kind": "test",
+      "sha256": "7975ee6a2523efbfac82cf66e62a871048941f945eb997af1529b0c1a4c6c4fc",
+      "maxBytes": 65536
+    },
+    {
+      "id": "notion_private_root_source",
+      "path": "canary/notion-templates/templates.mjs",
+      "kind": "source",
+      "sha256": "07ad077fca6afb2ef70a4cbd90af582878605ed30fc249b38acf8b3f82d239d8",
+      "maxBytes": 65536
+    },
+    {
+      "id": "notion_private_root_test",
+      "path": "test/visuals/rendering.test.mjs",
+      "kind": "test",
+      "sha256": "036c2da324b79aa8d9eecd147dcfae11a64debf1ed1defe4049454890fa9bcb8",
+      "maxBytes": 65536
+    },
+    {
+      "id": "connector_read_source",
+      "path": "canary/connectors/providers.mjs",
+      "kind": "source",
+      "sha256": "5ccbc0df4d1d8c5bc36250e590e0c5c61fb7ef4c14fea3363426da62b0a0e750",
+      "maxBytes": 65536
+    },
+    {
+      "id": "connector_read_test",
+      "path": "test/connectors/contract.test.mjs",
+      "kind": "test",
+      "sha256": "ca32d3d52e0564a2e2dadd581ef21d3bcc97631d7761e4aa98eb2802e16c2cf7",
+      "maxBytes": 65536
+    },
+    {
+      "id": "hard_disable_source",
+      "path": "canary/service/ceo-surface/src/startup.mjs",
+      "kind": "source",
+      "sha256": "0144207c22d8a47e9af6adfe8df90926075492aaba43e7a01a18b934b61dfdee",
+      "maxBytes": 65536
+    },
+    {
+      "id": "hard_disable_test",
+      "path": "test/ceo-surface/security-contract.test.mjs",
+      "kind": "test",
+      "sha256": "fe3d9c4f27a32f2d5c6c9c8e154ba4c70a3ef42b0612dfb26d79f68c7c86a63d",
+      "maxBytes": 65536
+    }
+  ],
+  "gates": [
+    {
+      "id": "shadow_v6",
+      "dependsOn": [],
+      "evidence": ["shadow_v6_source", "shadow_v6_test"],
+      "blockers": ["live_shadow_execution_not_assessed"]
+    },
+    {
+      "id": "disposable_postgres_sentinel",
+      "dependsOn": ["shadow_v6"],
+      "evidence": [
+        "postgres_store_source",
+        "postgres_evaluation_writer_source",
+        "postgres_database_security_source",
+        "postgres_database_boundary_source",
+        "postgres_schema_source",
+        "postgres_catalog_authority_source",
+        "postgres_bootstrap_source",
+        "postgres_bootstrap_test",
+        "postgres_db_operator_source",
+        "postgres_db_operator_bootstrap_source",
+        "postgres_migrate_source",
+        "postgres_credential_provisioner_source",
+        "postgres_credential_test",
+        "postgres_lifecycle_test",
+        "postgres_retention_source",
+        "ceo_canary_security_doc",
+        "ceo_canary_migration_runbook",
+        "postgres_infra_host_source",
+        "ceo_canary_task_contract_data",
+        "ceo_canary_task_renderer_source",
+        "ceo_canary_task_sealed_provenance_source",
+        "ceo_canary_task_infra_source",
+        "ceo_canary_infra_main_hash_only",
+        "ceo_canary_tfvars_hash_only",
+        "ceo_canary_terraform_versions_hash_only",
+        "ceo_canary_terraform_lock_hash_only",
+        "ceo_canary_task_variables_source",
+        "ceo_canary_task_test",
+        "ceo_canary_task_runbook",
+        "ceo_canary_db_operator_contract_data",
+        "ceo_canary_db_operator_infra_source",
+        "ceo_canary_db_operator_test",
+        "ceo_canary_db_operator_runbook",
+        "postgres_sentinel_test",
+        "postgres_dockerfile_source",
+        "postgres_container_test"
+      ],
+      "blockers": [
+        "disposable_postgres_sentinel_not_run",
+        "production_postgres_deployment_sentinel_contract_unmet",
+        "ceo_canary_task_host_provenance_unverified",
+        "ceo_canary_iam_role_inventory_unverified",
+        "ceo_canary_private_dns_compatibility_unverified",
+        "ceo_canary_state_plan_lineage_unverified",
+        "ceo_canary_runtime_image_security_unverified"
+      ]
+    },
+    {
+      "id": "secret_routing",
+      "dependsOn": ["disposable_postgres_sentinel"],
+      "evidence": [
+        "secret_boundary_source",
+        "secret_boundary_test",
+        "deployment_profile_contract_source",
+        "deployment_profile_registry_source",
+        "deployment_profile_synthetic_fixture",
+        "runtime_scope_source",
+        "deployment_profile_registry_test"
+      ],
+      "blockers": ["live_secret_route_not_assessed"]
+    },
+    {
+      "id": "google_broker",
+      "dependsOn": ["secret_routing"],
+      "evidence": [
+        "google_broker_source",
+        "google_broker_test",
+        "provider_effect_policy_source",
+        "provider_effect_contract_source",
+        "provider_effect_shared_validation_source",
+        "provider_effect_runtime_domain_source",
+        "provider_effect_contract_test",
+        "provider_effect_runtime_test"
+      ],
+      "blockers": ["trusted_google_broker_not_activated"]
+    },
+    {
+      "id": "slack_identity_eval_outbox",
+      "dependsOn": ["shadow_v6", "secret_routing"],
+      "evidence": [
+        "slack_outbox_source",
+        "eval_result_store_source",
+        "postgres_evaluation_writer_source",
+        "eval_release_authority_source",
+        "eval_testing_result_store_source",
+        "ceo_surface_security_doc",
+        "ceo_surface_runbook",
+        "slack_outbox_test"
+      ],
+      "blockers": ["slack_identity_and_delivery_not_live_assessed"]
+    },
+    {
+      "id": "notion_private_root",
+      "dependsOn": ["slack_identity_eval_outbox"],
+      "evidence": ["notion_private_root_source", "notion_private_root_test"],
+      "blockers": ["notion_private_root_not_live_assessed"]
+    },
+    {
+      "id": "clarify_read",
+      "dependsOn": ["secret_routing"],
+      "evidence": ["connector_read_source", "connector_read_test"],
+      "blockers": ["clarify_read_binding_not_live_assessed"]
+    },
+    {
+      "id": "brain_read",
+      "dependsOn": ["secret_routing"],
+      "evidence": ["connector_read_source", "connector_read_test"],
+      "blockers": ["command_center_brain_read_binding_not_live_assessed"]
+    },
+    {
+      "id": "hard_disable_transition",
+      "dependsOn": ["google_broker", "notion_private_root", "clarify_read", "brain_read"],
+      "evidence": ["hard_disable_source", "hard_disable_test"],
+      "blockers": ["activation_transition_review_not_performed"]
+    }
+  ]
+}
