@@ -51,7 +51,7 @@ const importAllowlists = Object.freeze({
   "strict-json.mjs": Object.freeze([]),
 });
 const sourceDigests = Object.freeze({
-  "evaluator.mjs": "17b0427ffa3adfb741659905cc97b347021898cbafa28d4fe82280367b4f6595",
+  "evaluator.mjs": "46e298d5db211f3b6bd3d5631d71361c71f70f543f086708459b5e869dd26b94",
   "index.mjs": "fc89263b5c110dad1ec7488248d09d2c7bfe64b993f6ab1ba395360b102017f9",
   "strict-json.mjs": "512e6a35c325633fe3e274a600b886651a252764e0f192ebe4ac6b7556e4c21a",
 });
@@ -332,10 +332,10 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   const second = await evaluateActivationGates();
   assert.deepEqual(first, second);
   assert.equal(first.manifestSha256, bundledManifestSha256);
-  assert.equal(first.manifestSha256, "8fcf2d457442131dad1f6bbfcb00d5198c57fd8a65e2509450f6818bb0b8a7b2");
-  assert.equal(first.evidenceSetSha256, "0a21c334a119d74afe3a5e6f952e22c7f2a978f144035b9cf0fac28eb152204d");
+  assert.equal(first.manifestSha256, "5dbf20f0c6b14d1e093f99ed470a788c5e5169388af6e4b099a2d34c664e8ec0");
+  assert.equal(first.evidenceSetSha256, "bcd5733e5adb80c9817581c72aac57d59e18529359dda075dd37fdcddce06d0b");
   assert.equal(first.dependencyGraphSha256, "0d6ac8aae4aaab36c55c4b09a41935fb36fdbd399de4e5ca26200bd5b6c87079");
-  assert.equal(first.reportSha256, "2a6defbbe4aadf188a52bc273e868c39027a1ecf8490e1117c4d8f14edb9fdab");
+  assert.equal(first.reportSha256, "7f9e9706a07151475fc5ca154446c88748678d3e7b6e7c7cdef9636081dca0d8");
   assert.equal(first.overallState, "blocked");
   assert.equal(first.liveReadiness, "not_assessed");
   assert.equal(first.activationAuthorized, false);
@@ -348,13 +348,13 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   );
   assert.deepEqual(first.readBoundary, {
     mode: "closed_regular_repo_source_and_test_digests_only",
-    evidencePathSetSha256: "b2e853b62c10f7dd71c17b96cced2440bc1132e02d033082b1f5d5b81db8f0f5",
+    evidencePathSetSha256: "bcf9ba71dfda2217a9be86592f52c40a398091665fd2d9141cd0bf2f78a1de67",
     hashOnlyContentPaths: ["infra/main.tf", "infra/terraform.tfvars", "infra/versions.tf", "infra/.terraform.lock.hcl"],
     environmentFilesAllowed: false,
     secretStoresAllowed: false,
     importedProviderPackagesAllowed: false,
   });
-  assert.equal(first.evidence.length, 88);
+  assert.equal(first.evidence.length, 91);
   assert.equal(first.gates.length, 12);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first.gates[0]), true);
@@ -587,6 +587,9 @@ test("offline evidence cannot satisfy infrastructure or upstream QM and UI live 
     "ceo_canary_db_operator_infra_source",
     "ceo_canary_db_operator_test",
     "ceo_canary_db_operator_runbook",
+    "ceo_canary_db_inventory_broker_infra_source",
+    "ceo_canary_db_inventory_broker_test",
+    "ceo_canary_db_inventory_broker_runbook",
     "postgres_sentinel_test",
     "postgres_dockerfile_source",
     "postgres_db_operator_dockerfile_source",
