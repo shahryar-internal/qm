@@ -38,12 +38,6 @@ COPY presentation /app/canary/presentation
 COPY slack /app/canary/slack
 COPY service/ceo-surface/src /app/canary/service/ceo-surface/src
 
-FROM production-application AS credential-operator
-USER root
-RUN apk add --no-cache postgresql16-client=16.15-r0
-USER node
-ENTRYPOINT ["node", "/app/canary/service/ceo-canary/src/provision-credentials.mjs"]
-
 FROM production-application AS runtime
 USER node
 EXPOSE 8080

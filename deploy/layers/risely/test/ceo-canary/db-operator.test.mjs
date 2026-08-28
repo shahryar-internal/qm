@@ -18,6 +18,8 @@ const outputsTerraform = read("infra/outputs.tf");
 const variablesTerraform = read("infra/variables.tf");
 const tfvars = read("infra/terraform.tfvars");
 const dockerfile = read("canary/service/ceo-canary/Dockerfile");
+const operatorDockerfile = read("canary/service/ceo-canary/Dockerfile.db-operator");
+const operatorPackage = JSON.parse(read("canary/service/ceo-canary/db-operator/package.json"));
 const bootstrap = read("canary/service/ceo-canary/migrations/bootstrap.sql");
 const phaseNames = ["inventory", "bootstrap", "provision", "migrate", "readiness"];
 
@@ -217,7 +219,7 @@ test("Terraform registers only inert per-phase tasks with deny-all task roles", 
   );
 });
 
-test("unset operator image structurally excludes every operator resource and provenance output", () => {
+test("unset image excludes operator resources while production pins the registered digest", () => {
   assert.match(
     variablesTerraform,
     /variable "ceo_canary_db_operator_image" \{[\s\S]*?default\s+= null[\s\S]*?nullable = true/,
@@ -259,16 +261,59 @@ test("unset operator image structurally excludes every operator resource and pro
     outputsTerraform,
     /value = local\.ceo_canary_db_operator_enabled \? \{[\s\S]*?contractSha256[\s\S]*?\} : null/,
   );
-  assert.doesNotMatch(tfvars, /ceo_canary_db_operator_image/);
+  assert.match(
+    tfvars,
+    /ceo_canary_db_operator_image\s+= "075343201918\.dkr\.ecr\.us-west-2\.amazonaws\.com\/risely-qm-pilot-ceo-canary@sha256:7faf286dbbaf49b10de84b9ccf1e398ce91cf00559787307439c4da364a1f985"/,
+  );
 });
 
 test("operator module graph uses only same-QM database lifecycle code and no provider route", () => {
-  assert.match(dockerfile, /FROM production-application AS credential-operator/);
-  assert.match(dockerfile, /postgresql16-client=16\.15-r0/);
-  assert.match(dockerfile, /COPY service\/ceo-canary\/src \.\/src/);
+  assert.doesNotMatch(dockerfile, /credential-operator/);
+  assert.match(operatorDockerfile, /postgresql16-client=16\.15-r0/);
+  for (const dependency of [
+    "postgresql-common=1.2-r2",
+    "lz4-libs=1.10.0-r0",
+    "libpq=18.6-r0",
+    "ncurses-terminfo-base=6.5_p20251123-r0",
+    "libncursesw=6.5_p20251123-r0",
+    "readline=8.3.1-r0",
+    "zstd-libs=1.5.7-r2",
+  ]) {
+    assert.match(operatorDockerfile, new RegExp(dependency.replaceAll(".", "\\.")));
+  }
+  assert.match(operatorDockerfile, /FROM scratch/);
+  assert.match(operatorDockerfile, /COPY --from=proven-node \/usr\/local\/bin\/node \/usr\/local\/bin\/node/);
+  assert.match(operatorDockerfile, /node_shared_openssl/);
+  assert.match(operatorDockerfile, /ARG SOURCE_REVISION/);
+  assert.match(operatorDockerfile, /ARG SOURCE_CLOSURE_SHA256/);
+  assert.match(operatorDockerfile, /ai\.risely\.db-operator\.source-closure-sha256/);
+  assert.match(
+    operatorDockerfile,
+    /ENTRYPOINT \["node", "\/app\/canary\/service\/ceo-canary\/src\/db-operator\.mjs"\]/,
+  );
+  assert.doesNotMatch(operatorDockerfile, /COPY service\/ceo-canary\/src \.\/src/);
+  assert.deepEqual(operatorPackage.dependencies, { pg: "8.22.0" });
+  assert.deepEqual(Object.keys(operatorPackage), ["name", "version", "private", "type", "dependencies", "engines"]);
+  for (const file of [
+    "catalog-authority-v8.mjs",
+    "database-connection.mjs",
+    "database-security.mjs",
+    "db-operator-bootstrap-sql.mjs",
+    "db-operator.mjs",
+    "migrate.mjs",
+    "provision-credentials.mjs",
+    "schema.mjs",
+  ]) {
+    assert.match(operatorDockerfile, new RegExp(`service/ceo-canary/src/${file.replaceAll(".", "\\.")}`));
+  }
+  assert.doesNotMatch(
+    operatorDockerfile,
+    /shared-contracts|deployment-profiles|provider-effects|runtime-scope|qm-shadow-ingress|chief-of-staff|evals|server\.mjs|domain\.mjs/,
+  );
   assert.match(source, /import \{ migrate \} from "\.\/migrate\.mjs"/);
   assert.match(source, /import \{ provisionCanaryCredentials \} from "\.\/provision-credentials\.mjs"/);
-  assert.match(source, /verifyCanaryDatabase/);
+  assert.match(source, /assertRuntimeDatabaseBoundary/);
+  assert.match(source, /assertExactCanaryCatalog/);
   assert.match(source, /BEGIN READ ONLY/);
   assert.match(source, /SET LOCAL search_path = pg_catalog/);
   assert.match(source, /CANARY_MUTATIONS_ENABLED !== "0"/);
