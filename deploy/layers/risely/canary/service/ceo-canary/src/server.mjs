@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { productionRuntimeScopeFromEnv } from "../../../runtime-scope/index.mjs";
+import { createQmShadowIngress } from "../../../qm-shadow-ingress/index.mjs";
 import { assertIngressConfig } from "./auth.mjs";
 import { createCanaryHttpServer } from "./http.mjs";
 import { PostgresCanaryStore } from "./postgres-store.mjs";
@@ -11,6 +12,9 @@ export async function startServer(env = process.env, options = {}) {
   }
   if (env.CANARY_PROVIDER_EXECUTION_ENABLED !== "0") {
     throw new Error("CANARY_PROVIDER_EXECUTION_ENABLED must remain 0 in the CEO canary foundation");
+  }
+  if (![undefined, "0", "1"].includes(env.CANARY_QM_SHADOW_INGRESS_ENABLED)) {
+    throw new Error("CANARY_QM_SHADOW_INGRESS_ENABLED must equal 0 or 1");
   }
   const port = Number(env.PORT ?? 8080);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT is invalid");
@@ -26,7 +30,9 @@ export async function startServer(env = process.env, options = {}) {
   try {
     await store.initialize();
     const service = new CanaryService({ store, scope });
-    server = createCanaryHttpServer({ service, store, ingressConfig });
+    const shadowIngress =
+      env.CANARY_QM_SHADOW_INGRESS_ENABLED === "1" ? createQmShadowIngress({ store, scope }) : undefined;
+    server = createCanaryHttpServer({ service, shadowIngress, store, ingressConfig });
     await new Promise((resolve, reject) => {
       const onError = (error) => reject(error);
       const onListening = () => {

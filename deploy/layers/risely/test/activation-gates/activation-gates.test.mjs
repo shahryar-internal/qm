@@ -51,7 +51,7 @@ const importAllowlists = Object.freeze({
   "strict-json.mjs": Object.freeze([]),
 });
 const sourceDigests = Object.freeze({
-  "evaluator.mjs": "25db07a47e27d4cd23d53b23d4359eba058b176a42828512c5696aeeb9d35072",
+  "evaluator.mjs": "986d0fff29bb51510ecf58be5abf5fc98e7d67adf946fb437ac6c095bb7b6631",
   "index.mjs": "fc89263b5c110dad1ec7488248d09d2c7bfe64b993f6ab1ba395360b102017f9",
   "strict-json.mjs": "512e6a35c325633fe3e274a600b886651a252764e0f192ebe4ac6b7556e4c21a",
 });
@@ -332,10 +332,10 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   const second = await evaluateActivationGates();
   assert.deepEqual(first, second);
   assert.equal(first.manifestSha256, bundledManifestSha256);
-  assert.equal(first.manifestSha256, "10252b889a8c5b497e5f70fcb34744c3b7e7581f56bc6bef8c478dc8bb58f857");
-  assert.equal(first.evidenceSetSha256, "051e4d233da4b4e7fcd75518a21fe098ac2eed670480498b34a3cf5e3677c6ac");
-  assert.equal(first.dependencyGraphSha256, "8826be4822cd58a4ce6aa94f1f02645065de1d5b188e31465c1c5dd785510aef");
-  assert.equal(first.reportSha256, "a8d31e250af5bbca541f9c14786f4eaab695d92a6dfc3159a9eaeeb05eb5df0b");
+  assert.equal(first.manifestSha256, "268fe674a90b159df8f956074e9c01a2065bb54128c5337834deb9fa992bab2b");
+  assert.equal(first.evidenceSetSha256, "b1257b22f9d29f49ec7ea1c083eeaab558747e6361797dab40545b7974ee8fd1");
+  assert.equal(first.dependencyGraphSha256, "0d6ac8aae4aaab36c55c4b09a41935fb36fdbd399de4e5ca26200bd5b6c87079");
+  assert.equal(first.reportSha256, "c09ca5587b8580e9421386b0a09e2b0bf527354945d1fece10940d6c42c24e68");
   assert.equal(first.overallState, "blocked");
   assert.equal(first.liveReadiness, "not_assessed");
   assert.equal(first.activationAuthorized, false);
@@ -348,19 +348,19 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   );
   assert.deepEqual(first.readBoundary, {
     mode: "closed_regular_repo_source_and_test_digests_only",
-    evidencePathSetSha256: "b70b28728b4719ddc562593689644b14f2933fa2a0d08851dc2faa0c6fe6898d",
+    evidencePathSetSha256: "db627435a0950ad9b17a0c3c3d97d3513af39d8a095bf35db04b11b795f2e633",
     hashOnlyContentPaths: ["infra/main.tf", "infra/terraform.tfvars", "infra/versions.tf", "infra/.terraform.lock.hcl"],
     environmentFilesAllowed: false,
     secretStoresAllowed: false,
     importedProviderPackagesAllowed: false,
   });
-  assert.equal(first.evidence.length, 66);
-  assert.equal(first.gates.length, 9);
+  assert.equal(first.evidence.length, 79);
+  assert.equal(first.gates.length, 12);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first.gates[0]), true);
 });
 
-test("all nine closed gates verify only offline evidence and retain their exact blockers", async () => {
+test("all twelve closed gates verify only offline evidence and retain their exact blockers", async () => {
   const result = await evaluateActivationGates();
   assert.deepEqual(
     result.gates.map((gate) => gate.id),
@@ -368,7 +368,10 @@ test("all nine closed gates verify only offline evidence and retain their exact 
       "shadow_v6",
       "disposable_postgres_sentinel",
       "secret_routing",
+      "qm_shadow_ingress",
       "google_broker",
+      "provider_effect_authority",
+      "mercury_invoicing",
       "slack_identity_eval_outbox",
       "notion_private_root",
       "clarify_read",
@@ -386,7 +389,26 @@ test("all nine closed gates verify only offline evidence and retain their exact 
     "ceo_canary_state_plan_lineage_unverified",
     "ceo_canary_runtime_image_security_unverified",
     "live_secret_route_not_assessed",
+    "upstream_qm_turn_observer_merge_unverified",
+    "upstream_qm_turn_observer_deployment_binding_unavailable",
+    "upstream_qm_postgres_outbox_acceptance_unverified",
+    "qm_surface_identity_bridge_unverified",
+    "route_scoped_qm_observer_signing_key_unprovisioned",
+    "same_qm_runtime_schema_not_live_verified",
+    "private_slack_and_web_acceptance_not_completed",
     "trusted_google_broker_not_activated",
+    "provider_execution_not_activated",
+    "provider_grant_not_activated",
+    "immutable_provider_effect_proof_registry_unavailable",
+    "production_provider_effect_durable_port_unavailable",
+    "production_provider_effect_adapters_unavailable",
+    "production_provider_effect_reconciliation_ports_unavailable",
+    "mercury_provider_effect_policy_not_approved",
+    "mercury_schedule_fire_receipt_not_live_assessed",
+    "mercury_trusted_billing_receipts_not_live_assessed",
+    "mercury_cli_sandbox_acceptance_not_completed",
+    "mercury_durable_approval_reconciliation_not_implemented",
+    "qm_workflow_artifact_ui_live_acceptance_unverified",
     "slack_identity_and_delivery_not_live_assessed",
     "notion_private_root_not_live_assessed",
     "clarify_read_binding_not_live_assessed",
@@ -429,7 +451,7 @@ test("deployment configuration bytes are digest-bound without a secret-absence c
   await expectCode(() => evaluateClosedManifest(encode(candidate), root), "evidence_digest_not_closed");
 });
 
-test("offline evidence cannot satisfy deployment, IAM, DNS, task-host, state-lineage, or image-security provenance", async () => {
+test("offline evidence cannot satisfy infrastructure or upstream QM and UI live requirements", async () => {
   const result = await evaluateActivationGates();
   assert.deepEqual(result.externalRequirements, [
     {
@@ -480,6 +502,46 @@ test("offline evidence cannot satisfy deployment, IAM, DNS, task-host, state-lin
       offlineEvidenceCanSatisfy: false,
       blocker: "ceo_canary_runtime_image_security_unverified",
     },
+    {
+      id: "upstream_qm_private_turn_observer_merge",
+      gateId: "qm_shadow_ingress",
+      state: "unmet",
+      evidenceClass: "external_upstream_qm_merge",
+      offlineEvidenceCanSatisfy: false,
+      blocker: "upstream_qm_turn_observer_merge_unverified",
+    },
+    {
+      id: "upstream_qm_private_turn_observer_deployment",
+      gateId: "qm_shadow_ingress",
+      state: "unmet",
+      evidenceClass: "external_upstream_qm_deployment",
+      offlineEvidenceCanSatisfy: false,
+      blocker: "upstream_qm_turn_observer_deployment_binding_unavailable",
+    },
+    {
+      id: "qm_shadow_route_signing_key",
+      gateId: "qm_shadow_ingress",
+      state: "unmet",
+      evidenceClass: "external_route_scoped_signing_key",
+      offlineEvidenceCanSatisfy: false,
+      blocker: "route_scoped_qm_observer_signing_key_unprovisioned",
+    },
+    {
+      id: "upstream_qm_observer_postgres_outbox",
+      gateId: "qm_shadow_ingress",
+      state: "unmet",
+      evidenceClass: "external_postgres_outbox_live_acceptance",
+      offlineEvidenceCanSatisfy: false,
+      blocker: "upstream_qm_postgres_outbox_acceptance_unverified",
+    },
+    {
+      id: "qm_workflow_artifact_ui_live_acceptance",
+      gateId: "mercury_invoicing",
+      state: "unmet",
+      evidenceClass: "external_authenticated_ui_live_acceptance",
+      offlineEvidenceCanSatisfy: false,
+      blocker: "qm_workflow_artifact_ui_live_acceptance_unverified",
+    },
   ]);
   const gate = result.gates.find((entry) => entry.id === "disposable_postgres_sentinel");
   assert.equal(gate.offlineEvidence, "source_and_test_hashes_verified");
@@ -519,6 +581,8 @@ test("offline evidence cannot satisfy deployment, IAM, DNS, task-host, state-lin
     "ceo_canary_db_operator_runbook",
     "postgres_sentinel_test",
     "postgres_dockerfile_source",
+    "postgres_runtime_dockerfile_source",
+    "secret_boundary_test",
     "postgres_container_test",
   ]);
   assert.deepEqual(gate.blockers, [
@@ -530,7 +594,7 @@ test("offline evidence cannot satisfy deployment, IAM, DNS, task-host, state-lin
     "ceo_canary_state_plan_lineage_unverified",
     "ceo_canary_runtime_image_security_unverified",
   ]);
-  for (const index of [0, 1, 2, 3, 4, 5]) {
+  for (const index of result.externalRequirements.keys()) {
     for (const field of ["state", "offlineEvidenceCanSatisfy", "evidenceClass"]) {
       const candidate = clone();
       candidate.externalRequirements[index][field] = field === "offlineEvidenceCanSatisfy" ? true : "satisfied";
@@ -637,6 +701,9 @@ test("closed evidence rejects traversal, absolute paths, backslashes, and arbitr
   const executable = clone();
   executable.evidence[0].path = "canary/arbitrary.sh";
   await expectCode(() => evaluateClosedManifest(encode(executable), layerRoot), "evidence_path_invalid");
+  const arbitraryDockerfile = clone();
+  arbitraryDockerfile.evidence[0].path = "canary/service/ceo-canary/Dockerfile.attacker";
+  await expectCode(() => evaluateClosedManifest(encode(arbitraryDockerfile), layerRoot), "evidence_path_invalid");
 });
 
 test("file and parent-directory symlinks are rejected before evidence is read", async (t) => {
@@ -735,11 +802,11 @@ test("cycles, missing dependencies, duplicate edges, and dependency rewrites fai
   await expectCode(() => evaluateClosedManifest(encode(missing), layerRoot), "gate_dependency_invalid");
 
   const duplicate = clone();
-  duplicate.gates[4].dependsOn = ["shadow_v6", "shadow_v6"];
+  duplicate.gates.find((gate) => gate.id === "google_broker").dependsOn = ["shadow_v6", "shadow_v6"];
   await expectCode(() => evaluateClosedManifest(encode(duplicate), layerRoot), "gate_dependency_invalid");
 
   const rewrite = clone();
-  rewrite.gates[3].dependsOn = ["shadow_v6"];
+  rewrite.gates.find((gate) => gate.id === "qm_shadow_ingress").dependsOn = ["shadow_v6"];
   await expectCode(() => evaluateClosedManifest(encode(rewrite), layerRoot), "gate_dependencies_not_closed");
 });
 
@@ -751,7 +818,7 @@ test("top-level and gate-level forged authorization fields are unsupported", asy
   }
   for (const field of ["state", "liveReady", "approved", "providerInvocationAllowed"]) {
     const candidate = clone();
-    candidate.gates[8][field] = true;
+    candidate.gates.find((gate) => gate.id === "hard_disable_transition")[field] = true;
     await expectCode(() => evaluateClosedManifest(encode(candidate), layerRoot), "gate_shape_invalid");
   }
 });

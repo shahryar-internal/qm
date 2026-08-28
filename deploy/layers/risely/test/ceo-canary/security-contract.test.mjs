@@ -1751,6 +1751,29 @@ test("service foundation is outside QM plugin auto-discovery and secrets are exe
   assert.match(dockerfile, /USER node/);
 });
 
+test("secure runtime rebuilds a patched package-indexed root filesystem without vulnerable parent history", () => {
+  const dockerfile = readFileSync(`${SERVICE_DIR}Dockerfile.runtime`, "utf8");
+  assert.match(
+    dockerfile,
+    /FROM alpine:3\.23\.3@sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95 AS runtime-rootfs/,
+  );
+  assert.match(dockerfile, /musl=1\.2\.5-r23/);
+  assert.match(dockerfile, /musl-utils=1\.2\.5-r23/);
+  assert.match(dockerfile, /zlib=1\.3\.2-r0/);
+  assert.match(dockerfile, /libcrypto3=3\.5\.8-r0 libssl3=3\.5\.8-r0/);
+  assert.match(
+    dockerfile,
+    /FROM 075343201918\.dkr\.ecr\.us-west-2\.amazonaws\.com\/risely-qm-pilot-ceo-canary@sha256:e51548d47725f017313b80e4ba4b4b976fd6735e8ef3e64af6fbe536ad17388b AS proven-node/,
+  );
+  assert.match(dockerfile, /e8d2cd6aba8f30e3fc7e686d32d7d851f33a7e5dbbc9b16fd0c3b2e65601c506/);
+  assert.match(dockerfile, /FROM scratch AS production-application/);
+  assert.match(dockerfile, /COPY --from=runtime-rootfs \/ \/\n/);
+  assert.match(dockerfile, /COPY --from=proven-node \/usr\/local\/bin\/node \/usr\/local\/bin\/node/);
+  assert.match(dockerfile, /COPY --chown=1000:1000 qm-shadow-ingress \/app\/canary\/qm-shadow-ingress/);
+  assert.match(dockerfile, /FROM production-application AS runtime\nUSER node/);
+  assert.doesNotMatch(dockerfile, /FROM runtime-rootfs AS production-application/);
+});
+
 test("database bootstrap uses distinct non-administrative roles and remains operator-gated", () => {
   const bootstrap = readFileSync(`${SERVICE_DIR}migrations/bootstrap.sql`, "utf8");
   const provisioner = readFileSync(`${SERVICE_DIR}src/provision-credentials.mjs`, "utf8");
@@ -1834,7 +1857,8 @@ test("database bootstrap uses distinct non-administrative roles and remains oper
   assert.match(security, /those four automatic `ADMIN=true`/);
   assert.doesNotMatch(security, /creates all three roles|those three automatic `ADMIN=true`/);
   assert.match(security, /No runtime or database-operator image is currently approved for task execution/);
-  assert.match(security, /zero critical and zero fixable-high findings across its complete layer history/);
+  assert.match(security, /reported zero active findings of any severity/);
+  assert.match(security, /musl and musl-utils 1\.2\.5-r23/);
   assert.match(operatorRunbook, /requires the canary schema and four roles to be absent/);
   assert.equal(TEST_DIR.endsWith("test/ceo-canary/"), true);
 });

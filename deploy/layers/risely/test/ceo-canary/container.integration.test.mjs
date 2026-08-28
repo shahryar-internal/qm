@@ -46,7 +46,7 @@ test(
       "node",
       "--input-type=module",
       "--eval",
-      "await Promise.all([...['postgres-store.mjs','evaluation-writer.mjs','migrate.mjs','retention.mjs'].map((name) => import('/app/canary/service/ceo-canary/src/' + name)), import('/app/canary/deployment-profiles/provider-effect-policy.mjs'), import('/app/canary/provider-effects/index.mjs')])",
+      "await Promise.all([...['postgres-store.mjs','evaluation-writer.mjs','migrate.mjs','retention.mjs','server.mjs'].map((name) => import('/app/canary/service/ceo-canary/src/' + name)), import('/app/canary/deployment-profiles/provider-effect-policy.mjs'), import('/app/canary/provider-effects/index.mjs'), import('/app/canary/qm-shadow-ingress/index.mjs')])",
     ]);
     assert.equal(imports.exitCode, 0, imports.stderr || imports.stdout);
     const productionTestingImport = await docker([

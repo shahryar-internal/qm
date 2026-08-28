@@ -802,6 +802,12 @@ export function createRuntimeDomain(runtimeScope) {
   const identity = scope.contracts.PrincipalBinding.identity;
   const effectPolicy = createProviderEffectPolicySuite(scope);
   const effectCapabilities = new Set(providerEffectCapabilities);
+  const assertScopedRun = (value) => {
+    const snapshot = canonicalSnapshot(value, "run");
+    const audienceRef =
+      snapshot?.actor?.surface === "web" ? scope.profile.audiences.qm.audienceRef : authority.audienceRef;
+    return assertRun(snapshot, { ...authority, audienceRef }, identity);
+  };
   const assertScopedProposal = (value) => {
     const snapshot = canonicalSnapshot(value, "action proposal");
     if (effectCapabilities.has(snapshot?.capability)) {
@@ -842,7 +848,7 @@ export function createRuntimeDomain(runtimeScope) {
     return reduceActionState(state, eventSnapshot);
   };
   return Object.freeze({
-    assertRun: (value) => assertRun(value, authority, identity),
+    assertRun: assertScopedRun,
     assertProposal: assertScopedProposal,
     assertDormantGmailDraftProposal: (value) => {
       const proposal = assertScopedProposal(value);

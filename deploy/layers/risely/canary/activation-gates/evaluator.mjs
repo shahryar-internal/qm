@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson, StrictJsonError } from "./strict-json.mjs";
 
-export const bundledManifestSha256 = "10252b889a8c5b497e5f70fcb34744c3b7e7581f56bc6bef8c478dc8bb58f857";
+export const bundledManifestSha256 = "268fe674a90b159df8f956074e9c01a2065bb54128c5337834deb9fa992bab2b";
 
 const layerRoot = fileURLToPath(new URL("../../", import.meta.url));
 const bundledManifestSegments = Object.freeze(["canary", "activation-gates", "manifest.json"]);
@@ -46,6 +46,48 @@ const closedEvidence = Object.freeze([
     path: "test/shared-contracts/shared-contracts.test.mjs",
     kind: "test",
     sha256: "51c324a568f5327a495a926dd839539dc1aa3dd3b39ecf5552b8e1a39dc0ca4a",
+  }),
+  Object.freeze({
+    id: "qm_shadow_ingress_source",
+    path: "canary/qm-shadow-ingress/index.mjs",
+    kind: "source",
+    sha256: "e97843b8e49e6169e9967956aa48d8f87732dbe3bc4088572fa5d84f30721b81",
+  }),
+  Object.freeze({
+    id: "qm_shadow_ingress_test",
+    path: "test/qm-shadow-ingress/qm-shadow-ingress.test.mjs",
+    kind: "test",
+    sha256: "041c5a9c1ee9883ded0d7aa2feeefa2a34d08a15bec57d21e2873d7c3c539509",
+  }),
+  Object.freeze({
+    id: "qm_shadow_ingress_readme",
+    path: "canary/qm-shadow-ingress/README.md",
+    kind: "source",
+    sha256: "58aa171875681a7c5ffbab3d230d0679cf5e24ff41d8ec1c3f19bd1b36375904",
+  }),
+  Object.freeze({
+    id: "mercury_invoicing_source",
+    path: "canary/mercury-invoicing/index.mjs",
+    kind: "source",
+    sha256: "54c4ca7e4be648c9608abcf5aafe07525f6d05e34094b2af53694138bed71c7d",
+  }),
+  Object.freeze({
+    id: "mercury_invoicing_validation_source",
+    path: "canary/mercury-invoicing/validation.mjs",
+    kind: "source",
+    sha256: "2d543969e3865c061d4154ef261bed9f5b5f895ade147d913d3aa3e2f3efafa2",
+  }),
+  Object.freeze({
+    id: "mercury_invoicing_test",
+    path: "test/mercury-invoicing/mercury-invoicing.test.mjs",
+    kind: "test",
+    sha256: "e8d7cd7564cb9f82d3f6e83d2c493ee087afeafb94ec9ae878abdc2b76cd02c4",
+  }),
+  Object.freeze({
+    id: "mercury_invoicing_readme",
+    path: "canary/mercury-invoicing/README.md",
+    kind: "source",
+    sha256: "2a429d82b29b3eee7f1c20362eed591c108464bf83d4d9b5e4816c79a149d8b6",
   }),
   Object.freeze({
     id: "postgres_store_source",
@@ -141,7 +183,7 @@ const closedEvidence = Object.freeze([
     id: "ceo_canary_security_doc",
     path: "canary/service/ceo-canary/SECURITY.md",
     kind: "source",
-    sha256: "5bb332a6f7c28db87e6b0ca86f6a0558cdd1798f84c51bf7c85783074c0a7eb2",
+    sha256: "fc2c059fcd397f515e560de77507f1eede26e4434a424f472261c60d4f1aee57",
   }),
   Object.freeze({
     id: "ceo_canary_migration_runbook",
@@ -255,13 +297,19 @@ const closedEvidence = Object.freeze([
     id: "postgres_dockerfile_source",
     path: "canary/service/ceo-canary/Dockerfile",
     kind: "source",
-    sha256: "e5bfc83e256839166ec3f8faae991747fba32c124aab5814a1d9e5f630d8a5f2",
+    sha256: "de03832b224c5f6c21d1e553de08cc18235892591cb0f1da3c738e25c0d6ae24",
+  }),
+  Object.freeze({
+    id: "postgres_runtime_dockerfile_source",
+    path: "canary/service/ceo-canary/Dockerfile.runtime",
+    kind: "source",
+    sha256: "bb7f273c7d6f6a529a4dcf99f76420cde877b921710b203a2d962f2d719eb173",
   }),
   Object.freeze({
     id: "postgres_container_test",
     path: "test/ceo-canary/container.integration.test.mjs",
     kind: "test",
-    sha256: "337520bf6fb95ff2ca25e68387ea751ddd0323eff8760e10dfa60e148c2d14fc",
+    sha256: "49088b80c8b95e016d5a173572cd4e8670341b4f49473637bf4cd35ff6c16712",
   }),
   Object.freeze({
     id: "secret_boundary_source",
@@ -273,7 +321,7 @@ const closedEvidence = Object.freeze([
     id: "secret_boundary_test",
     path: "test/ceo-canary/security-contract.test.mjs",
     kind: "test",
-    sha256: "fc792bff578e11eabd4cec9cb23a3df7ed4acf2f3006e2e7ff36617e4c1248cf",
+    sha256: "5ae4831c862ef78ed44ad94d88f5d638a5f01008d6169cf7badc13f61bf6d6e9",
   }),
   Object.freeze({
     id: "deployment_profile_contract_source",
@@ -285,7 +333,7 @@ const closedEvidence = Object.freeze([
     id: "deployment_profile_registry_source",
     path: "canary/deployment-profiles/index.mjs",
     kind: "source",
-    sha256: "c7c5c268fc28fbbb7d338d3f6996d81bf65a46598ac1c4c0b6ac42afea258d50",
+    sha256: "478e5b3ab9063f3f7a23d27867b9e7375ae9ec1d2c64e042eebe3092e2dbbd32",
   }),
   Object.freeze({
     id: "deployment_profile_synthetic_fixture",
@@ -339,7 +387,7 @@ const closedEvidence = Object.freeze([
     id: "provider_effect_runtime_domain_source",
     path: "canary/service/ceo-canary/src/domain.mjs",
     kind: "source",
-    sha256: "c0ca4cf60eeabea8844609cbec15896faeb0c0f0d16f805175022b1f2a5c6104",
+    sha256: "a7c73e70a2a811064e4e00a285e194bae182c4cf22c6f62652631e373f09e01c",
   }),
   Object.freeze({
     id: "provider_effect_contract_test",
@@ -352,6 +400,36 @@ const closedEvidence = Object.freeze([
     path: "test/ceo-canary/domain.test.mjs",
     kind: "test",
     sha256: "b1c1f68f3cc895516883d2f8a8ce6571173fb29c572a6222a8a28ad199c599a8",
+  }),
+  Object.freeze({
+    id: "provider_effect_authority_source",
+    path: "canary/provider-effects/authority.mjs",
+    kind: "source",
+    sha256: "65883ef8d136006c9661a07eecf5a7ac37eb14e04f73919782e3074754c2bcb4",
+  }),
+  Object.freeze({
+    id: "provider_effect_authority_harness_test",
+    path: "test/provider-effects/authority-harness.mjs",
+    kind: "test",
+    sha256: "566e4e9c33d882738d78c22be3e9851a8324d7e860ca7c7b91a4b55bc8930405",
+  }),
+  Object.freeze({
+    id: "provider_effect_authority_testing_fixture",
+    path: "test/provider-effects/testing.mjs",
+    kind: "test",
+    sha256: "3c777bd1b37357da105fa1f22e09c8e8bf87911d5e8dc092f08fa7bec20d01c2",
+  }),
+  Object.freeze({
+    id: "provider_effect_authority_test",
+    path: "test/provider-effects/authority.test.mjs",
+    kind: "test",
+    sha256: "a2d255f3ad930a833dfe2eaab7588fa60a2f25bb0f78154c2a1c06bb28a568b7",
+  }),
+  Object.freeze({
+    id: "provider_effect_authority_readme",
+    path: "canary/provider-effects/README.md",
+    kind: "source",
+    sha256: "3ef5795b0c9d1d9b50e6270f5f14326c2e3af40d08ee4a6cd0b0c59395c83aa4",
   }),
   Object.freeze({
     id: "slack_outbox_source",
@@ -494,6 +572,51 @@ const runtimeImageSecurityRequirement = Object.freeze({
   blocker: "ceo_canary_runtime_image_security_unverified",
 });
 
+const upstreamQmObserverMergeRequirement = Object.freeze({
+  id: "upstream_qm_private_turn_observer_merge",
+  gateId: "qm_shadow_ingress",
+  state: "unmet",
+  evidenceClass: "external_upstream_qm_merge",
+  offlineEvidenceCanSatisfy: false,
+  blocker: "upstream_qm_turn_observer_merge_unverified",
+});
+
+const upstreamQmObserverDeploymentRequirement = Object.freeze({
+  id: "upstream_qm_private_turn_observer_deployment",
+  gateId: "qm_shadow_ingress",
+  state: "unmet",
+  evidenceClass: "external_upstream_qm_deployment",
+  offlineEvidenceCanSatisfy: false,
+  blocker: "upstream_qm_turn_observer_deployment_binding_unavailable",
+});
+
+const qmObserverRouteKeyRequirement = Object.freeze({
+  id: "qm_shadow_route_signing_key",
+  gateId: "qm_shadow_ingress",
+  state: "unmet",
+  evidenceClass: "external_route_scoped_signing_key",
+  offlineEvidenceCanSatisfy: false,
+  blocker: "route_scoped_qm_observer_signing_key_unprovisioned",
+});
+
+const qmObserverPostgresOutboxRequirement = Object.freeze({
+  id: "upstream_qm_observer_postgres_outbox",
+  gateId: "qm_shadow_ingress",
+  state: "unmet",
+  evidenceClass: "external_postgres_outbox_live_acceptance",
+  offlineEvidenceCanSatisfy: false,
+  blocker: "upstream_qm_postgres_outbox_acceptance_unverified",
+});
+
+const qmWorkflowArtifactUiRequirement = Object.freeze({
+  id: "qm_workflow_artifact_ui_live_acceptance",
+  gateId: "mercury_invoicing",
+  state: "unmet",
+  evidenceClass: "external_authenticated_ui_live_acceptance",
+  offlineEvidenceCanSatisfy: false,
+  blocker: "qm_workflow_artifact_ui_live_acceptance_unverified",
+});
+
 const closedExternalRequirements = Object.freeze([
   productionPostgresRequirement,
   taskHostProvenanceRequirement,
@@ -501,6 +624,11 @@ const closedExternalRequirements = Object.freeze([
   privateDnsCompatibilityRequirement,
   statePlanLineageRequirement,
   runtimeImageSecurityRequirement,
+  upstreamQmObserverMergeRequirement,
+  upstreamQmObserverDeploymentRequirement,
+  qmObserverRouteKeyRequirement,
+  qmObserverPostgresOutboxRequirement,
+  qmWorkflowArtifactUiRequirement,
 ]);
 
 const closedGates = Object.freeze([
@@ -549,6 +677,8 @@ const closedGates = Object.freeze([
       "ceo_canary_db_operator_runbook",
       "postgres_sentinel_test",
       "postgres_dockerfile_source",
+      "postgres_runtime_dockerfile_source",
+      "secret_boundary_test",
       "postgres_container_test",
     ]),
     blockers: Object.freeze([
@@ -576,6 +706,20 @@ const closedGates = Object.freeze([
     blockers: Object.freeze(["live_secret_route_not_assessed"]),
   }),
   Object.freeze({
+    id: "qm_shadow_ingress",
+    dependsOn: Object.freeze(["shadow_v6", "disposable_postgres_sentinel", "secret_routing"]),
+    evidence: Object.freeze(["qm_shadow_ingress_source", "qm_shadow_ingress_test", "qm_shadow_ingress_readme"]),
+    blockers: Object.freeze([
+      "upstream_qm_turn_observer_merge_unverified",
+      "upstream_qm_turn_observer_deployment_binding_unavailable",
+      "upstream_qm_postgres_outbox_acceptance_unverified",
+      "qm_surface_identity_bridge_unverified",
+      "route_scoped_qm_observer_signing_key_unprovisioned",
+      "same_qm_runtime_schema_not_live_verified",
+      "private_slack_and_web_acceptance_not_completed",
+    ]),
+  }),
+  Object.freeze({
     id: "google_broker",
     dependsOn: Object.freeze(["secret_routing"]),
     evidence: Object.freeze([
@@ -589,6 +733,45 @@ const closedGates = Object.freeze([
       "provider_effect_runtime_test",
     ]),
     blockers: Object.freeze(["trusted_google_broker_not_activated"]),
+  }),
+  Object.freeze({
+    id: "provider_effect_authority",
+    dependsOn: Object.freeze(["secret_routing", "google_broker"]),
+    evidence: Object.freeze([
+      "provider_effect_policy_source",
+      "provider_effect_contract_source",
+      "provider_effect_authority_source",
+      "provider_effect_authority_harness_test",
+      "provider_effect_authority_testing_fixture",
+      "provider_effect_authority_test",
+      "provider_effect_authority_readme",
+    ]),
+    blockers: Object.freeze([
+      "provider_execution_not_activated",
+      "provider_grant_not_activated",
+      "immutable_provider_effect_proof_registry_unavailable",
+      "production_provider_effect_durable_port_unavailable",
+      "production_provider_effect_adapters_unavailable",
+      "production_provider_effect_reconciliation_ports_unavailable",
+    ]),
+  }),
+  Object.freeze({
+    id: "mercury_invoicing",
+    dependsOn: Object.freeze(["qm_shadow_ingress", "provider_effect_authority"]),
+    evidence: Object.freeze([
+      "mercury_invoicing_source",
+      "mercury_invoicing_validation_source",
+      "mercury_invoicing_test",
+      "mercury_invoicing_readme",
+    ]),
+    blockers: Object.freeze([
+      "mercury_provider_effect_policy_not_approved",
+      "mercury_schedule_fire_receipt_not_live_assessed",
+      "mercury_trusted_billing_receipts_not_live_assessed",
+      "mercury_cli_sandbox_acceptance_not_completed",
+      "mercury_durable_approval_reconciliation_not_implemented",
+      "qm_workflow_artifact_ui_live_acceptance_unverified",
+    ]),
   }),
   Object.freeze({
     id: "slack_identity_eval_outbox",
@@ -625,7 +808,14 @@ const closedGates = Object.freeze([
   }),
   Object.freeze({
     id: "hard_disable_transition",
-    dependsOn: Object.freeze(["google_broker", "notion_private_root", "clarify_read", "brain_read"]),
+    dependsOn: Object.freeze([
+      "qm_shadow_ingress",
+      "provider_effect_authority",
+      "mercury_invoicing",
+      "notion_private_root",
+      "clarify_read",
+      "brain_read",
+    ]),
     evidence: Object.freeze(["hard_disable_source", "hard_disable_test"]),
     blockers: Object.freeze(["activation_transition_review_not_performed"]),
   }),
@@ -718,7 +908,7 @@ const safeEvidencePath = (value) => {
     isAbsolute(value) ||
     value.includes("\\") ||
     value.includes("\u0000") ||
-    (value !== "canary/service/ceo-canary/Dockerfile" &&
+    (!["canary/service/ceo-canary/Dockerfile", "canary/service/ceo-canary/Dockerfile.runtime"].includes(value) &&
       ![".mjs", ".sql", ".tf", ".tfvars", ".hcl", ".md", ".json"].some((extension) => value.endsWith(extension)))
   ) {
     fail("evidence_path_invalid");

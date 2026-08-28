@@ -1,0 +1,60 @@
+FROM alpine:3.23.3@sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95 AS runtime-rootfs
+RUN apk add --no-cache --upgrade musl=1.2.5-r23 musl-utils=1.2.5-r23 zlib=1.3.2-r0 ca-certificates=20260611-r0 libgcc=15.2.0-r2 libstdc++=15.2.0-r2 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 && addgroup -g 1000 -S node && adduser -u 1000 -S -G node -s /sbin/nologin node && mkdir -p /app/canary && ln -s /app/canary/service/ceo-canary/node_modules /app/canary/node_modules
+
+FROM 075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:e51548d47725f017313b80e4ba4b4b976fd6735e8ef3e64af6fbe536ad17388b AS proven-node
+RUN printf '%s  %s\n' e8d2cd6aba8f30e3fc7e686d32d7d851f33a7e5dbbc9b16fd0c3b2e65601c506 /usr/local/bin/node | sha256sum -c - && test "$(node --version)" = v24.20.0 && test "$(node -p process.versions.openssl)" = 3.5.8 && test "$(node -p process.config.variables.node_shared_openssl)" = true
+
+FROM node:24.20.0-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS production-dependencies
+WORKDIR /app/canary/service/ceo-canary
+COPY service/ceo-canary/package.json service/ceo-canary/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+FROM scratch AS production-application
+COPY --from=runtime-rootfs / /
+COPY --from=proven-node /usr/local/bin/node /usr/local/bin/node
+WORKDIR /app/canary/service/ceo-canary
+ENV NODE_ENV=production
+ENV AWS_REGION=us-west-2 \
+    CANARY_SECRETS_PREFIX=risely/qm-pilot/ \
+    CANARY_DEPLOYMENT_PROFILE_REF=deployment-profile:risely:ceo:v1 \
+    CANARY_DATABASE_SCHEMA=risely_agent_runtime \
+    CANARY_DATABASE_NAME=qm \
+    CANARY_DATABASE_PORT=5432 \
+    CANARY_BOOTSTRAP_ADMIN_ROLE=qm \
+    CANARY_OWNER_DATABASE_USER=risely_agent_runtime_owner \
+    CANARY_RUNTIME_DATABASE_USER=risely_agent_runtime_runtime \
+    CANARY_MIGRATION_DATABASE_USER=risely_agent_runtime_migrator \
+    CANARY_INGRESS_ISSUER=risely-ceo-canary-caller-v1 \
+    CANARY_INGRESS_AUDIENCE=risely-ceo-canary \
+    CANARY_INGRESS_KEY_ID=ceo-canary-ingress-v1 \
+    CANARY_MUTATIONS_ENABLED=0 \
+    CANARY_PROVIDER_EXECUTION_ENABLED=0
+LABEL org.opencontainers.image.base.name="scratch+alpine:3.23.3@sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95" \
+      ai.risely.node.version="24.20.0" \
+      ai.risely.node.sha256="e8d2cd6aba8f30e3fc7e686d32d7d851f33a7e5dbbc9b16fd0c3b2e65601c506" \
+      ai.risely.node.source.sha256="2732fc3f588dd335cd6779c06864f7cd424bb1b5ff9a1743059a66c54f9ca4a1" \
+      ai.risely.openssl.version="3.5.8"
+COPY --from=production-dependencies --chown=1000:1000 /app/canary/service/ceo-canary/node_modules ./node_modules
+COPY --chown=1000:1000 service/ceo-canary/src ./src
+COPY --chown=1000:1000 shared-contracts /app/canary/shared-contracts
+COPY --chown=1000:1000 deployment-profiles/index.mjs deployment-profiles/contract.mjs deployment-profiles/provider-effect-policy.mjs /app/canary/deployment-profiles/
+COPY --chown=1000:1000 deployment-profiles/profile-contract /app/canary/deployment-profiles/profile-contract
+COPY --chown=1000:1000 provider-effects/index.mjs /app/canary/provider-effects/index.mjs
+COPY --chown=1000:1000 qm-shadow-ingress /app/canary/qm-shadow-ingress
+COPY --chown=1000:1000 runtime-scope /app/canary/runtime-scope
+COPY --chown=1000:1000 contracts /app/canary/contracts
+COPY --chown=1000:1000 chief-of-staff /app/canary/chief-of-staff
+COPY --chown=1000:1000 evals/deterministic.mjs evals/fixtures.mjs evals/gates.mjs evals/index.mjs evals/judge.mjs evals/release-authority.mjs evals/repair-policy.mjs evals/replay.mjs evals/result-store.mjs /app/canary/evals/
+
+FROM production-application AS test
+COPY --chown=1000:1000 deployment-profiles/testing.mjs /app/canary/deployment-profiles/testing.mjs
+COPY --chown=1000:1000 evals/testing.mjs evals/testing-result-store.mjs /app/canary/evals/
+COPY --chown=1000:1000 presentation /app/canary/presentation
+COPY --chown=1000:1000 slack /app/canary/slack
+COPY --chown=1000:1000 service/ceo-surface/src /app/canary/service/ceo-surface/src
+
+FROM production-application AS runtime
+USER node
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+CMD ["node", "/app/canary/service/ceo-canary/src/server.mjs"]

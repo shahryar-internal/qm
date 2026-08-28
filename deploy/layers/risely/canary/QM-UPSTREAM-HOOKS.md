@@ -99,6 +99,31 @@ The component fetches with `no-store`, refuses redirects, requires the exact MIM
 
 Unknown renderers, invalid artifacts, decoder failures, and network failures show a generic fallback plus the already-authorized original-file link. Tests cover registry lifecycle, hostile payloads, URL policy, decoder failures, output revalidation, authenticated fetch, abort/size/MIME handling, literal HTML rendering, accessibility, responsive layout, history replay, settled-row caching, and ordinary-file regression.
 
+## Private turn-observation sink
+
+The generic sink interface, durable-acceptance call sites, and same-identity delivery outbox are now staged in the QM source tree for upstream contribution. They emit a stable source-event identity and a SHA-256 of the exact accepted user text only for authenticated internal human DMs on Slack or web. Slack turns folded into an active run are included, and Slack redelivery preserves the same event identity. The outbox persists the digest-only observation before delivery, serializes concurrent attempts, retries an expired lease under the same event identity, and terminally records accepted or duplicate delivery. Missing sinks preserve current behavior; exceptions and bounded timeouts are audited as `unconfirmed`. The remaining work is deployment-owned profile enrichment, route-scoped credential and signed transport binding, PostgreSQL outbox acceptance, upstream review, and fork sync.
+
+The existing Slack receiver and authenticated web-turn route must remain the only ingress owners. Add one optional generic sink after each path has authenticated its person, applied its normal surface authorization and deduplication, and durably accepted the turn:
+
+```ts
+interface PrivateTurnObservationSink {
+  observe(input: {
+    source: "slack_dm" | "web_chat";
+    eventRef: string;
+    conversationRef: string;
+    principalRef: string;
+    audienceRef: string;
+    workspaceRef: string;
+    observedAt: string;
+    inputSha256: string;
+  }): Promise<"accepted" | "duplicate" | "unconfirmed">;
+}
+```
+
+The generic hook carries no organization profile, credential, provider authority, or raw message content. Deployment wiring enriches the normalized event with its immutable profile and signs the exact request to the private deployment service. A missing sink preserves existing behavior. Delivery attempts may use a fresh signed transport nonce and timestamp, but they must reuse the immutable observation and event identity.
+
+The Risely receiver is implemented under `qm-shadow-ingress`. It stores only a deterministic workflow-run identity and content digest in the existing deployment-owned schema. It accepts private direct messages and authenticated private web chats, has no provider adapter, and rejects channels, raw text, alternate identities, and cross-profile envelopes. A second Slack connection, browser-supplied profile fields, source-auth impersonation of a web principal, or an in-memory replay map is not an acceptable substitute.
+
 ## Activation order
 
 1. Land and release the generic upstream hooks through the upstream contribution workflow.

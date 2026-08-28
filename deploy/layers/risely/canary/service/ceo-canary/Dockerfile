@@ -26,6 +26,7 @@ COPY deployment-profiles/index.mjs deployment-profiles/contract.mjs deployment-p
 COPY deployment-profiles/profile-contract /app/canary/deployment-profiles/profile-contract
 COPY provider-effects/index.mjs /app/canary/provider-effects/index.mjs
 COPY runtime-scope /app/canary/runtime-scope
+COPY qm-shadow-ingress /app/canary/qm-shadow-ingress
 COPY contracts /app/canary/contracts
 COPY chief-of-staff /app/canary/chief-of-staff
 COPY evals/deterministic.mjs evals/fixtures.mjs evals/gates.mjs evals/index.mjs evals/judge.mjs evals/release-authority.mjs evals/repair-policy.mjs evals/replay.mjs evals/result-store.mjs /app/canary/evals/

@@ -29,10 +29,12 @@ This directory contains the provider-free foundation for a private, CEO-only age
 | `slack`                        | Deterministic Block Kit rendering from trusted interaction references                    |
 | `notion-templates`             | Structured artifact templates                                                            |
 | `visuals` and `visual-preview` | QM, Slack, and Notion desktop/mobile review prototype                                    |
+| `qm-shadow-ingress`            | Signed digest-only observer for existing private QM Slack and web turn entrypoints       |
+| `mercury-invoicing`            | Scheduled, deterministic, provider-free Mercury invoice candidates and approval bindings |
 | `service/ceo-canary`           | Version-8 PostgreSQL integrity, profile isolation, evaluation ledger, audit, and ingress |
 | `service/ceo-surface`          | Hard-disabled compiler for one immutable, evaluated, actionless CEO Slack DM             |
 
-The generic QM changes needed for live Slack interactions and in-chat artifact rendering are specified in `QM-UPSTREAM-HOOKS.md`. They cannot be implemented in this private fork because core must remain byte-identical to upstream.
+The generic private-turn observer hook is staged in the QM source for upstream contribution. The deployment-owned, profile-enriching signed sink binding is still unavailable. The additional generic changes needed for live Slack artifact interactions and in-chat artifact rendering remain specified in `QM-UPSTREAM-HOOKS.md`; they must land through the upstream contribution and fork-sync workflow rather than as private Risely-only core behavior.
 
 ## Intended flow
 
@@ -78,5 +80,6 @@ To view the deterministic prototype, serve this directory locally and open `/vis
 6. Wire Calendar and transcript reads in shadow mode and complete five duplicate-free meeting lifecycle runs.
 7. Add Gmail draft creation only after exact proposal, account, effect, and provider-receipt tests pass. Sending remains a separate capability and review.
 8. Keep CRM writes, bulk email, LinkedIn automation, and campaign execution disabled until each receives its own authority and safety review.
+9. Activate scheduled Mercury invoice creation only after profile capability, exact organization/customer/account identity, trusted schedule-fire and billing-record receipts, one-use approval, effect reservation, sandbox CLI, and outcome-reconciliation gates pass. `prepare_only` must remain unsent; `send_after_approval` must consume one exact durable approval.
 
 Secrets belong in the reviewed connection or AWS secret flow. Do not paste OAuth tokens or provider keys into source files, chat, fixtures, or local documentation.

@@ -6,6 +6,7 @@ import { CanaryDomainError } from "./domain.mjs";
 import { parseStrictJson } from "./json.mjs";
 import { CanaryServiceError } from "./service.mjs";
 import { CanaryStoreError } from "./postgres-store.mjs";
+import { QmShadowIngressError } from "../../../qm-shadow-ingress/index.mjs";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_PREAUTH_REQUESTS = 8;
@@ -124,7 +125,10 @@ function idFromPath(pathname, expression) {
 function statusFor(error) {
   if (error instanceof IngressAuthError && error.code === "request_too_large") return 413;
   if (error instanceof IngressAuthError) return 401;
-  if (error instanceof CanaryServiceError && error.code === "preauth_capacity") return 503;
+  if (error instanceof CanaryServiceError && ["preauth_capacity", "shadow_ingress_unavailable"].includes(error.code))
+    return 503;
+  if (error instanceof QmShadowIngressError && error.code === "shadow_observation_conflict") return 409;
+  if (error instanceof QmShadowIngressError) return 400;
   if (
     error instanceof CanaryServiceError &&
     ["identity_bridge_required", "live_actions_disabled", "mutations_disabled"].includes(error.code)
@@ -170,7 +174,7 @@ function safeError(error, status) {
   return { error: error.code ?? "request_failed", message: error.message };
 }
 
-export function createCanaryHttpServer({ service, store, ingressConfig, now = () => Date.now() }) {
+export function createCanaryHttpServer({ service, shadowIngress, store, ingressConfig, now = () => Date.now() }) {
   let preauthRequests = 0;
   let readiness = { checkedAt: 0, ok: false, pending: null };
   const checkReadiness = async () => {
@@ -229,6 +233,14 @@ export function createCanaryHttpServer({ service, store, ingressConfig, now = ()
       const body = streamed.body;
       if (method === "POST" && url.pathname === "/internal/v1/runs") {
         send(response, 201, await service.createRun(parseStrictJson(body), auth.requestHash));
+        return;
+      }
+      if (method === "POST" && url.pathname === "/internal/v1/qm-shadow/observations") {
+        if (!shadowIngress) {
+          throw new CanaryServiceError("shadow_ingress_unavailable", "QM shadow ingress is not configured");
+        }
+        const receipt = await shadowIngress.observe(parseStrictJson(body), auth.requestHash);
+        send(response, receipt.status === "accepted" ? 201 : 200, receipt);
         return;
       }
       let id = idFromPath(url.pathname, /^\/internal\/v1\/runs\/([^/]+)$/);
