@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseStrictJson, StrictJsonError } from "./strict-json.mjs";
 
-export const bundledManifestSha256 = "54795b5e1e87f2d053f2bec2638fa9469f90cf2405a473e6065c2a83936a3ebe";
+export const bundledManifestSha256 = "8fcf2d457442131dad1f6bbfcb00d5198c57fd8a65e2509450f6818bb0b8a7b2";
 
 const layerRoot = fileURLToPath(new URL("../../", import.meta.url));
 const bundledManifestSegments = Object.freeze(["canary", "activation-gates", "manifest.json"]);
@@ -441,7 +441,7 @@ const closedEvidence = Object.freeze([
     id: "provider_effect_authority_harness_test",
     path: "test/provider-effects/authority-harness.mjs",
     kind: "test",
-    sha256: "566e4e9c33d882738d78c22be3e9851a8324d7e860ca7c7b91a4b55bc8930405",
+    sha256: "64c97d629f1dcee9055896cfd64ef4ac68e9b020d38e3d51b9af9ad62a24bccf",
   }),
   Object.freeze({
     id: "provider_effect_authority_testing_fixture",
@@ -459,7 +459,31 @@ const closedEvidence = Object.freeze([
     id: "provider_effect_authority_readme",
     path: "canary/provider-effects/README.md",
     kind: "source",
-    sha256: "3ef5795b0c9d1d9b50e6270f5f14326c2e3af40d08ee4a6cd0b0c59395c83aa4",
+    sha256: "d27f0fcbda3316c4359655eaa7e83eac317e92d0f6102493a375840c782e607c",
+  }),
+  Object.freeze({
+    id: "provider_effect_storage_schema_source",
+    path: "canary/provider-effects/storage-v1/schema.mjs",
+    kind: "source",
+    sha256: "664c7aa5a4e470594f793d1e97c4c060d03bed681a32551096032abc4e3c08d4",
+  }),
+  Object.freeze({
+    id: "provider_effect_storage_store_source",
+    path: "canary/provider-effects/storage-v1/store.mjs",
+    kind: "source",
+    sha256: "4d8d0537b9555b202cedf3edf38e106ac29b58d0c4d0feb828c0bf2d96ab4692",
+  }),
+  Object.freeze({
+    id: "provider_effect_storage_unit_test",
+    path: "test/provider-effects/storage-v1.test.mjs",
+    kind: "test",
+    sha256: "df8dd5f471c1eec0b509e355b7d927555e2a0bb43a261f7b37366e53b08a7a6b",
+  }),
+  Object.freeze({
+    id: "provider_effect_storage_pg16_integration_test",
+    path: "test/provider-effects/storage-v1.pg16.integration.test.mjs",
+    kind: "test",
+    sha256: "fcabf351753ee9348737611f7d743c121edb18c2cc7730345ddd689d59850531",
   }),
   Object.freeze({
     id: "slack_outbox_source",
@@ -779,14 +803,23 @@ const closedGates = Object.freeze([
       "provider_effect_authority_testing_fixture",
       "provider_effect_authority_test",
       "provider_effect_authority_readme",
+      "provider_effect_storage_schema_source",
+      "provider_effect_storage_store_source",
+      "provider_effect_storage_unit_test",
+      "provider_effect_storage_pg16_integration_test",
     ]),
     blockers: Object.freeze([
       "provider_execution_not_activated",
       "provider_grant_not_activated",
+      "provider_effect_storage_schema_not_active",
+      "provider_effect_storage_acl_not_active",
+      "provider_effect_storage_runtime_image_unavailable",
+      "provider_effect_storage_runtime_role_unavailable",
       "immutable_provider_effect_proof_registry_unavailable",
       "production_provider_effect_durable_port_unavailable",
       "production_provider_effect_adapters_unavailable",
       "production_provider_effect_reconciliation_ports_unavailable",
+      "production_provider_effect_credentials_unavailable",
     ]),
   }),
   Object.freeze({

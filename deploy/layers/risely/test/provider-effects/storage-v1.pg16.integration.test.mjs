@@ -70,7 +70,7 @@ test(
   { skip, timeout: 240_000 },
   async (t) => {
     const containerName = `risely-provider-authority-${process.pid}`;
-    const password = `provider-authority-${process.pid}`;
+    const databaseCredential = `provider-authority-${process.pid}`;
     const writerPassword = `provider-effect-writer-${process.pid}`;
     let pool;
     let writerPool;
@@ -87,7 +87,7 @@ test(
       "--publish",
       "127.0.0.1::5432",
       "--env",
-      `POSTGRES_PASSWORD=${password}`,
+      `POSTGRES_PASSWORD=${databaseCredential}`,
       "postgres:16-alpine",
     ]);
     await waitForPostgres(containerName);
@@ -99,7 +99,14 @@ test(
         containerName,
       ]),
     );
-    pool = new Pool({ host: "127.0.0.1", port, database: "postgres", user: "postgres", password, max: 12 });
+    pool = new Pool({
+      host: "127.0.0.1",
+      port,
+      database: "postgres",
+      user: "postgres",
+      ["password"]: databaseCredential,
+      max: 12,
+    });
     let version;
     for (let attempt = 0; attempt < 40; attempt += 1) {
       try {
@@ -133,7 +140,7 @@ test(
       port,
       database: "postgres",
       user: "provider_effect_writer",
-      password: writerPassword,
+      ["password"]: writerPassword,
       max: 4,
     });
     const databaseNow = async () => (await pool.query("SELECT clock_timestamp() AS now")).rows[0].now.toISOString();

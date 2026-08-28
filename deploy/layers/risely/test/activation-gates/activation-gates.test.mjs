@@ -51,7 +51,7 @@ const importAllowlists = Object.freeze({
   "strict-json.mjs": Object.freeze([]),
 });
 const sourceDigests = Object.freeze({
-  "evaluator.mjs": "7cdf819406a4aa166eed2e3e73f52070ab251b5b6850c8ffed9418b3a31c934d",
+  "evaluator.mjs": "17b0427ffa3adfb741659905cc97b347021898cbafa28d4fe82280367b4f6595",
   "index.mjs": "fc89263b5c110dad1ec7488248d09d2c7bfe64b993f6ab1ba395360b102017f9",
   "strict-json.mjs": "512e6a35c325633fe3e274a600b886651a252764e0f192ebe4ac6b7556e4c21a",
 });
@@ -332,10 +332,10 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   const second = await evaluateActivationGates();
   assert.deepEqual(first, second);
   assert.equal(first.manifestSha256, bundledManifestSha256);
-  assert.equal(first.manifestSha256, "54795b5e1e87f2d053f2bec2638fa9469f90cf2405a473e6065c2a83936a3ebe");
-  assert.equal(first.evidenceSetSha256, "01050948b4732d02f3e2f369b9f64be71ea81771e9ff7ca827a2272970e24070");
+  assert.equal(first.manifestSha256, "8fcf2d457442131dad1f6bbfcb00d5198c57fd8a65e2509450f6818bb0b8a7b2");
+  assert.equal(first.evidenceSetSha256, "0a21c334a119d74afe3a5e6f952e22c7f2a978f144035b9cf0fac28eb152204d");
   assert.equal(first.dependencyGraphSha256, "0d6ac8aae4aaab36c55c4b09a41935fb36fdbd399de4e5ca26200bd5b6c87079");
-  assert.equal(first.reportSha256, "c9d088e802087fe7977a3b640f7d1e6838fcae779870b0993fb3781e4371e831");
+  assert.equal(first.reportSha256, "2a6defbbe4aadf188a52bc273e868c39027a1ecf8490e1117c4d8f14edb9fdab");
   assert.equal(first.overallState, "blocked");
   assert.equal(first.liveReadiness, "not_assessed");
   assert.equal(first.activationAuthorized, false);
@@ -348,13 +348,13 @@ test("bundled evaluator returns one stable blocked offline report and no live au
   );
   assert.deepEqual(first.readBoundary, {
     mode: "closed_regular_repo_source_and_test_digests_only",
-    evidencePathSetSha256: "e2aa21bf6fcc90ff62e4f441196697dc8826c5fcb5dc788139c69dbc21956c5e",
+    evidencePathSetSha256: "b2e853b62c10f7dd71c17b96cced2440bc1132e02d033082b1f5d5b81db8f0f5",
     hashOnlyContentPaths: ["infra/main.tf", "infra/terraform.tfvars", "infra/versions.tf", "infra/.terraform.lock.hcl"],
     environmentFilesAllowed: false,
     secretStoresAllowed: false,
     importedProviderPackagesAllowed: false,
   });
-  assert.equal(first.evidence.length, 84);
+  assert.equal(first.evidence.length, 88);
   assert.equal(first.gates.length, 12);
   assert.equal(Object.isFrozen(first), true);
   assert.equal(Object.isFrozen(first.gates[0]), true);
@@ -399,10 +399,15 @@ test("all twelve closed gates verify only offline evidence and retain their exac
     "trusted_google_broker_not_activated",
     "provider_execution_not_activated",
     "provider_grant_not_activated",
+    "provider_effect_storage_schema_not_active",
+    "provider_effect_storage_acl_not_active",
+    "provider_effect_storage_runtime_image_unavailable",
+    "provider_effect_storage_runtime_role_unavailable",
     "immutable_provider_effect_proof_registry_unavailable",
     "production_provider_effect_durable_port_unavailable",
     "production_provider_effect_adapters_unavailable",
     "production_provider_effect_reconciliation_ports_unavailable",
+    "production_provider_effect_credentials_unavailable",
     "mercury_provider_effect_catalog_and_adapter_not_approved",
     "mercury_trusted_schedule_lineage_not_live_assessed",
     "mercury_durable_approval_and_reservation_not_implemented",
