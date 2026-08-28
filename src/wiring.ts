@@ -184,7 +184,11 @@ import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts"
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
 import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { setCustomProviders } from "./model/custom-providers.ts";
-import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
+import {
+  createCustomProviderStore,
+  withTransientCustomProvider,
+  type CustomProviderStore,
+} from "./model/custom-provider-store.ts";
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import type { SessionStore } from "./sessions/session-store.ts";
@@ -472,6 +476,7 @@ export function buildApp(
         })
       : undefined;
   setProviderBaseUrls(config.providerBaseUrls);
+  setCustomProviders(config.devGeminiProvider ? [config.devGeminiProvider.spec] : []);
   const modelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
@@ -779,10 +784,16 @@ export function buildApp(
       ? createPostgresRunSignalStore(requireDbUrl("RUN_STORE"))
       : createMemoryRunSignalStore({ transactionalOutbox: memoryTransactionalOutbox });
   const tasks = config.databaseUrl ? createPostgresTaskStore(config.databaseUrl) : createMemoryTaskStore();
-  const customProviders = createCustomProviderStore({
+  const storedCustomProviders = createCustomProviderStore({
     backing: artifactMap("custom_model_providers"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
+  const customProviders = config.devGeminiProvider
+    ? withTransientCustomProvider(storedCustomProviders, {
+        ...config.devGeminiProvider,
+        updatedBy: "system:dev-instance",
+      })
+    : storedCustomProviders;
   const refreshCustomProviders = async () => {
     setCustomProviders(await customProviders.enabled());
   };
@@ -820,8 +831,14 @@ export function buildApp(
     };
   };
   const runtimeOrgScope = scopeId("org", config.orgId);
+  const devGeminiRuntime = config.devGeminiProvider
+    ? { harnessId: "pi" as const, modelId: config.devGeminiProvider.spec.models[0]!.id }
+    : undefined;
   const orgBaseModelId = (): string | undefined =>
-    configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
+    devGeminiRuntime?.modelId ??
+    configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ??
+    configStore.getBaseModel(runtimeOrgScope) ??
+    undefined;
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
@@ -829,6 +846,7 @@ export function buildApp(
         ...piHarnessConfigOptions(config),
         resolveBaseModelId: orgBaseModelId,
         resolveProviderKeys: resolveModelProviderKeys,
+        ...(config.devGeminiProvider ? { devGeminiProviderId: config.devGeminiProvider.spec.id } : {}),
         signals: runSignals,
         mcpTools,
       }),
@@ -890,6 +908,7 @@ export function buildApp(
         ...(input.model ? { modelId: input.model } : {}),
       },
       hydrateModelCatalog,
+      devGeminiRuntime,
     ),
   );
 
@@ -1290,6 +1309,7 @@ export function buildApp(
     judgeModelId,
     harnessId: config.harness,
     runtimeFallback: fallback,
+    ...(devGeminiRuntime ? { runtimeChoiceOverride: devGeminiRuntime } : {}),
     providerKeys,
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeys),
     runWaitMs: config.runWaitMs,
@@ -1300,6 +1320,7 @@ export function buildApp(
     app,
     config: configStore,
     runtimeFallback: fallback,
+    ...(devGeminiRuntime ? { runtimeChoiceOverride: devGeminiRuntime } : {}),
     blobTransfer,
     deliveries,
     metrics,
@@ -1684,6 +1705,14 @@ export function serverDeps(
     ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
     config: built.config,
     ...(configuredModel ? { baseModelDefault: configuredModel } : {}),
+    ...(config.devGeminiProvider
+      ? {
+          runtimeChoiceOverride: {
+            harnessId: "pi" as const,
+            modelId: config.devGeminiProvider.spec.models[0]!.id,
+          },
+        }
+      : {}),
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),
     providerKeys: providerKeysPresent(config),
     modelCredentials: built.modelCredentials,

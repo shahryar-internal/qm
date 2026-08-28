@@ -4,11 +4,18 @@ import { dirname, join } from "node:path";
 import { liveEnvPath } from "./pool.ts";
 import { bestEffort, readEnvFile, sha256Hex } from "./util.ts";
 import { run } from "./proc.ts";
+import {
+  DEV_GEMINI_BASE_URL,
+  DEV_GEMINI_MODEL,
+  devGeminiProviderFromEnv,
+} from "../../../src/model/dev-gemini-provider.ts";
 
 export interface AssembledEnv {
   env: Record<string, string>;
+  coreEnv: Record<string, string>;
   anthropicKeySource: string;
   openaiKeySource: string;
+  geminiKeySource: string;
   harness: "pi" | "mock" | "opencode" | "codex" | "claude";
   liveEnvFile: string;
   warnings: string[];
@@ -67,6 +74,7 @@ export function seedEnvFromMain(worktree: string, log: (msg: string) => void): v
   const main = readEnvFile(mainEnv);
   const added: string[] = [];
   for (const [k, v] of Object.entries(main)) {
+    if (k === "GEMINI_API_KEY") continue;
     if (k in existing) continue;
     appendFileSync(wtEnvPath, `${k}=${v}\n`);
     added.push(k);
@@ -93,11 +101,13 @@ export async function assembleEnv(opts: {
   allowMock: boolean;
   log: (msg: string) => void;
   probeLoginShell?: () => Promise<string>;
+  transientGeminiApiKey?: string;
 }): Promise<AssembledEnv> {
   const warnings: string[] = [];
   const liveEnvFile = liveEnvPath();
   const env: Record<string, string> = { ...opts.callerEnv };
-  for (const [k, v] of Object.entries(readEnvFile(liveEnvFile))) {
+  const liveEnv = readEnvFile(liveEnvFile);
+  for (const [k, v] of Object.entries(liveEnv)) {
     if (!env[k]) env[k] = v;
   }
 
@@ -113,6 +123,11 @@ export async function assembleEnv(opts: {
     }
   }
   const wtEnv = readEnvFile(join(opts.worktree, ".env"));
+  if (liveEnv.GEMINI_API_KEY?.trim() || wtEnv.GEMINI_API_KEY?.trim()) {
+    throw new Error("GEMINI_API_KEY must be supplied through the invoking process environment, not dev.env or .env");
+  }
+  const geminiApiKey = (opts.transientGeminiApiKey ?? opts.callerEnv.GEMINI_API_KEY)?.trim() ?? "";
+  delete env.GEMINI_API_KEY;
   if (!env.ANTHROPIC_API_KEY && wtEnv.ANTHROPIC_API_KEY) {
     env.ANTHROPIC_API_KEY = wtEnv.ANTHROPIC_API_KEY;
     anthropicKeySource = "the worktree .env";
@@ -125,7 +140,12 @@ export async function assembleEnv(opts: {
     openaiKeySource = "the worktree .env";
   }
 
+  const coreEnv: Record<string, string> = {};
+  let geminiKeySource = "";
   let harness: "pi" | "mock" | "opencode" | "codex" | "claude";
+  if (geminiApiKey && env.HARNESS?.trim() && env.HARNESS.trim() !== "pi") {
+    throw new Error("GEMINI_API_KEY requires HARNESS=pi in a dev instance");
+  }
   if (opts.callerEnv.HARNESS === "codex" || opts.callerEnv.HARNESS === "claude") {
     harness = opts.callerEnv.HARNESS;
     env.HARNESS = harness;
@@ -134,6 +154,27 @@ export async function assembleEnv(opts: {
         "HARNESS=codex needs OPENAI_API_KEY (its CLI cannot do browser OAuth in a container) -- export it, or add it to the live env file or the worktree .env",
       );
     }
+  } else if (geminiApiKey) {
+    const requestedHarness = env.HARNESS?.trim();
+    if (requestedHarness && requestedHarness !== "pi") {
+      throw new Error("GEMINI_API_KEY requires HARNESS=pi in a dev instance");
+    }
+    const provider = devGeminiProviderFromEnv({
+      ...env,
+      DEV_INSTANCE_GEMINI_PROVIDER: "1",
+      GEMINI_API_KEY: geminiApiKey,
+      HARNESS: "pi",
+    });
+    if (!provider) throw new Error("Gemini dev provider could not be assembled");
+    harness = "pi";
+    env.HARNESS = harness;
+    env.PI_MODEL = DEV_GEMINI_MODEL;
+    if (!env.PI_CAPTURE_REQUESTS) env.PI_CAPTURE_REQUESTS = "1";
+    coreEnv.DEV_INSTANCE_GEMINI_PROVIDER = "1";
+    coreEnv.GEMINI_API_KEY = provider.apiKey;
+    coreEnv.GEMINI_BASE_URL = DEV_GEMINI_BASE_URL;
+    coreEnv.GEMINI_MODEL = DEV_GEMINI_MODEL;
+    geminiKeySource = "your shell export";
   } else if (env.ANTHROPIC_API_KEY) {
     harness = opts.callerEnv.HARNESS === "opencode" ? "opencode" : "pi";
     env.HARNESS = harness;
@@ -155,7 +196,16 @@ export async function assembleEnv(opts: {
     if (!env[k] && wtEnv[k]) env[k] = wtEnv[k];
   }
 
-  return { env, anthropicKeySource, openaiKeySource, harness, liveEnvFile, warnings };
+  return {
+    env,
+    coreEnv,
+    anthropicKeySource,
+    openaiKeySource,
+    geminiKeySource,
+    harness,
+    liveEnvFile,
+    warnings,
+  };
 }
 
 export function envFileGet(path: string, key: string): string {
@@ -167,5 +217,11 @@ export function callerEnvSnapshot(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === "string") out[k] = v;
   }
+  return out;
+}
+
+export function withoutTransientProviderSecrets(env: Record<string, string>): Record<string, string> {
+  const out = { ...env };
+  delete out.GEMINI_API_KEY;
   return out;
 }

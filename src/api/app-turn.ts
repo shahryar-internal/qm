@@ -128,15 +128,21 @@ export function createTurnMethods(
         req.conversation.kind === "dm"
           ? scopeId("personal", actor.id)
           : scopeId(req.conversation.kind, req.conversation.channelRef ?? req.conversation.threadRef);
-      const [storedOrgRuntime, storedTurnRuntime] = await Promise.all([
-        deps.config.getRuntimeSelectionDurable(orgRuntimeScope),
-        turnRuntimeScope === orgRuntimeScope ? null : deps.config.getRuntimeSelectionDurable(turnRuntimeScope),
-      ]);
-      const needsOpenRouterCatalog = [storedOrgRuntime?.modelId, storedTurnRuntime?.modelId].some(
-        (modelId) => modelId && !resolveModel(modelId),
-      );
-      if (needsOpenRouterCatalog && deps.modelCredentials && (await deps.modelCredentials.availability()).openrouter) {
-        await selectableModelCatalog(deps.modelCredentialFetch);
+      if (!deps.runtimeChoiceOverride) {
+        const [storedOrgRuntime, storedTurnRuntime] = await Promise.all([
+          deps.config.getRuntimeSelectionDurable(orgRuntimeScope),
+          turnRuntimeScope === orgRuntimeScope ? null : deps.config.getRuntimeSelectionDurable(turnRuntimeScope),
+        ]);
+        const needsOpenRouterCatalog = [storedOrgRuntime?.modelId, storedTurnRuntime?.modelId].some(
+          (modelId) => modelId && !resolveModel(modelId),
+        );
+        if (
+          needsOpenRouterCatalog &&
+          deps.modelCredentials &&
+          (await deps.modelCredentials.availability()).openrouter
+        ) {
+          await selectableModelCatalog(deps.modelCredentialFetch);
+        }
       }
 
       async function withCurrentProjectRoster<T>(fn: () => Promise<T>): Promise<T | null> {
@@ -176,17 +182,41 @@ export function createTurnMethods(
         let configuredRuntime;
         let runtime;
         try {
-          orgRuntime = await resolveRuntimeChoiceDurable(deps.config, org, org, runtimeFallback);
+          orgRuntime = await resolveRuntimeChoiceDurable(
+            deps.config,
+            org,
+            org,
+            runtimeFallback,
+            undefined,
+            undefined,
+            deps.runtimeChoiceOverride,
+          );
           configuredRuntime =
             targetScope === org
               ? orgRuntime
-              : await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback);
+              : await resolveRuntimeChoiceDurable(
+                  deps.config,
+                  org,
+                  targetScope,
+                  runtimeFallback,
+                  undefined,
+                  undefined,
+                  deps.runtimeChoiceOverride,
+                );
           runtime =
             req.harness || req.model
-              ? await resolveRuntimeChoiceDurable(deps.config, org, targetScope, runtimeFallback, {
-                  ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
-                  ...(req.model ? { modelId: req.model } : {}),
-                })
+              ? await resolveRuntimeChoiceDurable(
+                  deps.config,
+                  org,
+                  targetScope,
+                  runtimeFallback,
+                  {
+                    ...(req.harness && isHarnessId(req.harness) ? { harnessId: req.harness } : {}),
+                    ...(req.model ? { modelId: req.model } : {}),
+                  },
+                  undefined,
+                  deps.runtimeChoiceOverride,
+                )
               : configuredRuntime;
         } catch (error) {
           return { status: "refused", reason: errMessage(error) };
@@ -207,10 +237,12 @@ export function createTurnMethods(
           };
         }
         const configuredWebuiModels = await deps.config.getWebuiModelsDurable(org);
-        let enabledWebuiModels: string[] | null = null;
-        if (configuredWebuiModels?.length) {
+        let enabledWebuiModels: string[] | null = deps.runtimeChoiceOverride
+          ? [deps.runtimeChoiceOverride.modelId]
+          : null;
+        if (!deps.runtimeChoiceOverride && configuredWebuiModels?.length) {
           enabledWebuiModels = [...new Set([...configuredWebuiModels, orgRuntime.modelId])];
-        } else if (providers?.openrouter) {
+        } else if (!deps.runtimeChoiceOverride && providers?.openrouter) {
           enabledWebuiModels = [
             ...new Set([
               ...selectableCatalogForHarness(

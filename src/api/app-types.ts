@@ -567,6 +567,7 @@ export interface AppDeps {
   modelProviders?: ModelProviderAvailability;
   providerKeys?: ModelProviderAvailability;
   runtimeFallback?: RuntimeChoice;
+  runtimeChoiceOverride?: RuntimeChoice;
 }
 
 export interface ContextSummary {
