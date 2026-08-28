@@ -267,6 +267,9 @@ test("unset operator image structurally excludes every operator resource and pro
 test("operator module graph uses only same-QM database lifecycle code and no provider route", () => {
   assert.doesNotMatch(dockerfile, /credential-operator/);
   assert.match(operatorDockerfile, /postgresql16-client=16\.15-r0/);
+  assert.match(operatorDockerfile, /FROM scratch/);
+  assert.match(operatorDockerfile, /COPY --from=proven-node \/usr\/local\/bin\/node \/usr\/local\/bin\/node/);
+  assert.match(operatorDockerfile, /node_shared_openssl/);
   assert.match(operatorDockerfile, /ARG SOURCE_REVISION/);
   assert.match(operatorDockerfile, /ARG SOURCE_CLOSURE_SHA256/);
   assert.match(operatorDockerfile, /ai\.risely\.db-operator\.source-closure-sha256/);
