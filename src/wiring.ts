@@ -37,8 +37,12 @@ import { createMemoryMap, createPostgresMapFactory, type DurableMap } from "./pe
 import {
   createPrivateTurnObservationOutbox,
   type PrivateTurnObservationOutbox,
-  type PrivateTurnObservationOutboxRecord,
 } from "./api/private-turn-observation-outbox.ts";
+import { createSignedPrivateTurnObserver } from "./api/signed-private-turn-observer.ts";
+import {
+  createMemoryTransactionalOutbox,
+  createPostgresTransactionalOutbox,
+} from "./persistence/transactional-outbox.ts";
 import type { PersistedUiState, UiStateStore } from "./surfaces/ui-state.ts";
 import { configurePgCaTrust } from "./persistence/pg-pool.ts";
 import { createPostgresLeaderLease, createNoopLeaderLease, type LeaderLease } from "./persistence/leader-lease.ts";
@@ -435,13 +439,29 @@ export function buildApp(
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
   const artifactMap = <T>(table: string): DurableMap<T> =>
     pgArtifactMap ? pgArtifactMap.map<T>(table) : createMemoryMap<T>();
-  const privateTurnObservationOutbox = overrides.privateTurnObserver
-    ? createPrivateTurnObservationOutbox({
-        backing: artifactMap<PrivateTurnObservationOutboxRecord>("private_turn_observation_outbox"),
-        downstream: overrides.privateTurnObserver,
-        timeoutMs: overrides.privateTurnObserverTimeoutMs ?? 1_000,
-      })
-    : undefined;
+  const privateTurnObserver =
+    overrides.privateTurnObserver ??
+    (config.privateTurnObserverUrl && config.privateTurnObserverSigningSecret
+      ? createSignedPrivateTurnObserver({
+          endpoint: config.privateTurnObserverUrl,
+          signingSecret: config.privateTurnObserverSigningSecret,
+        })
+      : undefined);
+  const memoryTransactionalOutbox =
+    privateTurnObserver && config.runStore !== "postgres" ? createMemoryTransactionalOutbox() : undefined;
+  const postgresTransactionalOutbox =
+    privateTurnObserver && config.runStore === "postgres" && config.databaseUrl
+      ? createPostgresTransactionalOutbox(config.databaseUrl)
+      : undefined;
+  const transactionalOutboxStorage = postgresTransactionalOutbox ?? memoryTransactionalOutbox;
+  const privateTurnObservationOutbox =
+    privateTurnObserver && transactionalOutboxStorage
+      ? createPrivateTurnObservationOutbox({
+          storage: transactionalOutboxStorage,
+          downstream: privateTurnObserver,
+          timeoutMs: overrides.privateTurnObserverTimeoutMs ?? 1_000,
+        })
+      : undefined;
   setProviderBaseUrls(config.providerBaseUrls);
   const modelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
@@ -745,7 +765,7 @@ export function buildApp(
   const runSignals: RunSignalStore =
     runStoreKind === "postgres"
       ? createPostgresRunSignalStore(requireDbUrl("RUN_STORE"))
-      : createMemoryRunSignalStore();
+      : createMemoryRunSignalStore({ transactionalOutbox: memoryTransactionalOutbox });
   const tasks = config.databaseUrl ? createPostgresTaskStore(config.databaseUrl) : createMemoryTaskStore();
   const customProviders = createCustomProviderStore({
     backing: artifactMap("custom_model_providers"),
@@ -855,7 +875,10 @@ export function buildApp(
   const runStore =
     runStoreKind === "postgres"
       ? createPostgresRunStore(requireDbUrl("RUN_STORE"), { maxClaims: config.maxClaims })
-      : createMemoryRunStore({ maxClaims: config.maxClaims });
+      : createMemoryRunStore({
+          maxClaims: config.maxClaims,
+          transactionalOutbox: memoryTransactionalOutbox,
+        });
   const runs: RunStore = runStore.runs;
   const ledger = runStore.ledger;
 
@@ -1226,10 +1249,7 @@ export function buildApp(
     providerKeys,
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeys),
     runWaitMs: config.runWaitMs,
-    ...(privateTurnObservationOutbox ? { privateTurnObserver: privateTurnObservationOutbox } : {}),
-    ...(overrides.privateTurnObserverTimeoutMs !== undefined
-      ? { privateTurnObserverTimeoutMs: overrides.privateTurnObserverTimeoutMs }
-      : {}),
+    ...(privateTurnObservationOutbox ? { privateTurnObservationOutbox } : {}),
   });
   const slackCore = createSlackCoreClient({
     app,
@@ -1521,6 +1541,7 @@ export function buildApp(
       void runActivity.close?.();
       await harness.turns.close?.();
       await tasks.close?.();
+      await transactionalOutboxStorage?.close?.();
     },
   };
 

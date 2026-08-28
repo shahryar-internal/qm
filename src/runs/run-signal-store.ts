@@ -1,4 +1,5 @@
 import type { TurnRequest } from "../types.ts";
+import type { TransactionalOutboxEntry, TransactionalOutboxPublisher } from "../persistence/transactional-outbox.ts";
 
 export type RunSignalKind = "abort" | "steer";
 
@@ -10,7 +11,7 @@ export interface RunSignal {
 }
 
 export interface RunSignalStore {
-  send(runId: string, signal: RunSignal): Promise<void>;
+  send(runId: string, signal: RunSignal, acceptanceOutbox?: TransactionalOutboxEntry): Promise<void>;
   takePending(runId: string): Promise<RunSignal[]>;
   pendingRunIds(): Promise<string[]>;
   prune(olderThanMs: number): Promise<void>;
@@ -18,11 +19,17 @@ export interface RunSignalStore {
   close?(): Promise<void>;
 }
 
-export function createMemoryRunSignalStore(): RunSignalStore {
+export function createMemoryRunSignalStore(opts?: {
+  transactionalOutbox?: TransactionalOutboxPublisher;
+}): RunSignalStore {
   const pending = new Map<string, RunSignal[]>();
   const listeners = new Map<string, Set<() => void>>();
   return {
-    async send(runId, signal) {
+    async send(runId, signal, acceptanceOutbox) {
+      if (acceptanceOutbox) {
+        if (!opts?.transactionalOutbox) throw new Error("signal acceptance outbox is unavailable");
+        opts.transactionalOutbox.publish(acceptanceOutbox);
+      }
       const list = pending.get(runId) ?? [];
       list.push(signal);
       pending.set(runId, list);

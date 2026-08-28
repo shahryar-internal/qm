@@ -4,6 +4,10 @@ import { createPostgresSessionStore, rowToSession } from "../src/sessions/postgr
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { scopeId, type Principal, type TurnResult } from "../src/types.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
+import {
+  createPostgresTransactionalOutbox,
+  createTransactionalOutboxEntry,
+} from "../src/persistence/transactional-outbox.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres store tests";
@@ -38,6 +42,60 @@ test("pg session row mapping ignores incomplete fork provenance", () => {
   });
   assert.equal(session.forkedFrom, undefined);
   assert.equal(session.forkBoundarySeq, undefined);
+});
+
+test("pg run enqueue commits or rolls back its acceptance outbox atomically", { skip }, async () => {
+  const runtime = createPostgresRunStore(URL!);
+  const outbox = createPostgresTransactionalOutbox(URL!);
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const accepted = createTransactionalOutboxEntry({
+    id: `accept-run-${nonce}`,
+    topic: "test.run.accepted",
+    payloadJson: JSON.stringify({ accepted: true }),
+    createdAt: Date.now(),
+  });
+  try {
+    const result = await runtime.runs.enqueue({
+      sessionId: `atomic-success-${nonce}`,
+      request: turn("atomic success"),
+      acceptanceOutbox: () => accepted,
+    });
+    assert.equal((await outbox.get(accepted.id))?.state, "pending");
+    assert.equal((await runtime.runs.get(result.run.id))?.id, result.run.id);
+    assert.equal(await runtime.runs.withdraw(result.run.id), true);
+
+    const collisionId = `accept-run-collision-${nonce}`;
+    await outbox.stage(
+      createTransactionalOutboxEntry({
+        id: collisionId,
+        topic: "test.run.accepted",
+        payloadJson: JSON.stringify({ version: 1 }),
+        createdAt: Date.now(),
+      }),
+    );
+    const failedSession = `atomic-rollback-${nonce}`;
+    await assert.rejects(
+      runtime.runs.enqueue({
+        sessionId: failedSession,
+        request: turn("must roll back"),
+        acceptanceOutbox: () =>
+          createTransactionalOutboxEntry({
+            id: collisionId,
+            topic: "test.run.accepted",
+            payloadJson: JSON.stringify({ version: 2 }),
+            createdAt: Date.now(),
+          }),
+      }),
+      /identity is already bound/u,
+    );
+    assert.equal(
+      (await runtime.runs.list()).some((run) => run.sessionId === failedSession),
+      false,
+    );
+  } finally {
+    await runtime.close();
+    await outbox.close?.();
+  }
 });
 
 test("pg session store: fork provenance survives a store restart", { skip }, async () => {

@@ -22,6 +22,7 @@ import {
   type ModelProvider,
   type ModelProviderAvailability,
 } from "./model/pi-models.ts";
+import { isStrongSigningSecret } from "./auth/source-auth.ts";
 
 export interface Config {
   production: boolean;
@@ -82,6 +83,8 @@ export interface Config {
   skillSyncPollMs: number;
   monitorHeartbeatMs: number;
   signingSecret?: string;
+  privateTurnObserverUrl?: string;
+  privateTurnObserverSigningSecret?: string;
   capabilitySecret?: string;
   portalIdentitySecret?: string;
   requireSignedPortalIdentity?: boolean;
@@ -699,6 +702,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   let runStore: "memory" | "postgres" = env.SESSION_STORE === "postgres" ? "postgres" : "memory";
   if (env.RUN_STORE === "memory" || env.RUN_STORE === "postgres") runStore = env.RUN_STORE;
   const providerBaseUrls = providerBaseUrlsFromEnv(env);
+  const privateTurnObserverUrl = env.PRIVATE_TURN_OBSERVER_URL?.trim();
+  const privateTurnObserverSigningSecret = env.PRIVATE_TURN_OBSERVER_SIGNING_SECRET?.trim();
+  if (Boolean(privateTurnObserverUrl) !== Boolean(privateTurnObserverSigningSecret)) {
+    throw new Error("PRIVATE_TURN_OBSERVER_URL and PRIVATE_TURN_OBSERVER_SIGNING_SECRET must be configured together");
+  }
+  if (privateTurnObserverUrl) {
+    try {
+      const url = new URL(privateTurnObserverUrl);
+      if (url.protocol !== "https:" || url.username || url.password || url.hash || url.hostname.endsWith(".")) {
+        throw new Error("endpoint");
+      }
+    } catch {
+      throw new Error(
+        "PRIVATE_TURN_OBSERVER_URL must be an HTTPS URL without credentials, a fragment, or a trailing hostname dot",
+      );
+    }
+  }
+  if (privateTurnObserverSigningSecret && !isStrongSigningSecret(privateTurnObserverSigningSecret)) {
+    throw new Error("PRIVATE_TURN_OBSERVER_SIGNING_SECRET must contain at least 32 characters");
+  }
   const codexProcessEnv = Object.fromEntries(
     [
       "PATH",
@@ -839,6 +862,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     monitorHeartbeatMs:
       (numEnvStrict("MONITOR_HEARTBEAT_SEC", env.MONITOR_HEARTBEAT_SEC) ?? CONFIG_DEFAULTS.monitorHeartbeatSec) * 1000,
     ...(env.CORE_SIGNING_SECRET ? { signingSecret: env.CORE_SIGNING_SECRET } : {}),
+    ...(privateTurnObserverUrl ? { privateTurnObserverUrl } : {}),
+    ...(privateTurnObserverSigningSecret ? { privateTurnObserverSigningSecret } : {}),
     ...((env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET)
       ? { capabilitySecret: env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET }
       : {}),

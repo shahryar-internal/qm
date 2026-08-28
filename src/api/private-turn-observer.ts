@@ -105,10 +105,15 @@ export function privateTurnObservation(input: {
   if (input.surface === "web") source = "web_chat";
   if (!source) return null;
   let sourceEventRef = input.acceptedRunRef;
+  let observedAt = input.acceptedAt;
   if (source === "slack_dm") {
     sourceEventRef = input.origin.kind === "human" ? (input.origin.messageTs ?? input.origin.entryTs ?? "") : "";
+    if (!/^[0-9]{1,13}\.[0-9]{1,6}$/u.test(sourceEventRef)) return null;
+    observedAt = Math.trunc(Number(sourceEventRef) * 1_000);
   }
-  if (!sourceEventRef) return null;
+  if (!sourceEventRef || !Number.isSafeInteger(observedAt) || observedAt < 0 || observedAt > 8_640_000_000_000_000) {
+    return null;
+  }
   const eventRef = `qm-private-turn:${createHash("sha256")
     .update(source)
     .update("\0")
@@ -123,7 +128,7 @@ export function privateTurnObservation(input: {
     principalRef: input.actor.id,
     audienceRef: `personal:${input.actor.id}`,
     workspaceRef: input.workspaceRef,
-    observedAt: new Date(input.acceptedAt).toISOString(),
+    observedAt: new Date(observedAt).toISOString(),
     inputSha256: createHash("sha256").update(input.text, "utf8").digest("hex"),
   });
 }

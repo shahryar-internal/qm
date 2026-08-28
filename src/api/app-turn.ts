@@ -23,7 +23,7 @@ import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
 import { unscreenedNotice } from "../security/security-posture.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
-import { observePrivateTurn, privateTurnObservation } from "./private-turn-observer.ts";
+import { privateTurnObservation, type PrivateTurnObservation } from "./private-turn-observer.ts";
 
 export function createTurnMethods(
   deps: AppDeps,
@@ -42,14 +42,6 @@ export function createTurnMethods(
   | "signalRun"
   | "replayOrphanedRunSignals"
 > {
-  const privateTurnObserverTimeoutMs = deps.privateTurnObserverTimeoutMs ?? 1_000;
-  if (
-    !Number.isSafeInteger(privateTurnObserverTimeoutMs) ||
-    privateTurnObserverTimeoutMs < 1 ||
-    privateTurnObserverTimeoutMs > 10_000
-  ) {
-    throw new TypeError("privateTurnObserverTimeoutMs must be an integer from 1 through 10000");
-  }
   const {
     withAdminLink,
     drive,
@@ -243,8 +235,8 @@ export function createTurnMethods(
 
       const origin = resolveTurnOrigin(req);
 
-      const observeAcceptedPrivateTurn = async (acceptedRunRef: string, acceptedAt: number) => {
-        if (!deps.privateTurnObserver) return;
+      const acceptedPrivateTurn = (acceptedRunRef: string, acceptedAt: number) => {
+        if (!deps.privateTurnObservationOutbox) return null;
         const observation = privateTurnObservation({
           surface: req.surface,
           origin,
@@ -255,8 +247,14 @@ export function createTurnMethods(
           acceptedAt,
           text: req.text,
         });
-        if (!observation) return;
-        const status = await observePrivateTurn(deps.privateTurnObserver, observation, privateTurnObserverTimeoutMs);
+        return observation ? { observation, outbox: deps.privateTurnObservationOutbox.entry(observation) } : null;
+      };
+
+      const deliverAcceptedPrivateTurn = async (observation: PrivateTurnObservation | undefined) => {
+        if (!observation || !deps.privateTurnObservationOutbox) return;
+        const status = await deps.privateTurnObservationOutbox
+          .deliver(observation.eventRef)
+          .catch(() => "unconfirmed" as const);
         deps.auditLog.record({
           at: Date.now(),
           principalId: actor.id,
@@ -386,19 +384,27 @@ export function createTurnMethods(
           if (route.kind === "steer" || route.kind === "drop") {
             const steerTs = origin.kind === "human" ? (origin.messageTs ?? origin.entryTs) : origin.entryTs;
             const routedRunId = await withCurrentProjectRoster(async () => {
-              if (route.kind === "steer")
-                await deps.signals!.send(live.id, {
-                  kind: route.signal,
-                  ...(route.text ? { text: route.text } : {}),
-                  ...(steerTs ? { ts: steerTs } : {}),
-                  ...(route.signal === "steer" ? { request: req } : {}),
-                });
-              return live.id;
+              let observation: PrivateTurnObservation | undefined;
+              if (route.kind === "steer") {
+                const accepted = acceptedPrivateTurn(live.id, Date.now());
+                await deps.signals!.send(
+                  live.id,
+                  {
+                    kind: route.signal,
+                    ...(route.text ? { text: route.text } : {}),
+                    ...(steerTs ? { ts: steerTs } : {}),
+                    ...(route.signal === "steer" ? { request: req } : {}),
+                  },
+                  accepted?.outbox,
+                );
+                observation = accepted?.observation;
+              }
+              return { runId: live.id, observation };
             });
             if (!routedRunId)
               return { status: "refused", reason: "project membership changed; retry from the current project" };
             if (route.kind === "steer") {
-              await observeAcceptedPrivateTurn(routedRunId, Date.now());
+              await deliverAcceptedPrivateTurn(routedRunId.observation);
               const after = await deps.runs.get(live.id);
               if (!after || isTerminal(after.status)) {
                 const own = (await replayOrphanedRunSignals(live.id)).find(
@@ -408,7 +414,7 @@ export function createTurnMethods(
                   return req.async ? { status: "queued", runId: own.replayRunId } : drive(own.replayRunId);
               }
             }
-            return req.async ? { status: "queued", runId: routedRunId, steered: true } : drive(routedRunId);
+            return req.async ? { status: "queued", runId: routedRunId.runId, steered: true } : drive(routedRunId.runId);
           }
         }
       }
@@ -433,18 +439,26 @@ export function createTurnMethods(
           const liveAmbient = await deps.runs.activeForThread(ambientRef);
           if (liveAmbient && !isTerminal(liveAmbient.status)) {
             const routedRunId = await withCurrentProjectRoster(async () => {
-              if (deps.signals)
-                await deps.signals.send(liveAmbient.id, {
-                  kind: "steer",
-                  text: req.text,
-                  ts: origin.messageTs,
-                  request: req,
-                });
-              return liveAmbient.id;
+              let observation: PrivateTurnObservation | undefined;
+              if (deps.signals) {
+                const accepted = acceptedPrivateTurn(liveAmbient.id, Date.now());
+                await deps.signals.send(
+                  liveAmbient.id,
+                  {
+                    kind: "steer",
+                    text: req.text,
+                    ts: origin.messageTs,
+                    request: req,
+                  },
+                  accepted?.outbox,
+                );
+                observation = accepted?.observation;
+              }
+              return { runId: liveAmbient.id, observation };
             });
             if (!routedRunId)
               return { status: "refused", reason: "project membership changed; retry from the current project" };
-            if (deps.signals) await observeAcceptedPrivateTurn(routedRunId, Date.now());
+            if (deps.signals) await deliverAcceptedPrivateTurn(routedRunId.observation);
             const after = await deps.runs.get(liveAmbient.id);
             if (!after || isTerminal(after.status)) {
               const own = (await replayOrphanedRunSignals(liveAmbient.id)).find(
@@ -458,24 +472,34 @@ export function createTurnMethods(
             // (bystander restraint) and whose recovery copy is suppressed for the same reason. The
             // addressed caller is the only one that would ever report that, so standing it down
             // would trade a duplicate reply for silence on a message someone actually addressed.
-            return req.async ? { status: "queued", runId: routedRunId } : drive(routedRunId);
+            return req.async ? { status: "queued", runId: routedRunId.runId } : drive(routedRunId.runId);
           }
         }
       }
 
       const known = await deps.sessions.getByThread(conversation.threadRef);
       const participants = known ? await deps.sessions.participantsOf(known.id) : [];
+      let enqueuedObservation: PrivateTurnObservation | undefined;
       const enqueue = () =>
         deps.runs.enqueue({
           sessionId: conversation.threadRef,
           request,
           maxAttempts: deps.maxAttempts,
           ...(dedupKey ? { dedupKey } : {}),
+          ...(deps.privateTurnObservationOutbox
+            ? {
+                acceptanceOutbox: ({ runId, acceptedAt }: { runId: string; acceptedAt: number }) => {
+                  const accepted = acceptedPrivateTurn(runId, acceptedAt);
+                  enqueuedObservation = accepted?.observation;
+                  return accepted?.outbox;
+                },
+              }
+            : {}),
         });
       const enqueued = await withCurrentProjectRoster(enqueue);
       if (!enqueued) return { status: "refused", reason: "project membership changed; retry from the current project" };
       const { run, deduped } = enqueued;
-      await observeAcceptedPrivateTurn(run.id, run.createdAt);
+      await deliverAcceptedPrivateTurn(enqueuedObservation);
       if (!deduped) {
         deps.sessionStateBus?.emit({
           threadRef: conversation.threadRef,

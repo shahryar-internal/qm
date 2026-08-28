@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryRunSignalStore, startSignalPoll } from "../src/runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
+import {
+  createPostgresTransactionalOutbox,
+  createTransactionalOutboxEntry,
+} from "../src/persistence/transactional-outbox.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the pg run-signal tests";
@@ -222,6 +226,52 @@ test("pg store: a signal round-trips ts and request intact", { skip }, async () 
     assert.deepEqual(taken!.request, request, "the stored surface request survives for orphan replay");
   } finally {
     await store.close?.();
+  }
+});
+
+test("pg signal send commits or rolls back its acceptance outbox atomically", { skip }, async () => {
+  const store = createPostgresRunSignalStore(URL!);
+  const outbox = createPostgresTransactionalOutbox(URL!);
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const runId = `atomic-signal-${nonce}`;
+  const accepted = createTransactionalOutboxEntry({
+    id: `accept-signal-${nonce}`,
+    topic: "test.signal.accepted",
+    payloadJson: JSON.stringify({ accepted: true }),
+    createdAt: Date.now(),
+  });
+  try {
+    await store.send(runId, { kind: "steer", text: "accepted" }, accepted);
+    assert.equal((await outbox.get(accepted.id))?.state, "pending");
+    assert.equal((await store.takePending(runId)).length, 1);
+
+    const collisionId = `accept-signal-collision-${nonce}`;
+    await outbox.stage(
+      createTransactionalOutboxEntry({
+        id: collisionId,
+        topic: "test.signal.accepted",
+        payloadJson: JSON.stringify({ version: 1 }),
+        createdAt: Date.now(),
+      }),
+    );
+    const failedRunId = `atomic-signal-rollback-${nonce}`;
+    await assert.rejects(
+      store.send(
+        failedRunId,
+        { kind: "steer", text: "must roll back" },
+        createTransactionalOutboxEntry({
+          id: collisionId,
+          topic: "test.signal.accepted",
+          payloadJson: JSON.stringify({ version: 2 }),
+          createdAt: Date.now(),
+        }),
+      ),
+      /identity is already bound/u,
+    );
+    assert.deepEqual(await store.takePending(failedRunId), []);
+  } finally {
+    await store.close?.();
+    await outbox.close?.();
   }
 });
 
