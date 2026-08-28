@@ -89,6 +89,7 @@ contractType = "qm-cron-configuration-revision"
 contractVersion = 1
 digestRevision = "QmCronConfigurationRevision.sha256.v1"
 qmCronId
+configurationGeneration
 owner
 ownerScopeId
 createdBy
@@ -104,7 +105,7 @@ recipientConsentPolicySha256
 runRequestTemplateSha256
 ```
 
-Nullable configuration values hash as canonical `null`; arrays hash in their stored canonical order. Dynamic claim, last-fired, next-fire, and enabled-state fields are tracked by a separate monotonic state revision and are not in this projection. Any configuration edit or re-enable creates a new `cronRevisionSha256`, even when the resulting values equal a prior revision.
+`configurationGeneration` is a positive safe integer persisted with the cron and incremented atomically on every configuration edit or re-enable. Nullable configuration values hash as canonical `null`; arrays hash in their stored canonical order. Dynamic claim, last-fired, next-fire, and enabled-state fields are tracked by a separate monotonic state revision and are not in this projection. The generation therefore makes every configuration edit or re-enable produce a new `cronRevisionSha256`, even when the resulting values equal a prior revision.
 
 QM must calculate each slot with a calendar-aware scheduler. Before claiming a slot it must derive the local occurrence and verify all of the following against the stored immutable schedule revision:
 
@@ -242,7 +243,7 @@ The Mercury proposal validator must require exact target and payload shapes. At 
 - customer reference and provider customer ID;
 - destination-account reference and provider destination-account ID;
 - deterministic invoice number, delivery mode, and `sendEmailOption`;
-- schedule reference, QM cron ID, schedule-definition digest, immutable cron revision, active state revision, scheduled instant, run ID, run attempt, lease-generation digest, lease expiry, and schedule-fire receipt digest;
+- schedule reference, QM cron ID, schedule-definition digest, immutable cron revision, active state revision, scheduled instant, run ID, and schedule-fire receipt digest;
 - CLI repository commit, release tag, archive digest, extracted binary digest, and executable name.
 
 The entire `providerContract` projection is included in the catalog SHA pinned by the profile. The validator selects one exact catalog plan by the profile-pinned environment and recomputes the candidate and CLI bindings from that catalog projection rather than accepting duplicated caller assertions or mutable program constants. No caller-selected host, executable, arguments, inherited process environment, credential reference, retry count, or reconciliation method is allowed.
@@ -255,13 +256,13 @@ Only after the upstream receipt, durable current-run lookup, trusted clock, and 
 2. Revalidate the current-invocation authority's runtime and invocation brands.
 3. Match profile, schedule mapping, provider owner, environment, schedule definition, immutable cron revision, run-request template, calendar occurrence, and catalog-pinned Mercury host and CLI plan.
 4. Match the committed receipt's scheduled instant to `batch.occurrenceAt` and its run, preallocated session, thread, request, request template, and fire key to the trusted current durable run.
-5. Recheck that the current handler owns the durable running attempt and unexpired lease, and bind the attempt, lease-generation digest, and lease expiry into the proposal effect identity.
+5. Recheck that the current handler owns the durable running attempt and unexpired lease. Bind the attempt, lease-generation digest, and observed lease expiry only into `capturedState`, authority preconditions, proposal ID, and proposal hash. They must not enter target, payload, artifact references, semantic fingerprint, effect key, or prospective effect key.
 6. Using trusted current time, require `scheduledAt <= firedAt <= issuedAt <= now < expiresAt`, `issuedAt-scheduledAt <= maximumFireDelayMs`, and `expiresAt-issuedAt <= maximumReceiptLifetimeMs`.
 7. Derive proposal `createdAt` from receipt `issuedAt` and proposal `expiresAt` from the earliest of receipt `expiresAt`, lease expiry, and the profile approval-lifetime boundary. Caller time is never used.
-8. Build the exact action proposal with `actor.surface="schedule"`, `capability="mercury.invoices.create"`, `provider="mercury"`, `subjectRef=candidateRef`, and deterministic identifiers derived from the receipt, current run attempt, lease generation, and candidate digests.
+8. Build the exact action proposal with `actor.surface="schedule"`, `capability="mercury.invoices.create"`, `provider="mercury"`, and `subjectRef=candidateRef`. Derive its semantic fingerprint and effect key only from the stable receipt and candidate effect projection. Derive its proposal ID and proposal hash from that stable projection plus the exact current attempt and lease snapshot.
 9. Pass the result through the profile-bound provider-effect policy suite.
 
-The same receipt, candidate, and current run attempt and lease generation must produce the same proposal ID, semantic fingerprint, effect key, and proposal hash. Another candidate in the same batch, another fire, another cron revision, another run attempt or lease generation, another environment, or another profile must produce a different effect identity. Durable attempt reservation remains the final replay barrier; the adapter does not reserve or execute anything.
+The same receipt and candidate must produce the same semantic fingerprint, effect key, and prospective effect key across retries, worker reassignment, lease renewal, and lease generations. Another candidate in the same batch, another fire, another cron revision, another environment, or another profile must produce a different effect identity. The same receipt, candidate, attempt, lease generation, and observed expiry snapshot must produce the same proposal ID and proposal hash; a changed attempt or lease snapshot must change only the proposal authority identity. Durable attempt reservation is keyed by the stable prospective effect key and must reject a later proposal for the same effect even when its proposal ID and hash differ. The compiler does not reserve or execute anything.
 
 The returned object must state all of the following and expose no invocation function:
 
@@ -282,7 +283,9 @@ providerInvocationAdapterAvailable = false
 The implementing change must include focused and full layer tests covering:
 
 - valid daily, weekly, and monthly synthetic receipts with explicitly generated test-only Ed25519 keys;
-- deterministic replay and separation by candidate, fire, cron revision, run attempt, lease generation, environment, provider owner, and profile;
+- stable semantic and prospective effect identity across retries, worker reassignment, heartbeat expiry changes, and lease generations, with proposal ID and hash separation for each authority snapshot;
+- durable rejection of a second proposal carrying the same stable prospective effect key after an earlier attempt reserved or executed it;
+- effect-identity separation by candidate, fire, cron revision, environment, provider owner, and profile;
 - valid inclusive `activeFrom` and `activeUntil` occurrences;
 - rejection before `activeFrom`, after `activeUntil`, after receipt expiry, and when proposal expiry exceeds receipt authority;
 - rejection under a caller-supplied, stale, reversed, future, over-delay, over-lifetime, or substituted clock and proof that proposal timestamps are derived rather than accepted;
@@ -293,7 +296,7 @@ The implementing change must include focused and full layer tests covering:
 - accessor, proxy, symbol, inherited-property, non-enumerable-property, duplicate-semantic, oversized, and malformed-signature adversarial cases with zero getter or proxy-trap calls;
 - raw-byte rejection for invalid UTF-8, byte-order marks, duplicate JSON keys at every depth, lone surrogates, noncanonical timestamps, padded base64url, and bytes that do not round-trip to the exact canonical form;
 - transaction failure injection before and after each slot, session, run, receipt, and outbox write; concurrent duplicate claims; proof that no worker consumes an uncommitted session or run; byte-identical redelivery; and conflicting fire-key rejection;
-- the real durable `active_until_elapsed` state transition, disable-receipt self-hash and signature tampering, field and chronology substitutions, atomic signed audit record, concurrent transition attempts, re-enable revision change, and proof that no post-window receipt is issued;
+- the real durable `active_until_elapsed` state transition, disable-receipt self-hash and signature tampering, field and chronology substitutions, atomic signed audit record, concurrent transition attempts, same-values re-enable generation and revision change, and proof that no post-window receipt is issued;
 - catalog/profile digest mismatch and cross-profile branded-object rejection;
 - continuing mechanical failure of provider-effect execution construction and absence of provider, credential, binary, database, or network calls.
 
