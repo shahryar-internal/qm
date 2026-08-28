@@ -70,20 +70,10 @@ resource "aws_iam_role_policy" "ceo_canary_db_inventory_broker" {
         Resource = aws_ecs_task_definition.ceo_canary_db_operator["inventory"].arn
         Condition = {
           ArnEquals = {
-            "ecs:cluster"         = aws_ecs_cluster.this.arn
-            "ecs:task-definition" = aws_ecs_task_definition.ceo_canary_db_operator["inventory"].arn
-          }
-          Bool = {
-            "ecs:auto-assign-public-ip" = "false"
+            "ecs:cluster" = aws_ecs_cluster.this.arn
           }
           StringEquals = {
             "ecs:enable-execute-command" = "false"
-          }
-          "ForAllValues:StringEquals" = {
-            "ecs:subnet" = sort(local.ceo_canary_private_subnet_ids)
-          }
-          Null = {
-            "ecs:subnet" = "false"
           }
         }
       },
