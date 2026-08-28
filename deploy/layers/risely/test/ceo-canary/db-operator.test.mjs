@@ -18,6 +18,8 @@ const outputsTerraform = read("infra/outputs.tf");
 const variablesTerraform = read("infra/variables.tf");
 const tfvars = read("infra/terraform.tfvars");
 const dockerfile = read("canary/service/ceo-canary/Dockerfile");
+const operatorDockerfile = read("canary/service/ceo-canary/Dockerfile.db-operator");
+const operatorPackage = JSON.parse(read("canary/service/ceo-canary/db-operator/package.json"));
 const bootstrap = read("canary/service/ceo-canary/migrations/bootstrap.sql");
 const phaseNames = ["inventory", "bootstrap", "provision", "migrate", "readiness"];
 
@@ -263,12 +265,38 @@ test("unset operator image structurally excludes every operator resource and pro
 });
 
 test("operator module graph uses only same-QM database lifecycle code and no provider route", () => {
-  assert.match(dockerfile, /FROM production-application AS credential-operator/);
-  assert.match(dockerfile, /postgresql16-client=16\.15-r0/);
-  assert.match(dockerfile, /COPY service\/ceo-canary\/src \.\/src/);
+  assert.doesNotMatch(dockerfile, /credential-operator/);
+  assert.match(operatorDockerfile, /postgresql16-client=16\.15-r0/);
+  assert.match(operatorDockerfile, /ARG SOURCE_REVISION/);
+  assert.match(operatorDockerfile, /ARG SOURCE_CLOSURE_SHA256/);
+  assert.match(operatorDockerfile, /ai\.risely\.db-operator\.source-closure-sha256/);
+  assert.match(
+    operatorDockerfile,
+    /ENTRYPOINT \["node", "\/app\/canary\/service\/ceo-canary\/src\/db-operator\.mjs"\]/,
+  );
+  assert.doesNotMatch(operatorDockerfile, /COPY service\/ceo-canary\/src \.\/src/);
+  assert.deepEqual(operatorPackage.dependencies, { pg: "8.22.0" });
+  assert.deepEqual(Object.keys(operatorPackage), ["name", "version", "private", "type", "dependencies", "engines"]);
+  for (const file of [
+    "catalog-authority-v8.mjs",
+    "database-connection.mjs",
+    "database-security.mjs",
+    "db-operator-bootstrap-sql.mjs",
+    "db-operator.mjs",
+    "migrate.mjs",
+    "provision-credentials.mjs",
+    "schema.mjs",
+  ]) {
+    assert.match(operatorDockerfile, new RegExp(`service/ceo-canary/src/${file.replaceAll(".", "\\.")}`));
+  }
+  assert.doesNotMatch(
+    operatorDockerfile,
+    /shared-contracts|deployment-profiles|provider-effects|runtime-scope|qm-shadow-ingress|chief-of-staff|evals|server\.mjs|domain\.mjs/,
+  );
   assert.match(source, /import \{ migrate \} from "\.\/migrate\.mjs"/);
   assert.match(source, /import \{ provisionCanaryCredentials \} from "\.\/provision-credentials\.mjs"/);
-  assert.match(source, /verifyCanaryDatabase/);
+  assert.match(source, /assertRuntimeDatabaseBoundary/);
+  assert.match(source, /assertExactCanaryCatalog/);
   assert.match(source, /BEGIN READ ONLY/);
   assert.match(source, /SET LOCAL search_path = pg_catalog/);
   assert.match(source, /CANARY_MUTATIONS_ENABLED !== "0"/);

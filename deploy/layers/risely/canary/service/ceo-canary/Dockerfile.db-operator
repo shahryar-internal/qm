@@ -1,0 +1,32 @@
+FROM node:24.20.0-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
+ARG SOURCE_REVISION
+ARG SOURCE_CLOSURE_SHA256
+WORKDIR /app/canary/service/ceo-canary
+RUN apk add --no-cache --upgrade libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 postgresql16-client=16.15-r0
+ENV NODE_ENV=production \
+    AWS_REGION=us-west-2 \
+    CANARY_DATABASE_SCHEMA=risely_agent_runtime \
+    CANARY_DATABASE_NAME=qm \
+    CANARY_DATABASE_PORT=5432 \
+    CANARY_BOOTSTRAP_ADMIN_ROLE=qm \
+    CANARY_OWNER_DATABASE_USER=risely_agent_runtime_owner \
+    CANARY_RUNTIME_DATABASE_USER=risely_agent_runtime_runtime \
+    CANARY_MIGRATION_DATABASE_USER=risely_agent_runtime_migrator \
+    CANARY_MUTATIONS_ENABLED=0 \
+    CANARY_PROVIDER_EXECUTION_ENABLED=0
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      ai.risely.db-operator.source-closure-sha256="${SOURCE_CLOSURE_SHA256}" \
+      ai.risely.db-operator.base-revision="08a9948f525cfb61e148c05f9072d2e526478b04"
+COPY service/ceo-canary/db-operator/package.json service/ceo-canary/db-operator/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+COPY --chown=node:node service/ceo-canary/src/catalog-authority-v8.mjs \
+     service/ceo-canary/src/database-connection.mjs \
+     service/ceo-canary/src/database-security.mjs \
+     service/ceo-canary/src/db-operator-bootstrap-sql.mjs \
+     service/ceo-canary/src/db-operator.mjs \
+     service/ceo-canary/src/migrate.mjs \
+     service/ceo-canary/src/provision-credentials.mjs \
+     service/ceo-canary/src/schema.mjs \
+     ./src/
+USER node
+ENTRYPOINT ["node", "/app/canary/service/ceo-canary/src/db-operator.mjs"]

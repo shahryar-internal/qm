@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { bootstrapSql } from "./db-operator-bootstrap-sql.mjs";
 import { migrate } from "./migrate.mjs";
-import { assertFixedDatabaseContract, runtimePoolConfig, verifyCanaryDatabase } from "./postgres-store.mjs";
+import { assertFixedDatabaseContract, runtimePoolConfig } from "./database-connection.mjs";
+import { assertExactCanaryCatalog, assertRuntimeDatabaseBoundary } from "./database-security.mjs";
 import { provisionCanaryCredentials } from "./provision-credentials.mjs";
 import {
   CANARY_BOOTSTRAP_ADMIN_ROLE,
@@ -421,9 +422,26 @@ async function provision(env) {
 
 async function readiness(env) {
   const pool = new Pool(runtimePoolConfig(env));
+  const client = await pool.connect();
   try {
-    await verifyCanaryDatabase(pool);
+    await client.query("BEGIN READ ONLY");
+    await client.query("SET LOCAL search_path = pg_catalog");
+    await client.query("SET LOCAL statement_timeout = '10s'");
+    const identity = await client.query("SELECT current_user, pg_catalog.current_database() AS current_database");
+    if (
+      identity.rows[0]?.current_user !== CANARY_RUNTIME_DATABASE_USER ||
+      identity.rows[0]?.current_database !== CANARY_DATABASE_NAME
+    ) {
+      throw new Error("Database operator readiness identity mismatch");
+    }
+    await assertRuntimeDatabaseBoundary(client);
+    await assertExactCanaryCatalog(client);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
   } finally {
+    client.release();
     await pool.end();
   }
 }

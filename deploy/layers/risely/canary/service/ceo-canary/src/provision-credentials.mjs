@@ -5,7 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { assertCanaryRoleTopology } from "./database-security.mjs";
-import { assertFixedDatabaseContract } from "./postgres-store.mjs";
+import { assertFixedDatabaseContract } from "./database-connection.mjs";
 import {
   CANARY_BOOTSTRAP_ADMIN_ROLE,
   CANARY_DATABASE_NAME,

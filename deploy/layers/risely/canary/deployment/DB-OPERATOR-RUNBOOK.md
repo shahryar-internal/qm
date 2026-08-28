@@ -8,7 +8,7 @@ The operator uses the existing Terraform-owned `risely-qm-pilot-core` RDS instan
 
 ## Image and secrets
 
-Build the existing `credential-operator` target and provide its immutable stack-owned ECR digest as `ceo_canary_db_operator_image` only when the five definitions are intentionally being registered. The runtime image is a separate input and must not be substituted. A tag, foreign repository, placeholder digest, or runtime-image substitution is invalid operator evidence. The structural bootstrap embedded in the operator image must byte-match `migrations/bootstrap.sql`; the offline contract test enforces that equality.
+Build `Dockerfile.db-operator` from the `canary` directory and provide its immutable stack-owned ECR digest as `ceo_canary_db_operator_image` only when the five definitions are intentionally being registered. This dedicated image copies only the eight reviewed same-QM lifecycle modules and installs only their PostgreSQL client dependency. The runtime image is a separate input and must not be substituted. A tag, foreign repository, placeholder digest, or runtime-image substitution is invalid operator evidence. The structural bootstrap embedded in the operator image must byte-match `migrations/bootstrap.sql`; the offline contract test enforces that equality.
 
 Populate the following dedicated secret containers only after the task definitions and execution policies have passed state-plan review:
 
