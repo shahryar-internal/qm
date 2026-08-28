@@ -20,6 +20,7 @@ export interface RunDeliveryState {
 export interface Run {
   id: string;
   sessionId: string;
+  durableSessionId?: string | null;
   status: RunStatus;
   request: OrchestratorInput;
   result: TurnResult | null;
@@ -38,6 +39,7 @@ export interface Run {
 
 export interface EnqueueInput {
   sessionId: string;
+  durableSessionId?: string;
   request: OrchestratorInput;
   dedupKey?: string;
   maxAttempts?: number;
@@ -95,6 +97,10 @@ export interface RunStore {
 const TERMINAL = new Set<Run["status"]>(["done", "failed"]);
 export function isTerminal(status: Run["status"]): boolean {
   return TERMINAL.has(status);
+}
+
+export function isSignedScheduledRun(run: Pick<Run, "durableSessionId">): boolean {
+  return typeof run.durableSessionId === "string";
 }
 
 export function errorParks(run: Pick<Run, "errorAttempts" | "maxAttempts" | "attempts">, maxClaims?: number): boolean {

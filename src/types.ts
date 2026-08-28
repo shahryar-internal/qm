@@ -218,6 +218,7 @@ export interface CronFireLogEntry {
 
 export interface Cron extends TriggerBase {
   schedule: CronSchedule;
+  scheduleAuthority?: import("./cron/schedule-authority.ts").CronScheduleAuthority;
   nextFireAt?: number;
   lastAttemptAt?: number;
   title?: string;

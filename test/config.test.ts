@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
+import { generateKeyPairSync } from "node:crypto";
 import { baseModelProviders, boolEnv, loadConfig, numEnv, CONFIG_DEFAULTS } from "../src/config.ts";
 
 const productionEnv = {
@@ -72,6 +73,38 @@ test("private-turn observer configuration is paired, signed, and HTTPS-only", ()
         PRIVATE_TURN_OBSERVER_SIGNING_SECRET: "short",
       }),
     /at least 32 characters/u,
+  );
+});
+
+test("schedule signing authority is complete, Ed25519, and Postgres-only", () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const signingJwk = JSON.stringify(privateKey.export({ format: "jwk" }));
+  const authority = {
+    SCHEDULE_AUTHORITY_REF: "qm:test:scheduler",
+    SCHEDULE_AUTHORITY_ISSUER_REF: "qm:test",
+    SCHEDULE_AUTHORITY_KEY_ID: "schedule-test-1",
+    SCHEDULE_AUTHORITY_SIGNING_JWK: signingJwk,
+  };
+  const configured = loadConfig({
+    ...authority,
+    SESSION_STORE: "postgres",
+    RUN_STORE: "postgres",
+    DATABASE_URL: "postgres://test",
+  });
+  assert.equal(configured.scheduleAuthority?.authorityRef, authority.SCHEDULE_AUTHORITY_REF);
+  assert.equal(configured.scheduleAuthority?.signingJwk.kty, "OKP");
+  assert.throws(() => loadConfig({ SCHEDULE_AUTHORITY_REF: authority.SCHEDULE_AUTHORITY_REF }), /configured together/u);
+  assert.throws(() => loadConfig(authority), /requires DATABASE_URL/u);
+  assert.throws(
+    () =>
+      loadConfig({
+        ...authority,
+        SCHEDULE_AUTHORITY_SIGNING_JWK: JSON.stringify({ kty: "oct", k: "secret" }),
+        SESSION_STORE: "postgres",
+        RUN_STORE: "postgres",
+        DATABASE_URL: "postgres://test",
+      }),
+    /private Ed25519 JWK/u,
   );
 });
 
