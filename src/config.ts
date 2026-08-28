@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
+import type { JsonWebKey } from "node:crypto";
 import { providerBaseUrlsFromEnv, type ProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { join, resolve } from "node:path";
 import {
@@ -85,6 +86,12 @@ export interface Config {
   signingSecret?: string;
   privateTurnObserverUrl?: string;
   privateTurnObserverSigningSecret?: string;
+  scheduleAuthority?: {
+    authorityRef: string;
+    issuerRef: string;
+    keyId: string;
+    signingJwk: JsonWebKey;
+  };
   capabilitySecret?: string;
   portalIdentitySecret?: string;
   requireSignedPortalIdentity?: boolean;
@@ -490,6 +497,15 @@ export function numEnv(value: string | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+function canonicalBase64Url(value: unknown, length: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length === length &&
+    /^[A-Za-z0-9_-]+$/u.test(value) &&
+    Buffer.from(value, "base64url").toString("base64url") === value
+  );
+}
+
 function boolEnvStrict(name: string, value: string | undefined): boolean | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const parsed = boolEnv(value);
@@ -740,6 +756,44 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   let runStore: "memory" | "postgres" = env.SESSION_STORE === "postgres" ? "postgres" : "memory";
   if (env.RUN_STORE === "memory" || env.RUN_STORE === "postgres") runStore = env.RUN_STORE;
+  const scheduleAuthorityValues = [
+    env.SCHEDULE_AUTHORITY_REF?.trim(),
+    env.SCHEDULE_AUTHORITY_ISSUER_REF?.trim(),
+    env.SCHEDULE_AUTHORITY_KEY_ID?.trim(),
+    env.SCHEDULE_AUTHORITY_SIGNING_JWK?.trim(),
+  ];
+  const configuredScheduleAuthorityValues = scheduleAuthorityValues.filter(Boolean);
+  if (configuredScheduleAuthorityValues.length !== 0 && configuredScheduleAuthorityValues.length !== 4) {
+    throw new Error(
+      "SCHEDULE_AUTHORITY_REF, SCHEDULE_AUTHORITY_ISSUER_REF, SCHEDULE_AUTHORITY_KEY_ID, and SCHEDULE_AUTHORITY_SIGNING_JWK must be configured together",
+    );
+  }
+  let scheduleAuthority: Config["scheduleAuthority"];
+  if (configuredScheduleAuthorityValues.length === 4) {
+    if (!env.DATABASE_URL || env.SESSION_STORE !== "postgres" || runStore !== "postgres") {
+      throw new Error("schedule authority requires DATABASE_URL, SESSION_STORE=postgres, and RUN_STORE=postgres");
+    }
+    let signingJwk: JsonWebKey;
+    try {
+      signingJwk = JSON.parse(scheduleAuthorityValues[3]!) as JsonWebKey;
+    } catch {
+      throw new Error("SCHEDULE_AUTHORITY_SIGNING_JWK must be a valid private Ed25519 JWK");
+    }
+    if (
+      signingJwk.kty !== "OKP" ||
+      signingJwk.crv !== "Ed25519" ||
+      !canonicalBase64Url(signingJwk.x, 43) ||
+      !canonicalBase64Url(signingJwk.d, 43)
+    ) {
+      throw new Error("SCHEDULE_AUTHORITY_SIGNING_JWK must be a valid private Ed25519 JWK");
+    }
+    scheduleAuthority = {
+      authorityRef: scheduleAuthorityValues[0]!,
+      issuerRef: scheduleAuthorityValues[1]!,
+      keyId: scheduleAuthorityValues[2]!,
+      signingJwk,
+    };
+  }
   const providerBaseUrls = providerBaseUrlsFromEnv(env);
   const codexProcessEnv = Object.fromEntries(
     [
@@ -883,6 +937,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.CORE_SIGNING_SECRET ? { signingSecret: env.CORE_SIGNING_SECRET } : {}),
     ...(privateTurnObserverUrl ? { privateTurnObserverUrl } : {}),
     ...(privateTurnObserverSigningSecret ? { privateTurnObserverSigningSecret } : {}),
+    ...(scheduleAuthority ? { scheduleAuthority } : {}),
     ...((env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET)
       ? { capabilitySecret: env.CAPABILITY_SECRET ?? env.CORE_SIGNING_SECRET }
       : {}),

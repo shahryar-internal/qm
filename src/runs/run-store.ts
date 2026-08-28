@@ -20,6 +20,7 @@ export interface RunDeliveryState {
 export interface Run {
   id: string;
   sessionId: string;
+  durableSessionId?: string | null;
   status: RunStatus;
   request: OrchestratorInput;
   result: TurnResult | null;
@@ -38,6 +39,7 @@ export interface Run {
 
 export interface EnqueueInput {
   sessionId: string;
+  durableSessionId?: string;
   request: OrchestratorInput;
   dedupKey?: string;
   maxAttempts?: number;

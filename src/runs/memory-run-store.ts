@@ -40,6 +40,7 @@ export function createMemoryRunStore(opts?: {
 
     async enqueue({
       sessionId,
+      durableSessionId,
       request,
       dedupKey,
       maxAttempts = 3,
@@ -62,6 +63,7 @@ export function createMemoryRunStore(opts?: {
       const run: Run = {
         id: randomUUID(),
         sessionId,
+        durableSessionId: durableSessionId ?? null,
         status: "pending",
         request,
         result: null,
