@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const PROVIDER_EFFECT_AUTHORITY_SCHEMA = "risely_provider_effect_authority_future_v1";
 export const PROVIDER_EFFECT_AUTHORITY_SCHEMA_VERSION = 1;
+export const PROVIDER_EFFECT_AUTHORITY_ED25519_SIGNATURE_PATTERN = "^[A-Za-z0-9_-]{85}[AQgw]$";
 
 const body = `
 CREATE SCHEMA ${PROVIDER_EFFECT_AUTHORITY_SCHEMA};
@@ -152,7 +153,7 @@ BEGIN
     OR jsonb_typeof(p_proof->'issuerRef') IS DISTINCT FROM 'string'
     OR COALESCE(p_proof->>'issuerRef', '') = ''
     OR jsonb_typeof(p_proof->'signature') IS DISTINCT FROM 'string'
-    OR COALESCE(p_proof->>'signature', '') !~ '^[A-Za-z0-9_-]{86}$' THEN
+    OR COALESCE(p_proof->>'signature', '') !~ '${PROVIDER_EFFECT_AUTHORITY_ED25519_SIGNATURE_PATTERN}' THEN
     RAISE EXCEPTION 'provider_effect_kill_switch_proof_invalid' USING ERRCODE = '22023';
   END IF;
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  PROVIDER_EFFECT_AUTHORITY_ED25519_SIGNATURE_PATTERN,
   PROVIDER_EFFECT_AUTHORITY_MIGRATION_SHA256,
   PROVIDER_EFFECT_AUTHORITY_SCHEMA,
   PROVIDER_EFFECT_AUTHORITY_SCHEMA_VERSION,
@@ -46,7 +47,7 @@ test("future schema is one-shot, append-only, proof-linked, and fail-closed", ()
   assert.match(sql, /profile_serialization_locks/u);
   assert.match(sql, /append_kill_switch/u);
   assert.match(sql, /IS DISTINCT FROM ARRAY/u);
-  assert.match(sql, /\^\[A-Za-z0-9_-\]\{86\}\$/u);
+  assert.match(sql, /\^\[A-Za-z0-9_-\]\{85\}\[AQgw\]\$/u);
   assert.match(sql, /attempt_unknown_holds/u);
   assert.match(sql, /materialize_expired_attempt_hold/u);
   assert.match(sql, /append_reconciliation_authorization/u);
@@ -54,6 +55,17 @@ test("future schema is one-shot, append-only, proof-linked, and fail-closed", ()
   assert.match(sql, /FOR UPDATE/u);
   assert.match(sql, /REVOKE ALL ON SCHEMA .* FROM PUBLIC/u);
   assert.equal((sql.match(/BEFORE UPDATE OR DELETE/gu) ?? []).length, 16);
+});
+
+test("Ed25519 signatures require the unique canonical base64url encoding", () => {
+  const canonical = Buffer.alloc(64, 0xff).toString("base64url");
+  const alias = `${canonical.slice(0, -1)}x`;
+  const pattern = new RegExp(PROVIDER_EFFECT_AUTHORITY_ED25519_SIGNATURE_PATTERN, "u");
+  assert.equal(canonical.at(-1), "w");
+  assert.deepEqual(Buffer.from(alias, "base64url"), Buffer.from(canonical, "base64url"));
+  assert.equal(pattern.test(canonical), true);
+  assert.equal(pattern.test(alias), false);
+  assert.match(storeSource, /canonicalEd25519SignaturePattern\.test\(value\)/u);
 });
 
 test("store exposes no adapter, provider credential, or network construction surface", () => {

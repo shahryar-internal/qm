@@ -4,13 +4,14 @@ import { createProviderEffectPolicySuite } from "../index.mjs";
 import { assertRuntimeScope } from "../../runtime-scope/index.mjs";
 import { canonicalJson } from "../../shared-contracts/validation.mjs";
 import {
+  PROVIDER_EFFECT_AUTHORITY_ED25519_SIGNATURE_PATTERN,
   PROVIDER_EFFECT_AUTHORITY_MIGRATION_SHA256,
   PROVIDER_EFFECT_AUTHORITY_SCHEMA,
   PROVIDER_EFFECT_AUTHORITY_SCHEMA_VERSION,
 } from "./schema.mjs";
 
 const digestPattern = /^[0-9a-f]{64}$/u;
-const base64urlPattern = /^[A-Za-z0-9_-]+$/u;
+const canonicalEd25519SignaturePattern = new RegExp(PROVIDER_EFFECT_AUTHORITY_ED25519_SIGNATURE_PATTERN, "u");
 const receiptIssueTimeoutMs = 10_000;
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const errorCodePattern = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
@@ -95,7 +96,7 @@ const databaseInstant = (value, code) => {
 };
 
 const signature = (value, code) => {
-  if (typeof value !== "string" || !base64urlPattern.test(value)) fail(code);
+  if (typeof value !== "string" || !canonicalEd25519SignaturePattern.test(value)) fail(code);
   let decoded;
   try {
     decoded = Buffer.from(value, "base64url");

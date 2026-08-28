@@ -639,6 +639,21 @@ test(
       0,
     ).catch((error) => error);
     assert.equal(noncanonicalSignatureError.code, "22023");
+    const canonicalSignature = exactKeyProof.signature;
+    const sameByteSignatureAlias = `${canonicalSignature.slice(0, -1)}${
+      { A: "B", Q: "R", g: "h", w: "x" }[canonicalSignature.at(-1)]
+    }`;
+    assert.equal(
+      Buffer.from(sameByteSignatureAlias, "base64url").equals(Buffer.from(canonicalSignature, "base64url")),
+      true,
+    );
+    const sameByteSignatureAliasError = await appendKillSwitch(
+      writerPool,
+      ceoScope,
+      { ...exactKeyProof, signature: sameByteSignatureAlias },
+      0,
+    ).catch((error) => error);
+    assert.equal(sameByteSignatureAliasError.code, "22023");
     const ceoKillOne = await insertKillSwitch(ceoScope, 1, crossCheckedAt);
     const syntheticKillOne = await insertKillSwitch(syntheticScope, 1, crossCheckedAt);
     const sharedProposalId = "proposal:cross-profile-pg16";
