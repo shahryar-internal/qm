@@ -1,5 +1,5 @@
 FROM alpine:3.23.3@sha256:59855d3dceb3ae53991193bd03301e082b2a7faa56a514b03527ae0ec2ce3a95 AS runtime-rootfs
-RUN apk add --no-cache --upgrade musl=1.2.5-r23 musl-utils=1.2.5-r23 zlib=1.3.2-r0 ca-certificates=20260611-r0 libgcc=15.2.0-r2 libstdc++=15.2.0-r2 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 postgresql16-client=16.15-r0 && addgroup -g 1000 -S node && adduser -u 1000 -S -G node -s /sbin/nologin node
+RUN apk add --no-cache --upgrade musl=1.2.5-r23 musl-utils=1.2.5-r23 zlib=1.3.2-r0 ca-certificates=20260611-r0 libgcc=15.2.0-r2 libstdc++=15.2.0-r2 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 postgresql-common=1.2-r2 lz4-libs=1.10.0-r0 libpq=18.6-r0 ncurses-terminfo-base=6.5_p20251123-r0 libncursesw=6.5_p20251123-r0 readline=8.3.1-r0 zstd-libs=1.5.7-r2 postgresql16-client=16.15-r0 && addgroup -g 1000 -S node && adduser -u 1000 -S -G node -s /sbin/nologin node
 
 FROM 075343201918.dkr.ecr.us-west-2.amazonaws.com/risely-qm-pilot-ceo-canary@sha256:264263fc1698d169c55f14c86d39164db84b1517c8e10ba4ffaf28605dcafc69 AS proven-node
 RUN printf '%s  %s\n' e8d2cd6aba8f30e3fc7e686d32d7d851f33a7e5dbbc9b16fd0c3b2e65601c506 /usr/local/bin/node | sha256sum -c - && test "$(node --version)" = v24.20.0 && test "$(node -p process.versions.openssl)" = 3.5.8 && test "$(node -p process.config.variables.node_shared_openssl)" = true

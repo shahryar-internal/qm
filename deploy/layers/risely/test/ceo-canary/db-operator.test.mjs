@@ -267,6 +267,17 @@ test("unset operator image structurally excludes every operator resource and pro
 test("operator module graph uses only same-QM database lifecycle code and no provider route", () => {
   assert.doesNotMatch(dockerfile, /credential-operator/);
   assert.match(operatorDockerfile, /postgresql16-client=16\.15-r0/);
+  for (const dependency of [
+    "postgresql-common=1.2-r2",
+    "lz4-libs=1.10.0-r0",
+    "libpq=18.6-r0",
+    "ncurses-terminfo-base=6.5_p20251123-r0",
+    "libncursesw=6.5_p20251123-r0",
+    "readline=8.3.1-r0",
+    "zstd-libs=1.5.7-r2",
+  ]) {
+    assert.match(operatorDockerfile, new RegExp(dependency.replaceAll(".", "\\.")));
+  }
   assert.match(operatorDockerfile, /FROM scratch/);
   assert.match(operatorDockerfile, /COPY --from=proven-node \/usr\/local\/bin\/node \/usr\/local\/bin\/node/);
   assert.match(operatorDockerfile, /node_shared_openssl/);
