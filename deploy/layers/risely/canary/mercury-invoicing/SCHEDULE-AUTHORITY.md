@@ -31,6 +31,9 @@ scheduleRef
 qmCronId
 scheduleDefinitionSha256
 cronRevisionSha256
+cronStateRevision
+runRequestTemplateSha256
+scheduleState = "active"
 fireMode = "scheduled"
 fireKey
 scheduledAt
@@ -46,19 +49,21 @@ receiptSha256
 signature
 ```
 
-All identifiers, timestamps, digests, nested keys, and the signature encoding must use strict bounded canonical forms. Unknown, missing, accessor-backed, proxy-backed, symbol, non-enumerable, inherited, or duplicate-semantic fields must be rejected before any application callback runs.
+The upstream boundary accepts at most 16 KiB of UTF-8 JSON bytes, not an already-parsed object. It must reject a byte-order mark, invalid UTF-8, duplicate keys at any depth, lone surrogates, non-integer numbers, and trailing data before constructing a value. Identifiers use `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$`; digests are 64 lowercase hexadecimal characters; timestamps use exactly `YYYY-MM-DDTHH:mm:ss.sssZ`; `utcOffset` uses exactly `[+-](?:0\d|1[0-4]):[0-5]\d`; the Ed25519 JWK `x` is exactly 43 unpadded base64url characters; and the 64-byte signature is exactly 86 unpadded base64url characters. Unknown, missing, accessor-backed, proxy-backed, symbol, non-enumerable, inherited, or duplicate-semantic fields must be rejected before any application callback runs.
 
-`receiptSha256` is SHA-256 over canonical JSON of every field except `receiptSha256` and `signature`. The Ed25519 signature is over the UTF-8 bytes of:
+Canonical JSON means RFC 8785 JSON Canonicalization Scheme bytes. `receiptSha256` is SHA-256 over canonical bytes of every field except `receiptSha256` and `signature`. The Ed25519 signature is over the UTF-8 bytes of:
 
 ```text
 qm.schedule-fire.v1\n<receiptSha256>
 ```
 
-`fireKey` must equal QM's durable idempotency key for the exact calendar slot. `runId` must identify the durable run enqueued under that key. `runRequestSha256` must cover the canonical persisted run request, not rendered log text. `sessionId` and `threadRef` must equal the persisted run lineage. Manual `runNow` calls, interval schedules, webhook wakes, message-only deliveries, skipped fires, and fires without a durable run must not receive this receipt type.
+`fireKey` must equal QM's durable idempotency key for the exact calendar slot. `runId` must identify the durable run enqueued under that key. `runRequestSha256` must cover the RFC 8785 canonical persisted run request, not rendered log text. `runRequestTemplateSha256` must cover an exact `QmScheduleRunRequestTemplate.v1` projection that retains every request field and value except that `conversation.threadRef` and `idempotencyKey` are replaced by fixed domain markers. No other field may be removed or normalized. `sessionId` and `threadRef` must equal the persisted run lineage. Manual `runNow` calls, interval schedules, webhook wakes, message-only deliveries, skipped fires, and fires without a durable run must not receive this receipt type.
 
 QM must persist the claimed slot, run, receipt, and receipt outbox record atomically in its production Postgres authority. A worker must not be able to consume a provider-capable scheduled run unless that transaction committed. Duplicate delivery of the same slot must return the byte-identical receipt and the same run lineage. Conflicting reuse of a fire key must fail closed.
 
-The transport that delivers the receipt is intentionally not specified here. No network route, secret name, or adapter port should be invented until the upstream contract and its durability boundary are reviewed.
+The receipt is not bearer authority. The consuming server must select the canonical receipt bytes from the committed durable row using its authenticated ambient run identity, read the current durable run record, and obtain current time from a deployment-controlled trusted clock. None of the receipt, run identity, run record, or time inputs may come from an action-proposal request body. Verification must bind the committed receipt to the current run's ID, session, thread, canonical request digest, request-template digest, and fire key before minting a non-serializable, invocation-scoped authority. That authority must be branded to both the deployment runtime scope and current server invocation and must be unusable by another request handler even when the underlying signed receipt is copied.
+
+The transport and invocation-context mechanism are intentionally not specified here. No network route, secret name, ambient-context implementation, or adapter port should be invented until the upstream contract, durable lookup, and invocation boundary are reviewed.
 
 ## Schedule definition and disable semantics
 
@@ -75,7 +80,9 @@ activeFrom
 activeUntil
 ```
 
-`activeFrom` and `activeUntil` are inclusive local calendar dates in `timeZone`. Monthly days remain limited to 1 through 28. The definition hash uses canonical JSON and is independent of a deployment-profile digest so that pinning it in the profile does not create a hash cycle.
+`activeFrom` and `activeUntil` are inclusive local calendar dates in `timeZone`. A daily schedule requires `weeklyDay=null` and `monthlyDay=null`; a weekly schedule requires a valid `weeklyDay` and `monthlyDay=null`; a monthly schedule requires `weeklyDay=null` and `monthlyDay` from 1 through 28. The definition hash uses RFC 8785 canonical JSON and is independent of a deployment-profile digest so that pinning it in the profile does not create a hash cycle.
+
+`cronRevisionSha256` is a digest of an immutable QM cron configuration projection covering the cron ID, owner, owner scope, creator, title, exact action bytes, schedule definition, run-as mode, destination, members, unattended grants, recipient-consent policy, and run-request-template digest. Dynamic claim, last-fired, next-fire, and enabled-state fields are tracked by a separate monotonic state revision. Any configuration edit or re-enable creates a new `cronRevisionSha256`, even when the resulting values equal a prior revision.
 
 QM must calculate each slot with a calendar-aware scheduler. Before claiming a slot it must derive the local occurrence and verify all of the following against the stored immutable schedule revision:
 
@@ -87,7 +94,7 @@ QM must calculate each slot with a calendar-aware scheduler. Before claiming a s
 
 A nonexistent spring-forward minute produces no fire. A repeated fall-back minute is ineligible at both UTC instants rather than choosing one. This matches the current Mercury candidate compiler and prevents two invoice identities for one local occurrence.
 
-Before QM would claim the first otherwise-matching slot whose local date is after `activeUntil`, it must atomically change the cron to disabled with reason `active_until_elapsed`. The transition must retain the last eligible scheduled instant, the first rejected scheduled instant, the prior and resulting cron revisions, and the schedule-definition digest. It must be durable and auditable. QM must never issue a schedule-fire receipt after this transition boundary. Re-enabling or changing the window creates a new schedule definition and revision; old receipts cannot authorize the new revision.
+Before QM would claim the first otherwise-matching slot whose local date is after `activeUntil`, it must atomically change the cron to disabled with reason `active_until_elapsed`. The durable transition must retain the schedule reference, QM cron ID, schedule-definition digest, immutable cron revision, last eligible scheduled instant or null, first rejected scheduled instant, disabled time, prior state revision, and resulting state revision. It must be signed by the same schedule authority under the distinct `qm.schedule-disable.v1` signature domain and stored in the audit log. QM must never issue a schedule-fire receipt after this transition boundary. Re-enabling or changing the window creates a new immutable cron revision and deployment-profile mapping; old receipts cannot authorize the new revision.
 
 ## Deployment-profile v2 requirement
 
@@ -97,6 +104,8 @@ The profile schema needs an exact `scheduleFirePolicy` field. A production value
 policyRef
 receiptContractVersion = 1
 signatureDomain = "qm.schedule-fire.v1"
+disableReceiptContractVersion = 1
+disableSignatureDomain = "qm.schedule-disable.v1"
 authorityRef
 issuerRef
 keyId
@@ -108,6 +117,8 @@ allowedSchedules = [
     scheduleRef
     qmCronId
     scheduleDefinitionSha256
+    cronRevisionSha256
+    runRequestTemplateSha256
     programRef
     provider = "mercury"
     providerOwnerRef
@@ -116,7 +127,7 @@ allowedSchedules = [
 ]
 ```
 
-The public key, key ID, issuer, authority, cron ID, schedule definition, provider owner, and environment are profile-hashed data. Key rotation, cron replacement, schedule revision, provider-environment promotion, or authority replacement requires a new profile version and digest. Synthetic profiles must accept an explicitly supplied test public key and distinct schedule mapping; they must not inherit or manufacture the production root.
+`allowedSchedules` is codepoint-sorted by `scheduleRef` and then `environment`; both the pair and every `qmCronId` must be unique. The public key, key ID, issuer, authority, cron ID, schedule definition, immutable cron revision, run-request template, provider owner, and environment are profile-hashed data. Key rotation, cron replacement, schedule revision, run-request change, provider-environment promotion, re-enable, or authority replacement requires a new profile version and digest. Synthetic profiles must accept an explicitly supplied test public key and distinct schedule mapping; they must not inherit or manufacture the production root.
 
 The profile contract must continue to require `activationMode="shadow"`, `providerExecutionAllowed=false`, and `maximumProviderGrantLifetimeMs=0`. Adding schedule authority must not activate provider execution.
 
@@ -134,6 +145,42 @@ ownershipMode = "owner-mercury-organization"
 targetClass = "exact-scheduled-invoice-candidate"
 maximumAttempts = 1
 reconciliationRequired = true
+providerContract = {
+  hosts = {
+    sandbox = "https://api-sandbox.mercury.com/api/v1/"
+    production = "https://api.mercury.com/api/v1/"
+  }
+  cli = {
+    repository = "https://github.com/MercuryTechnologies/mercury-cli"
+    commit = "25cc254e78eddfbbd4f13cfc90a0beca930a2c0e"
+    version = "0.11.8"
+    releaseTag = "v0.11.8"
+    checksumsAssetSha256 = "6ca71e169384a60c2838d562ab0fe4d797e12bec9fe50f2340e541caf7a16991"
+    archiveName = "mercury_0.11.8_linux_amd64.tar.gz"
+    archiveSha256 = "f39c3426edaf2750c04366d87c43c846fd50dd258056633fb2dbe633dc336a9c"
+    binarySha256 = "3bb3a39a3676376998ea3a48034b7a636c5c31d7b7d08dca4c26cebd64520b8b"
+    binaryFormat = "elf_x86_64_static_stripped"
+    executable = "mercury"
+  }
+  planRevision = "MercuryCliCreatePlan.v1"
+  plans = {
+    sandbox = {
+      apiBaseUrl = "https://api-sandbox.mercury.com/api/v1/"
+      argv = ["--base-url", "https://api-sandbox.mercury.com/api/v1/", "--format", "json", "--format-error", "json", "invoices", "create"]
+    }
+    production = {
+      apiBaseUrl = "https://api.mercury.com/api/v1/"
+      argv = ["--base-url", "https://api.mercury.com/api/v1/", "--format", "json", "--format-error", "json", "invoices", "create"]
+    }
+  }
+  stdinEncoding = "application/json"
+  credentialTransport = "MERCURY_API_KEY_secret_environment_only"
+  fixedEnvironment = { MERCURY_NO_UPDATE_CHECK = "1" }
+  inheritedVariablesAllowed = false
+  updateCheckDisabled = true
+  debugAllowed = false
+  oneProcessPerInvoice = true
+}
 ```
 
 Approval-once is required for both delivery modes because creating an unsent invoice is still a provider mutation. `send_after_approval` additionally binds `SendNow`; `prepare_only` binds `DontSend`. A later policy may distinguish these only through another reviewed capability version.
@@ -146,22 +193,23 @@ The Mercury proposal validator must require exact target and payload shapes. At 
 - customer reference and provider customer ID;
 - destination-account reference and provider destination-account ID;
 - deterministic invoice number, delivery mode, and `sendEmailOption`;
-- schedule reference, QM cron ID, schedule-definition digest, cron revision, scheduled instant, run ID, and schedule-fire receipt digest;
+- schedule reference, QM cron ID, schedule-definition digest, immutable cron revision, active state revision, scheduled instant, run ID, and schedule-fire receipt digest;
 - CLI repository commit, release tag, archive digest, extracted binary digest, and executable name.
 
-The validator must recompute the candidate and CLI bindings rather than accept duplicated caller assertions. No caller-selected host, executable, arguments, inherited process environment, credential reference, retry count, or reconciliation method is allowed.
+The entire `providerContract` projection is included in the catalog SHA pinned by the profile. The validator selects one exact catalog plan by the profile-pinned environment and recomputes the candidate and CLI bindings from that catalog projection rather than accepting duplicated caller assertions or mutable program constants. No caller-selected host, executable, arguments, inherited process environment, credential reference, retry count, or reconciliation method is allowed.
 
 ## Candidate-to-proposal adapter
 
-Only after the upstream receipt and profile v2 exist may `createMercuryInvoicingProgram` expose a branded adapter. The adapter takes a program-built batch, candidate reference, raw schedule-fire receipt, and proposal timestamps. It performs these checks in order:
+Only after the upstream receipt, durable current-run lookup, trusted clock, and profile v2 exist may the server expose provider-free candidate-to-proposal compilation. The compiler takes only a program-built batch, candidate reference, and non-serializable current-invocation schedule authority. It does not accept receipt bytes, run identifiers, run records, or timestamps from the caller. It performs these checks in order:
 
-1. Snapshot all inputs as canonical plain JSON without invoking accessors or proxy traps.
-2. Validate the receipt's exact schema, self-hash, signature domain, Ed25519 signature, and pinned profile trust root.
-3. Match profile, schedule mapping, provider owner, environment, schedule definition, cron revision, calendar occurrence, and fixed Mercury host.
-4. Match the receipt's scheduled instant to `batch.occurrenceAt` and its `runId` to the proposal run.
-5. Require `createdAt` to be no earlier than `issuedAt` and no later than `expiresAt`, and require proposal expiry not to exceed the receipt expiry or the profile approval lifetime.
-6. Build the exact action proposal with `actor.surface="schedule"`, `capability="mercury.invoices.create"`, `provider="mercury"`, `subjectRef=candidateRef`, and deterministic identifiers derived from the receipt and candidate digests.
-7. Pass the result through the profile-bound provider-effect policy suite.
+1. Snapshot caller inputs as canonical plain JSON without invoking accessors or proxy traps.
+2. Revalidate the current-invocation authority's runtime and invocation brands.
+3. Match profile, schedule mapping, provider owner, environment, schedule definition, immutable cron revision, run-request template, calendar occurrence, and catalog-pinned Mercury host and CLI plan.
+4. Match the committed receipt's scheduled instant to `batch.occurrenceAt` and its run, session, thread, request, request template, and fire key to the trusted current durable run.
+5. Using trusted current time, require `scheduledAt <= firedAt <= issuedAt <= now < expiresAt`, `firedAt-scheduledAt <= maximumFireDelayMs`, `issuedAt-firedAt <= maximumFireDelayMs`, and `expiresAt-issuedAt <= maximumReceiptLifetimeMs`.
+6. Derive proposal `createdAt` from receipt `issuedAt` and proposal `expiresAt` from the earlier of receipt `expiresAt` and the profile approval-lifetime boundary. Caller time is never used.
+7. Build the exact action proposal with `actor.surface="schedule"`, `capability="mercury.invoices.create"`, `provider="mercury"`, `subjectRef=candidateRef`, and deterministic identifiers derived from the receipt and candidate digests.
+8. Pass the result through the profile-bound provider-effect policy suite.
 
 The same receipt and candidate must produce the same proposal ID, semantic fingerprint, effect key, and proposal hash. Another candidate in the same batch, another fire, another cron revision, another environment, or another profile must produce a different effect identity. Durable attempt reservation remains the final replay barrier; the adapter does not reserve or execute anything.
 
@@ -173,7 +221,8 @@ scheduleAuthorityVerified = true
 executionAvailable = false
 providerInvocationAllowed = false
 credentialTransportAvailable = false
-adapterAvailable = false
+candidateToProposalCompilerAvailable = true
+providerInvocationAdapterAvailable = false
 ```
 
 `createProviderEffectExecutionAuthority` must continue to throw. No Mercury binary, API credential, process spawn, provider request, reconciliation request, database write, or AWS call belongs in this change.
@@ -186,11 +235,15 @@ The implementing change must include focused and full layer tests covering:
 - deterministic replay and separation by candidate, fire, cron revision, environment, provider owner, and profile;
 - valid inclusive `activeFrom` and `activeUntil` occurrences;
 - rejection before `activeFrom`, after `activeUntil`, after receipt expiry, and when proposal expiry exceeds receipt authority;
+- rejection under a caller-supplied, stale, reversed, future, over-delay, over-lifetime, or substituted clock and proof that proposal timestamps are derived rather than accepted;
 - rejection of both UTC instants in a repeated fall-back local minute and absence of a spring-forward-gap fire;
-- rejection of manual fires, interval fires, missing durable run IDs, mismatched run request hashes, and mismatched session or thread lineage;
+- rejection of manual fires, interval fires, missing durable run IDs, mismatched run request or template hashes, mismatched session or thread lineage, copied receipts in another invocation, and serialized or cross-handler authority brands;
 - rejection of foreign keys, issuers, authorities, profiles, cron IDs, schedule definitions, billing records, candidates, owners, environments, hosts, CLI commits, archives, binaries, and plans;
 - rejection after tampering every signed or effect-bound field, including a recomputed self-hash without a valid signature;
 - accessor, proxy, symbol, inherited-property, non-enumerable-property, duplicate-semantic, oversized, and malformed-signature adversarial cases with zero getter or proxy-trap calls;
+- raw-byte rejection for invalid UTF-8, byte-order marks, duplicate JSON keys at every depth, lone surrogates, noncanonical timestamps, padded base64url, and bytes that do not round-trip to the exact canonical form;
+- transaction failure injection before and after each slot, run, receipt, and outbox write; concurrent duplicate claims; proof that no worker consumes an uncommitted run; byte-identical redelivery; and conflicting fire-key rejection;
+- the real durable `active_until_elapsed` state transition, signed audit record, concurrent transition attempts, re-enable revision change, and proof that no post-window receipt is issued;
 - catalog/profile digest mismatch and cross-profile branded-object rejection;
 - continuing mechanical failure of provider-effect execution construction and absence of provider, credential, binary, database, or network calls.
 
