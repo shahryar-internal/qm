@@ -95,6 +95,7 @@ import type { ModelProviderAvailability } from "../model/pi-models.ts";
 import type { RuntimeChoice } from "../harness/harness-router.ts";
 import { type ReachOpts, type ReachResolution, type ReachTarget } from "../reach/reach.ts";
 import { type Project, type ProjectStore } from "../projects/project-store.ts";
+import type { PrivateTurnObservationSink } from "./private-turn-observer.ts";
 
 interface DeploymentVersionView {
   version: number;
@@ -513,6 +514,8 @@ export interface AppDeps {
   leaseTtlMs: number;
   maxAttempts: number;
   runWaitMs?: number;
+  privateTurnObserver?: PrivateTurnObservationSink;
+  privateTurnObserverTimeoutMs?: number;
   turnStream?: TurnStream;
   runActivity?: RunActivityStore;
   signals?: RunSignalStore;

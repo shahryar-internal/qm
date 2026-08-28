@@ -23,6 +23,7 @@ import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
 import { unscreenedNotice } from "../security/security-posture.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
+import { observePrivateTurn, privateTurnObservation } from "./private-turn-observer.ts";
 
 export function createTurnMethods(
   deps: AppDeps,
@@ -41,6 +42,14 @@ export function createTurnMethods(
   | "signalRun"
   | "replayOrphanedRunSignals"
 > {
+  const privateTurnObserverTimeoutMs = deps.privateTurnObserverTimeoutMs ?? 1_000;
+  if (
+    !Number.isSafeInteger(privateTurnObserverTimeoutMs) ||
+    privateTurnObserverTimeoutMs < 1 ||
+    privateTurnObserverTimeoutMs > 10_000
+  ) {
+    throw new TypeError("privateTurnObserverTimeoutMs must be an integer from 1 through 10000");
+  }
   const {
     withAdminLink,
     drive,
@@ -234,6 +243,30 @@ export function createTurnMethods(
 
       const origin = resolveTurnOrigin(req);
 
+      const observeAcceptedPrivateTurn = async (acceptedRunRef: string, acceptedAt: number) => {
+        if (!deps.privateTurnObserver) return;
+        const observation = privateTurnObservation({
+          surface: req.surface,
+          origin,
+          actor,
+          conversation,
+          workspaceRef: scopeId("org", orgIdOf()),
+          acceptedRunRef,
+          acceptedAt,
+          text: req.text,
+        });
+        if (!observation) return;
+        const status = await observePrivateTurn(deps.privateTurnObserver, observation, privateTurnObserverTimeoutMs);
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: actor.id,
+          action: "private_turn_observation",
+          resource: observation.eventRef,
+          scopeLabel: observation.audienceRef,
+          status,
+        });
+      };
+
       const input = {
         surface: req.surface,
         ...(req.deliveryTarget ? { deliveryTarget: req.deliveryTarget } : {}),
@@ -365,6 +398,7 @@ export function createTurnMethods(
             if (!routedRunId)
               return { status: "refused", reason: "project membership changed; retry from the current project" };
             if (route.kind === "steer") {
+              await observeAcceptedPrivateTurn(routedRunId, Date.now());
               const after = await deps.runs.get(live.id);
               if (!after || isTerminal(after.status)) {
                 const own = (await replayOrphanedRunSignals(live.id)).find(
@@ -410,6 +444,7 @@ export function createTurnMethods(
             });
             if (!routedRunId)
               return { status: "refused", reason: "project membership changed; retry from the current project" };
+            if (deps.signals) await observeAcceptedPrivateTurn(routedRunId, Date.now());
             const after = await deps.runs.get(liveAmbient.id);
             if (!after || isTerminal(after.status)) {
               const own = (await replayOrphanedRunSignals(liveAmbient.id)).find(
@@ -440,6 +475,7 @@ export function createTurnMethods(
       const enqueued = await withCurrentProjectRoster(enqueue);
       if (!enqueued) return { status: "refused", reason: "project membership changed; retry from the current project" };
       const { run, deduped } = enqueued;
+      await observeAcceptedPrivateTurn(run.id, run.createdAt);
       if (!deduped) {
         deps.sessionStateBus?.emit({
           threadRef: conversation.threadRef,

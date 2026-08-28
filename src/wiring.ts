@@ -34,6 +34,11 @@ import { createSkillBundleStore, type SkillBundle, type SkillBundleStore } from 
 import { createGitFetcher, resolvePackAuth, type SkillPackFetcher } from "./skills/pack-fetcher.ts";
 import { installSeedSkills } from "./skills/seed.ts";
 import { createMemoryMap, createPostgresMapFactory, type DurableMap } from "./persistence/durable-map.ts";
+import {
+  createPrivateTurnObservationOutbox,
+  type PrivateTurnObservationOutbox,
+  type PrivateTurnObservationOutboxRecord,
+} from "./api/private-turn-observation-outbox.ts";
 import type { PersistedUiState, UiStateStore } from "./surfaces/ui-state.ts";
 import { configurePgCaTrust } from "./persistence/pg-pool.ts";
 import { createPostgresLeaderLease, createNoopLeaderLease, type LeaderLease } from "./persistence/leader-lease.ts";
@@ -380,6 +385,7 @@ export interface BuiltApp {
   uiState: UiStateStore;
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
+  privateTurnObservationOutbox?: PrivateTurnObservationOutbox;
 }
 
 export function buildApp(
@@ -388,8 +394,18 @@ export function buildApp(
     securityScreener?: SecurityScreener;
     credentialBrokers?: Record<string, AwsRoleBroker>;
     modelCredentialFetch?: typeof fetch;
+    privateTurnObserver?: import("./api/private-turn-observer.ts").PrivateTurnObservationSink;
+    privateTurnObserverTimeoutMs?: number;
   } = {},
 ): BuiltApp {
+  if (
+    overrides.privateTurnObserverTimeoutMs !== undefined &&
+    (!Number.isSafeInteger(overrides.privateTurnObserverTimeoutMs) ||
+      overrides.privateTurnObserverTimeoutMs < 1 ||
+      overrides.privateTurnObserverTimeoutMs > 10_000)
+  ) {
+    throw new TypeError("privateTurnObserverTimeoutMs must be an integer from 1 through 10000");
+  }
   if (config.databaseUrl && !config.connectorSecretKey) {
     throw new Error("CONNECTOR_SECRET_KEY is required with durable storage");
   }
@@ -419,6 +435,13 @@ export function buildApp(
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
   const artifactMap = <T>(table: string): DurableMap<T> =>
     pgArtifactMap ? pgArtifactMap.map<T>(table) : createMemoryMap<T>();
+  const privateTurnObservationOutbox = overrides.privateTurnObserver
+    ? createPrivateTurnObservationOutbox({
+        backing: artifactMap<PrivateTurnObservationOutboxRecord>("private_turn_observation_outbox"),
+        downstream: overrides.privateTurnObserver,
+        timeoutMs: overrides.privateTurnObserverTimeoutMs ?? 1_000,
+      })
+    : undefined;
   setProviderBaseUrls(config.providerBaseUrls);
   const modelCredentials = createModelCredentialStore({
     backing: artifactMap("model_credentials"),
@@ -1203,6 +1226,10 @@ export function buildApp(
     providerKeys,
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeys),
     runWaitMs: config.runWaitMs,
+    ...(privateTurnObservationOutbox ? { privateTurnObserver: privateTurnObservationOutbox } : {}),
+    ...(overrides.privateTurnObserverTimeoutMs !== undefined
+      ? { privateTurnObserverTimeoutMs: overrides.privateTurnObserverTimeoutMs }
+      : {}),
   });
   const slackCore = createSlackCoreClient({
     app,
@@ -1419,6 +1446,12 @@ export function buildApp(
   const deployIdleTtlMs = deployProvider.profile.managedScaleToZero ? undefined : config.deployIdleTtlMs;
   const BLOB_TTL_MS = 6 * 60 * 60_000;
   const blobSweeper = createSweeper(() => blobTransfer.sweep(BLOB_TTL_MS), 30 * 60_000);
+  const privateTurnObservationSweeper = privateTurnObservationOutbox
+    ? createSweeper(() => privateTurnObservationOutbox.sweep(), 1_000, {
+        label: "private-turn-observation-outbox",
+        immediate: true,
+      })
+    : null;
   const BLOB_TRANSFER_EXPIRY_DAYS = 1;
   void blobTransfer
     .ensureExpiry?.(BLOB_TRANSFER_EXPIRY_DAYS)
@@ -1454,6 +1487,7 @@ export function buildApp(
       monitorPoller?.start(config.monitorPollMs);
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
+      privateTurnObservationSweeper?.start();
       idleSweeper?.start();
       deepIdleSweeper?.start();
       reachDeniedNotifier?.start(config.insightsIntervalMs);
@@ -1473,6 +1507,7 @@ export function buildApp(
       deepIdleSweeper?.stop();
       reachDeniedNotifier?.stop();
       blobSweeper.stop();
+      privateTurnObservationSweeper?.stop();
       wakeSweep.stop();
       orphanedSignalSweeper.stop();
       await Promise.all(workers.map((w) => w.stop(config.shutdownDrainMs))).catch(
@@ -1557,6 +1592,7 @@ export function buildApp(
     uiState: artifactMap<PersistedUiState>("web_ui_state"),
     skillSyncEngine,
     slackCore,
+    ...(privateTurnObservationOutbox ? { privateTurnObservationOutbox } : {}),
   };
 }
 
