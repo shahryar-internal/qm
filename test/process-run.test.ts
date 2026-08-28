@@ -139,8 +139,59 @@ test("processRun mints a lease-bound invocation authority for a durable schedule
     return { status: "ok" };
   });
   await processRun({ runs, orchestrator, leaseTtlMs: 30_000, scheduleAuthority }, claimed);
-  assert.equal(currentCalls, 3);
-  assert.equal(assertCalls, 1);
+  assert.equal(currentCalls, 4);
+  assert.equal(assertCalls, 2);
+});
+
+test("processRun rechecks schedule authority after orchestration and before completion", async () => {
+  const { runs } = createMemoryRunStore();
+  const { run } = await runs.enqueue({
+    sessionId: "scheduled-thread",
+    durableSessionId: "session-uuid",
+    request: turn,
+  });
+  const claimed = await runs.claim("schedule-worker", 30_000);
+  assert.ok(claimed?.leaseToken);
+  const current: CurrentScheduleRunAuthority = Object.freeze({
+    contractType: "qm-current-schedule-run-authority",
+    contractVersion: 1,
+    runId: run.id,
+    sessionId: "session-uuid",
+    threadRef: "scheduled-thread",
+    receiptSha256: "1".repeat(64),
+    attempt: 1,
+    leaseGenerationSha256: "2".repeat(64),
+    leaseExpiresAt: claimed.leaseExpiresAt!,
+  });
+  let invocation: object | undefined;
+  let completeCalls = 0;
+  const guardedRuns: RunStore = {
+    ...runs,
+    async complete(runId, leaseToken, result) {
+      completeCalls += 1;
+      return runs.complete(runId, leaseToken, result);
+    },
+  };
+  const scheduleAuthority = {
+    async current(input: { invocation: object }) {
+      invocation = input.invocation;
+      return current;
+    },
+    async assertCurrent(_authority: CurrentScheduleRunAuthority, handler: object) {
+      assert.equal(handler, invocation);
+      throw new Error("schedule-fire receipt is not current");
+    },
+  };
+  const orchestrator = fakeOrchestrator(async (input) => {
+    assert.ok(input.scheduleAuthority);
+    return { status: "ok", reply: "must not complete" };
+  });
+  await assert.rejects(
+    processRun({ runs: guardedRuns, orchestrator, leaseTtlMs: 30_000, scheduleAuthority }, claimed),
+    /schedule-fire receipt is not current/u,
+  );
+  assert.equal(completeCalls, 0);
+  assert.equal((await runs.get(run.id))?.status, "pending");
 });
 
 test("processRun rejects when a reaped attempt finishes after a retry claims the run", async () => {

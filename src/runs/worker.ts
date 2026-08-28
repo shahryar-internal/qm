@@ -95,6 +95,7 @@ export async function processRun(deps: ProcessDeps, run: Run, opts?: { backgroun
       Object.defineProperty(turnInput, "scheduleAuthority", { enumerable: true, value: scheduleAuthority });
     }
     const result = await deps.orchestrator.handleTurn(turnInput);
+    await scheduleAuthority?.assertCurrent(turnInput);
     stopBeat();
     if (!(await deps.runs.complete(run.id, token, result))) {
       throw new Error(`run ${run.id} lost its lease before completion`);

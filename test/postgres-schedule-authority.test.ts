@@ -902,8 +902,8 @@ test("effect authority is rechecked after harness admission and before sandbox p
       async runTurn(turn) {
         enterHarness();
         await harnessRelease;
-        await turn.tools.execute("echo forbidden");
-        return { reply: "unreachable" };
+        await assert.rejects(turn.tools.execute("echo forbidden"), /schedule-fire receipt is not current/u);
+        return { reply: "must not complete" };
       },
     },
   };
@@ -930,6 +930,9 @@ test("effect authority is rechecked after harness admission and before sandbox p
     releaseHarness();
     await assert.rejects(pending, /schedule-fire receipt is not current/u);
     assert.deepEqual(effects, { provision: 0, run: 0 });
+    const after = await runtime.runs.get(enqueued.runId);
+    assert.equal(after?.status, "pending");
+    assert.equal(after?.result, null);
   } finally {
     releaseHarness();
     await pending?.catch(() => undefined);

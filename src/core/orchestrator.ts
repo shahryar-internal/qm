@@ -2624,6 +2624,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(inbound.metas.length ? { attachments: inbound.metas } : {}),
           ...(inbound.images.length ? { images: inbound.images } : {}),
         });
+        await assertScheduleEffectCurrent?.();
         const primarySubturnEndSeq = emittedEntries.at(-1)?.seq;
         if (
           input.addressed &&
@@ -2642,6 +2643,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const primaryReply = stripAckPrefix(result.reply ?? "", spineAckText).trim();
           if (primaryReply && defaultDestination && deps.deliveries) {
             try {
+              await assertScheduleEffectCurrent?.();
               const directKey = `post:${session.id}:${randomUUID()}`;
               await reachEnqueue({
                 deliveries: deps.deliveries,
@@ -2707,12 +2709,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               },
               { history: nudgeHistory, ...(nudgeTape ? { tape: nudgeTape } : {}) },
             );
+            await assertScheduleEffectCurrent?.();
             if (firstTapeWriteFailed || result.tapeWriteFailed) result = { ...result, tapeWriteFailed: true };
             if (primaryStopped && !result.stopped) result = { ...result, stopped: true };
             if (spine.surfaceOutboundCount === 0 && spine.staySilentReason === undefined && !result.silent) {
               const fallback = stripAckPrefix(result.reply ?? "", spineAckText).trim();
               if (fallback && defaultDestination && deps.deliveries) {
                 try {
+                  await assertScheduleEffectCurrent?.();
                   const fallbackKey = `post:${session.id}:${randomUUID()}`;
                   await reachEnqueue({
                     deliveries: deps.deliveries,
@@ -2737,6 +2741,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
         const totalMs = Date.now() - turnStart;
 
+        await assertScheduleEffectCurrent?.();
         const noOutbound = { attachments: [], oversized: [], empty: [], dropped: 0 };
         const harvestOutbox = conversation.kind === "dm";
         const outboundScoped =
