@@ -120,6 +120,7 @@ import {
 } from "./files/durable-byte-store.ts";
 import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/file-artifact-store.ts";
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
+import { type MiniappRecord, type MiniappStore } from "./miniapps/miniapp.ts";
 import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
 import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
 import { createSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
@@ -193,6 +194,7 @@ import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-h
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
+import { selectableModelCatalog } from "./model/model-catalog.ts";
 import type { Harness } from "./harness/harness.ts";
 import { createSecurityScreenProxy, type SecurityScreener } from "./security/security-screener.ts";
 import { createMemoryTaskStore } from "./tasks/memory-task-store.ts";
@@ -375,6 +377,7 @@ export interface BuiltApp {
   sandboxMigration: SandboxMigrationRunner;
   blobTransfer: BlobTransferStore;
   files: FileArtifactStore;
+  miniapps: MiniappStore;
   livenessCache: LivenessCache;
   deviceFlowCutover: DeviceFlowCutoverStore;
   replayDedupe?: ReplayDedupe;
@@ -475,7 +478,9 @@ export function buildApp(
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
   });
-  const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"));
+  const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"), {
+    directorySyncProtected: config.emailAuthPrincipals,
+  });
   void identity.hydrate();
   const leaderLease: LeaderLease = pgArtifactMap
     ? createPostgresLeaderLease(pgArtifactMap.pool)
@@ -624,6 +629,7 @@ export function buildApp(
   const files: FileArtifactStore = config.databaseUrl
     ? createPostgresFileArtifactStore(config.databaseUrl, fileBytes)
     : createMemoryFileArtifactStore(fileBytes);
+  const miniapps: MiniappStore = artifactMap<MiniappRecord>("miniapps");
   const baseMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
@@ -866,11 +872,22 @@ export function buildApp(
     },
   };
   const judgeModelId = (): string => config.judgeModelId ?? auxiliaryModelFor(orgBaseModelId() ?? fallback.modelId);
+  const hydrateModelCatalog = async (): Promise<unknown> => {
+    if (!(await modelCredentials.availability()).openrouter) return undefined;
+    return selectableModelCatalog(overrides.modelCredentialFetch);
+  };
   const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, (input) =>
-    resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, input.scopeLabel, fallback, {
-      ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
-      ...(input.model ? { modelId: input.model } : {}),
-    }),
+    resolveRuntimeChoiceDurable(
+      configStore,
+      runtimeOrgScope,
+      input.scopeLabel,
+      fallback,
+      {
+        ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
+        ...(input.model ? { modelId: input.model } : {}),
+      },
+      hydrateModelCatalog,
+    ),
   );
 
   const leaseTtlMs = config.leaseTtlMs;
@@ -1058,6 +1075,7 @@ export function buildApp(
     sessions,
     workspace,
     files,
+    miniapps,
     sandbox,
     connectorTokens,
     modelGateway,
@@ -1238,6 +1256,15 @@ export function buildApp(
     webhooks,
     deliveries,
     directory,
+    ...(config.emailAuthPrincipals?.length
+      ? {
+          emailAuthMembers: config.emailAuthPrincipals.map((principalId) => ({
+            principalId,
+            displayName: principalId,
+            type: "internal" as const,
+          })),
+        }
+      : {}),
     projects,
     environments,
     deploy: deployService,
@@ -1615,6 +1642,7 @@ export function buildApp(
     advisoryLock,
     blobTransfer,
     files,
+    miniapps,
     livenessCache,
     deviceFlowCutover,
     ...(replayDedupe ? { replayDedupe } : {}),
@@ -1701,6 +1729,7 @@ export function serverDeps(
     runs: built.runs,
     workspace: built.workspace,
     files: built.files,
+    miniapps: built.miniapps,
     memory: built.memory,
     blobTransfer: built.blobTransfer,
     sandboxBackend: built.sandbox.profile.backend,
