@@ -1027,6 +1027,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         reason: string;
         purpose: string;
         summary: string;
+        summaryDetail: string;
         approvalKey: string;
         grantModes: { session: boolean; always: boolean };
       }> = [];
@@ -1036,6 +1037,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           .replace(/\s+/g, " ")
           .trim();
         return cleaned.length > 240 ? `${cleaned.slice(0, 240)}…` : cleaned;
+      };
+      const quarantineFullText = (payload: string): string => {
+        const cleaned = payload.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim();
+        return cleaned.length > 16_000 ? `${cleaned.slice(0, 16_000)}…` : cleaned;
       };
       const brokeredTools = deps.brokeredTools ?? [];
       const cutoverModes = new Map<string, DeviceFlowCutoverMode>();
@@ -1470,6 +1475,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     ...(p.matched ? { matched: p.matched } : {}),
                     ...(p.purpose ? { purpose: p.purpose } : {}),
                     ...(p.summary ? { summary: p.summary } : {}),
+                    ...(p.summaryDetail ? { summaryDetail: p.summaryDetail } : {}),
                     ...(p.approvalKey ? { approvalKey: p.approvalKey } : {}),
                     ...(p.kind ? { kind: p.kind } : {}),
                   },
@@ -1858,6 +1864,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           deploy: deps.deploy,
           acl: deps.acl,
           files: deps.files,
+          miniapps: deps.miniapps,
           auditLog: deps.auditLog,
           createdBy: actor.id,
           ...(() => {
@@ -2437,6 +2444,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
                           summary: `Blocked content preview: ${quarantinePreview(result)}`,
+                          summaryDetail: quarantineFullText(result),
                           approvalKey: releaseKey,
                           grantModes: { session: false, always: false },
                         });
@@ -3010,6 +3018,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const turnApprovals: Array<
             NonNullable<HarnessTurnResult["pendingApprovals"]>[number] & {
               summary?: string;
+              summaryDetail?: string;
               grantModes?: { session: boolean; always: boolean };
             }
           > = [...(result.pendingApprovals ?? []), ...quarantineReleaseApprovals];
@@ -3031,6 +3040,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(pa.matched ? { matched: pa.matched } : {}),
                 ...(pa.purpose ? { purpose: pa.purpose } : {}),
                 ...(summary ? { summary } : {}),
+                ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
               },
@@ -3043,6 +3053,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(pa.matched ? { matched: pa.matched } : {}),
                 ...(pa.purpose ? { purpose: pa.purpose } : {}),
                 ...(summary ? { summary } : {}),
+                ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
               },

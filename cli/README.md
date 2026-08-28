@@ -22,9 +22,9 @@ This package is published to npm as `@yc-software/qm`, with npm provenance attes
 building workflow. A release is one dispatch of `.github/workflows/release.yml` from
 `main`: it signs and pushes the first-party images, publishes the package pinning their
 digests, and then tags `v<version>` and creates the GitHub release with the resolved
-digests attached. The version comes from `cli/package.json`, which CI requires a pull
-request to bump whenever it changes what the package ships; a tag that already exists
-stops the release rather than moving. The checked-in image manifest is a sentinel that
+digests attached. Each release picks its own version: a patch bump past the latest released version, or
+`cli/package.json`'s version when a PR raised it higher (for a minor or major bump); a
+tag that already exists stops the release rather than moving. The checked-in image manifest is a sentinel that
 a deployment overrides with real digests. The packed-artifact test exercises the consumer
 path locally.
 
@@ -62,6 +62,12 @@ a piece (e.g. several deployments sharing one `sandbox/`). `check` validates the
 computed secret names, tools, skills, and plugins without network access; `up`, `plan`, and
 `sandbox build` run the same checks first. `doctor` verifies external prerequisites read-only.
 `plan` renders the deployment; AWS mutation requires `up --yes`.
+
+For a single-host Docker deployment, `sandbox.backend: "local"` runs each agent
+computer in its own container. `qm up` builds the local runtime from the CLI's
+pinned sandbox base, mounts the host Docker socket into trusted core, and connects
+core to each sandbox's private network. An explicit `sandbox.image` uses that
+runnable local image instead.
 
 On AWS, `up` snapshots the RDS instance under the deploy lease before its first
 mutation, names the snapshot after the deployment manifest it precedes, and
