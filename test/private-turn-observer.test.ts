@@ -251,6 +251,7 @@ test("durable observation delivery serializes concurrent attempts and rejects di
     observedAt: "2026-08-27T12:00:00.000Z",
     inputSha256: "d".repeat(64),
   };
+  assert.equal(outbox.entry(observation).id, observation.eventRef);
   const first = outbox.observe(observation);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(await outbox.observe(observation), "unconfirmed");

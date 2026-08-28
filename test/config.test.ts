@@ -75,6 +75,71 @@ test("private-turn observer configuration is paired, signed, and HTTPS-only", ()
   );
 });
 
+test("production private-turn observer signing authority is isolated from every configured credential", () => {
+  const shared = "shared-observer-authority-0123456789abcdef";
+  const authorityNames = [
+    "CORE_SIGNING_SECRET",
+    "CAPABILITY_SECRET",
+    "PORTAL_IDENTITY_SECRET",
+    "CONNECTOR_SECRET_KEY",
+    "SKILL_SIGNING_SECRET",
+    "DEPLOY_APPS_SESSION_SECRET",
+    "SECURITY_SCREEN_PROXY_TOKEN",
+    "AWS_DEPLOY_GATE_SECRET",
+    "FLY_API_TOKEN",
+    "FLY_DEPLOY_API_TOKEN",
+    "SPRITES_TOKEN",
+    "SMOLMACHINES_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
+    "DATABASE_URL",
+    "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "SLACK_SIGNING_SECRET",
+    "SLACK_USER_TOKEN",
+    "SLACK_COPILOT_BOT_TOKEN",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "SLACK_OAUTH_CLIENT_SECRET",
+    "NOTION_OAUTH_CLIENT_SECRET",
+    "LINEAR_OAUTH_CLIENT_SECRET",
+    "DROPBOX_OAUTH_CLIENT_SECRET",
+    "GITHUB_OAUTH_CLIENT_SECRET",
+    "X_OAUTH_CLIENT_SECRET",
+    "CODEX_ACCESS_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "PORTAL_SESSION_SECRET",
+    "OIDC_CLIENT_SECRET",
+    "AUTH_CLIENT_SECRET",
+    "AUTH_TOKEN_SECRET",
+    "AUTH_SIGNING_JWK",
+    "RESEND_API_KEY",
+    "SMTP_PASSWORD",
+  ] as const;
+  for (const authorityName of authorityNames) {
+    const candidate = {
+      ...productionEnv,
+      PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns",
+      PRIVATE_TURN_OBSERVER_SIGNING_SECRET: shared,
+      [authorityName]: shared,
+    };
+    assert.throws(
+      () => loadConfig(candidate),
+      new RegExp(`PRIVATE_TURN_OBSERVER_SIGNING_SECRET must differ from ${authorityName}$`, "u"),
+    );
+  }
+  assert.doesNotThrow(() =>
+    loadConfig({
+      ...productionEnv,
+      PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns",
+      PRIVATE_TURN_OBSERVER_SIGNING_SECRET: shared,
+    }),
+  );
+});
+
 test("deploy provider defaults to docker and rejects unknown values", () => {
   assert.equal(loadConfig({}).deployProvider, "docker");
   assert.equal(loadConfig({ DEPLOY_PROVIDER: "fly", FLY_DEPLOY_API_TOKEN: "test-token" }).deployProvider, "fly");
