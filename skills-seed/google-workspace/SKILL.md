@@ -23,6 +23,19 @@ empty or Google returns 401/403, the user either has not connected Google or con
 before this permission existed — tell them to (re)connect it through the product OAuth
 flow.
 
+## Permission and progress UX
+
+When the user directly asks you to read their Gmail, Calendar, or Tasks, start that read
+in the same turn. Do not ask a second conversational yes/no question such as “may I read
+your calendar?”, and do not claim that you are checking before you have started the
+command. The user's request authorizes the attempt; QM's native command-approval UI is
+the only additional approval step when policy requires one. If QM pauses the command,
+stop and let that approval control speak for itself. After approval, resume the same
+operation and return either the actual result or a clear connection/permission error.
+
+This does not authorize a write. Every write still follows the separate exact-preview
+and explicit-approval rules below.
+
 ## Gmail
 
 Use the bundled helper for every Gmail operation — it owns MIME construction, encoding,
