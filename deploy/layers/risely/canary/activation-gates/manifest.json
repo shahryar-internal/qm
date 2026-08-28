@@ -175,7 +175,7 @@
       "id": "postgres_store_source",
       "path": "canary/service/ceo-canary/src/postgres-store.mjs",
       "kind": "source",
-      "sha256": "d5caa6a991ef8f48251cb66c1206f8fb8146fe2946667fd3d3697c07463f653b",
+      "sha256": "23070b9feb820a2c12486dba26dc3df275f05fa9c6ba4cfa9e19d940ae18b192",
       "maxBytes": 65536
     },
     {
@@ -190,6 +190,13 @@
       "path": "canary/service/ceo-canary/src/database-security.mjs",
       "kind": "source",
       "sha256": "5505cf452f69ed09073b064a22a3ec32f046bba2e46391923ca75ae4e6de253f",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_database_connection_source",
+      "path": "canary/service/ceo-canary/src/database-connection.mjs",
+      "kind": "source",
+      "sha256": "ae4ff953e9d139c4b257fcd67d16bab65be4d1d15f77f99b046be1d090525c7a",
       "maxBytes": 65536
     },
     {
@@ -231,7 +238,7 @@
       "id": "postgres_db_operator_source",
       "path": "canary/service/ceo-canary/src/db-operator.mjs",
       "kind": "source",
-      "sha256": "9ca869be46a8a6b3b01b0ba80e5e5067a1c43666e28ddf2ca68f64ea432e775e",
+      "sha256": "f87fc34c2313da85e2fed9a6f268dea5ee7b15468788cd1c5dd57760f2450f3b",
       "maxBytes": 65536
     },
     {
@@ -245,14 +252,14 @@
       "id": "postgres_migrate_source",
       "path": "canary/service/ceo-canary/src/migrate.mjs",
       "kind": "source",
-      "sha256": "062fa7de10e8a7f341370e411b19be651f6344abc7e3bd800d7a10337af7f251",
+      "sha256": "12f0c1cacca52eb5bd52138648bd2371d6e089ce14e78c967a23f1564f0d0153",
       "maxBytes": 65536
     },
     {
       "id": "postgres_credential_provisioner_source",
       "path": "canary/service/ceo-canary/src/provision-credentials.mjs",
       "kind": "source",
-      "sha256": "bbef16478bd25ed0cb93c833b99cbe4b650cf730874ade0a2e4032baf3573180",
+      "sha256": "c3d86e148fc8213e68c27edebcfa5c2db7329cb155dac7ab2bde7af0444e68dd",
       "maxBytes": 65536
     },
     {
@@ -266,7 +273,7 @@
       "id": "postgres_lifecycle_test",
       "path": "test/ceo-canary/lifecycle.pg16.integration.test.mjs",
       "kind": "test",
-      "sha256": "9b17218cfaea4802c92501fa3beffc2f26d03719f3d808529e38f3d98de37b69",
+      "sha256": "0e4320ec2caf390328e4842a7f9d323c9e29def0b8b0b71921c975e7e537922a",
       "maxBytes": 131072
     },
     {
@@ -280,14 +287,14 @@
       "id": "ceo_canary_security_doc",
       "path": "canary/service/ceo-canary/SECURITY.md",
       "kind": "source",
-      "sha256": "76184af37699923ec9790ac2eef3bf688b7f88b820ab9a89ef380dbf7f7f0306",
+      "sha256": "02f96dcde3648d2349444d5b7f0b5a3232fd7a3641210a5aea559a5ab0710069",
       "maxBytes": 65536
     },
     {
       "id": "ceo_canary_migration_runbook",
       "path": "canary/service/ceo-canary/migrations/RUNBOOK.md",
       "kind": "source",
-      "sha256": "517dc6fdfe39a217edcde9b7431769fb43a839238fba38d81d7d7c1b3f3c3a74",
+      "sha256": "8f902eb89b6d41c0a6b0fc58838746bf7f71d6cd8c2da3aad2f6d28f1de3904e",
       "maxBytes": 65536
     },
     {
@@ -336,7 +343,7 @@
       "id": "ceo_canary_tfvars_hash_only",
       "path": "infra/terraform.tfvars",
       "kind": "source",
-      "sha256": "34ccef397970ee46fb95c30f3ada7873110a542978b9a6279309849f2e326507",
+      "sha256": "9c1cf0381e165a30848af1959927a9f9b8298d441bb9c0d0e9923b91b0d692b8",
       "maxBytes": 65536
     },
     {
@@ -371,7 +378,7 @@
       "id": "ceo_canary_task_runbook",
       "path": "canary/deployment/RUNBOOK.md",
       "kind": "source",
-      "sha256": "e8a6d818cd1c6360f161d28f56213a3f086747600365bb13100160e9409c073e",
+      "sha256": "ef75307a133223f7dd756643927f22a80da0ea4bf04bbf037f1aa88b58b51e44",
       "maxBytes": 65536
     },
     {
@@ -392,14 +399,14 @@
       "id": "ceo_canary_db_operator_test",
       "path": "test/ceo-canary/db-operator.test.mjs",
       "kind": "test",
-      "sha256": "41bc75458ac8e766debdabde275faf5600659b917af14368f48b09b4d290a843",
+      "sha256": "2620f9e63839c2d61edf6d96997989891bbb5bccb264a97f1872ae1d8407206c",
       "maxBytes": 65536
     },
     {
       "id": "ceo_canary_db_operator_runbook",
       "path": "canary/deployment/DB-OPERATOR-RUNBOOK.md",
       "kind": "source",
-      "sha256": "255ece2f37f53ec8ae26298aaa8e6d3e2d5ce0ad953049bd9fe99c080c4a1a7f",
+      "sha256": "cde955b3247a91570faae11bf8865811767f0d9cf01a2720d42031663c765107",
       "maxBytes": 65536
     },
     {
@@ -413,7 +420,28 @@
       "id": "postgres_dockerfile_source",
       "path": "canary/service/ceo-canary/Dockerfile",
       "kind": "source",
-      "sha256": "de03832b224c5f6c21d1e553de08cc18235892591cb0f1da3c738e25c0d6ae24",
+      "sha256": "e32a936442075965d1df365ee423c3688ca15e7350253d223a94bb2bed903ce0",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_db_operator_dockerfile_source",
+      "path": "canary/service/ceo-canary/Dockerfile.db-operator",
+      "kind": "source",
+      "sha256": "4554bfe48b181f654c443e6e8341c9aab77d830b9677f4563dd8e96d97f519cd",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_db_operator_package_source",
+      "path": "canary/service/ceo-canary/db-operator/package.json",
+      "kind": "source",
+      "sha256": "c0997aa317cd42737e8e51088fe45c633a660b7bbbdc3932dafa3d83e0960595",
+      "maxBytes": 65536
+    },
+    {
+      "id": "postgres_db_operator_lock_source",
+      "path": "canary/service/ceo-canary/db-operator/package-lock.json",
+      "kind": "source",
+      "sha256": "7c39cb0a04cc9ea2ae643bc6498693d4253f765c31e72d66679543cf9ecd1c16",
       "maxBytes": 65536
     },
     {
@@ -676,6 +704,7 @@
         "postgres_store_source",
         "postgres_evaluation_writer_source",
         "postgres_database_security_source",
+        "postgres_database_connection_source",
         "postgres_database_boundary_source",
         "postgres_schema_source",
         "postgres_catalog_authority_source",
@@ -708,6 +737,9 @@
         "ceo_canary_db_operator_runbook",
         "postgres_sentinel_test",
         "postgres_dockerfile_source",
+        "postgres_db_operator_dockerfile_source",
+        "postgres_db_operator_package_source",
+        "postgres_db_operator_lock_source",
         "postgres_runtime_dockerfile_source",
         "secret_boundary_test",
         "postgres_container_test"

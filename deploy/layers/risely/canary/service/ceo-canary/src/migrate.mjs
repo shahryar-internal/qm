@@ -1,12 +1,11 @@
 import pg from "pg";
 import { fileURLToPath } from "node:url";
+import { assertFixedDatabaseContract, migrationPoolConfig } from "./database-connection.mjs";
 import {
-  assertFixedDatabaseContract,
   assertMigrationDatabaseBoundary,
   assertOwnerDatabaseBoundary,
-  migrationPoolConfig,
-} from "./postgres-store.mjs";
-import { assertPostMigrationDatabaseContract } from "./database-security.mjs";
+  assertPostMigrationDatabaseContract,
+} from "./database-security.mjs";
 import { CANARY_MAINTENANCE_LOCK_KEY, CANARY_OWNER_DATABASE_USER, migrationSql } from "./schema.mjs";
 
 const { Pool } = pg;

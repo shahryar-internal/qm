@@ -36,6 +36,9 @@ const testImage = `risely-ceo-canary-test-${suffix}`;
 const operatorImage = `risely-ceo-canary-operator-${suffix}`;
 const layerDirectory = fileURLToPath(new URL("../../canary/", import.meta.url));
 const dockerfilePath = fileURLToPath(new URL("../../canary/service/ceo-canary/Dockerfile", import.meta.url));
+const operatorDockerfilePath = fileURLToPath(
+  new URL("../../canary/service/ceo-canary/Dockerfile.db-operator", import.meta.url),
+);
 const postgresPassword = "postgres-isolated-lifecycle-fixture";
 const bootstrapPassword = "qm-isolated-lifecycle-fixture";
 const migrationPassword = Buffer.alloc(32, 0x41).toString("base64url");
@@ -687,16 +690,7 @@ test(
       `CREATE ROLE qm LOGIN CREATEROLE NOSUPERUSER NOCREATEDB NOREPLICATION NOBYPASSRLS PASSWORD '${bootstrapPassword}';
      ALTER DATABASE qm OWNER TO qm;`,
     );
-    await requireDocker([
-      "build",
-      "--tag",
-      operatorImage,
-      "--target",
-      "credential-operator",
-      "--file",
-      dockerfilePath,
-      layerDirectory,
-    ]);
+    await requireDocker(["build", "--tag", operatorImage, "--file", operatorDockerfilePath, layerDirectory]);
     const ca = await readFile(certificatePath, "utf8");
     const adminUrl = databaseUrl("qm", bootstrapPassword, databaseAlias);
     const dbOperatorArgs = (phase, secretEnvironment = []) => [
