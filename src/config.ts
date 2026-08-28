@@ -24,6 +24,7 @@ import {
   type ModelProviderAvailability,
 } from "./model/pi-models.ts";
 import { isStrongSigningSecret } from "./auth/source-auth.ts";
+import { DEV_GEMINI_MODEL, devGeminiProviderFromEnv, type DevGeminiProvider } from "./model/dev-gemini-provider.ts";
 
 export interface Config {
   production: boolean;
@@ -57,6 +58,7 @@ export interface Config {
   openaiApiKey?: string;
   openrouterApiKey?: string;
   modelProvider?: ModelProvider;
+  devGeminiProvider?: DevGeminiProvider;
   providerBaseUrls: ProviderBaseUrls;
   piCaptureRequests: boolean;
   piSystemCacheSplit: boolean;
@@ -674,6 +676,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`PRIVATE_TURN_OBSERVER_SIGNING_SECRET must differ from ${reusedObserverAuthority}`);
   }
   const modelProvider = modelProviderEnvStrict(env);
+  const devGeminiProvider = devGeminiProviderFromEnv(env);
   for (const key of ["SESSION_STORE", "RUN_STORE", "ARTIFACT_STORE"] as const) {
     if (env[key] === "sqlite") {
       throw new Error(
@@ -880,7 +883,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         }
       : {}),
     ...(orgBrandingFromEnv(env) ? { brandingDefault: orgBrandingFromEnv(env) } : {}),
-    ...(env.PI_MODEL ? { modelId: env.PI_MODEL } : {}),
+    ...(env.PI_MODEL || devGeminiProvider ? { modelId: env.PI_MODEL || DEV_GEMINI_MODEL } : {}),
     ...(env.OPENCODE_MODEL || env.PI_MODEL ? { opencodeModel: env.OPENCODE_MODEL || env.PI_MODEL } : {}),
     ...(env.CODEX_MODEL ? { codexModel: env.CODEX_MODEL } : {}),
     ...(env.CODEX_BIN ? { codexBinPath: env.CODEX_BIN } : {}),
@@ -895,6 +898,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.OPENAI_API_KEY ? { openaiApiKey: env.OPENAI_API_KEY } : {}),
     ...(env.OPENROUTER_API_KEY ? { openrouterApiKey: env.OPENROUTER_API_KEY } : {}),
     ...(modelProvider ? { modelProvider } : {}),
+    ...(devGeminiProvider ? { devGeminiProvider } : {}),
     providerBaseUrls,
     ...(env.ADMIN_GRANTS ? { adminGrants: env.ADMIN_GRANTS } : {}),
     ...(env.AUTH_ALLOWED_EMAILS

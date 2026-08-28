@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { baseModelProviders, boolEnv, loadConfig, numEnv, CONFIG_DEFAULTS } from "../src/config.ts";
+import { DEV_GEMINI_BASE_URL, DEV_GEMINI_MODEL } from "../src/model/dev-gemini-provider.ts";
 
 const productionEnv = {
   NODE_ENV: "production",
@@ -460,6 +461,31 @@ test("HARNESS=pi can boot before an admin configures a model provider", () => {
   assert.doesNotThrow(() => loadConfig({ HARNESS: "mock" }));
   assert.doesNotThrow(() => loadConfig({ ...productionEnv, HARNESS: "pi" }));
   assert.doesNotThrow(() => loadConfig({ ...productionEnv, HARNESS: "pi", ANTHROPIC_API_KEY: "sk-ant" }));
+});
+
+test("the dev Gemini provider is exact, transient, Pi-only, and forbidden in production", () => {
+  const env = {
+    DEV_INSTANCE_GEMINI_PROVIDER: "1",
+    GEMINI_API_KEY: "gemini-test-key",
+    HARNESS: "pi",
+  };
+  const config = loadConfig(env);
+  assert.equal(config.modelId, DEV_GEMINI_MODEL);
+  assert.equal(config.devGeminiProvider?.apiKey, "gemini-test-key");
+  assert.equal(config.devGeminiProvider?.spec.baseUrl, DEV_GEMINI_BASE_URL);
+  assert.deepEqual(
+    config.devGeminiProvider?.spec.models.map((model) => model.id),
+    [DEV_GEMINI_MODEL],
+  );
+  assert.throws(() => loadConfig({ ...productionEnv, ...env }), /forbidden in production/);
+  assert.throws(() => loadConfig({ ...env, HARNESS: "opencode" }), /requires HARNESS=pi/);
+  assert.throws(
+    () => loadConfig({ ...env, MODEL_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "anthropic-test-key" }),
+    /cannot be combined/,
+  );
+  assert.throws(() => loadConfig({ ...env, GEMINI_BASE_URL: "https://proxy.example/v1" }), /GEMINI_BASE_URL/);
+  assert.throws(() => loadConfig({ ...env, GEMINI_MODEL: "gemini-other" }), /GEMINI_MODEL/);
+  assert.throws(() => loadConfig({ ...env, PI_JUDGE_MODEL: "claude-opus-5" }), /PI_JUDGE_MODEL/);
 });
 
 test("HARNESS=codex requires OPENAI_API_KEY: its CLI cannot do browser OAuth in a container", () => {

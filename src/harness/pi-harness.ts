@@ -50,6 +50,7 @@ import {
   contextTokenBudgetForModel,
 } from "../model/pi-models.ts";
 import { customModelsJson, customProvidersVersion } from "../model/custom-providers.ts";
+import { normalizeConfiguredDevGeminiPayload } from "../model/dev-gemini-provider.ts";
 import {
   defineHarness,
   envelopeWithoutMessages,
@@ -93,6 +94,7 @@ export interface PiHarnessOptions {
   openaiApiKey?: string;
   openrouterApiKey?: string;
   resolveProviderKeys?: () => Promise<ProviderKeys>;
+  devGeminiProviderId?: string;
   tempDirPrefix?: string;
   captureRequests?: boolean;
   systemCacheSplit?: boolean;
@@ -1417,6 +1419,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           }
           const result = prior ? await prior(payload, model) : payload;
           let finalPayload = result ?? payload;
+          const payloadProvider = (model as { provider?: unknown } | null)?.provider;
+          finalPayload = normalizeConfiguredDevGeminiPayload(finalPayload, payloadProvider, opts?.devGeminiProviderId);
           try {
             finalPayload = trimPayloadToByteBudget(finalPayload);
           } catch (e) {

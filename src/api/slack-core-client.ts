@@ -26,7 +26,7 @@ import type { TurnStream } from "../runs/turn-stream.ts";
 import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import { swallowAs } from "../util/errors.ts";
 import { resolveRuntimeChoiceDurable, type RuntimeChoice } from "../harness/harness-router.ts";
-import { modelDisplayName } from "../model/pi-models.ts";
+import { modelDisplayName, resolveModel } from "../model/pi-models.ts";
 
 interface SlackRunHooks {
   onFirstBlock?(text: string): void;
@@ -105,6 +105,7 @@ export interface SlackCoreClientDeps {
   app: App;
   config: ScopedConfigStore;
   runtimeFallback: RuntimeChoice;
+  runtimeChoiceOverride?: RuntimeChoice;
   blobTransfer: BlobTransferStore;
   deliveries: DeliveryStore;
   metrics: MetricsSink;
@@ -138,12 +139,22 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
 
     async surfaceHeaderFacts(scope) {
       const [choice, branding] = await Promise.all([
-        resolveRuntimeChoiceDurable(deps.config, orgScope, scope, deps.runtimeFallback),
+        resolveRuntimeChoiceDurable(
+          deps.config,
+          orgScope,
+          scope,
+          deps.runtimeFallback,
+          undefined,
+          undefined,
+          deps.runtimeChoiceOverride,
+        ),
         resolveBranding(deps.config, orgScope, deps.brandingDefault),
       ]);
       return {
         ...(branding.selfLabel ? { agentLabel: branding.selfLabel } : {}),
-        modelName: modelDisplayName(choice.modelId),
+        modelName: deps.runtimeChoiceOverride
+          ? (resolveModel(choice.modelId)?.name ?? modelDisplayName(choice.modelId))
+          : modelDisplayName(choice.modelId),
       };
     },
 

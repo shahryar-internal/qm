@@ -5,6 +5,7 @@ export interface SpecInputs {
   worktree: string;
   ports: SlotPorts;
   baseEnv: Record<string, string>;
+  coreEnv: Record<string, string>;
   watch: boolean;
   webUiBasePath: string;
   slack?: { botToken: string; appToken: string };
@@ -30,6 +31,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
       argv: ["node", "--env-file-if-exists=.env", ...watchArgs, "src/index.ts"],
       env: {
         ...base,
+        ...i.coreEnv,
         ORG_ID: orgId,
         SESSION_STORE: i.sessionStore,
         RUN_STORE: i.runStore,
