@@ -100,6 +100,10 @@ variable "ceo_canary_db_operator_image" {
     error_message = "ceo_canary_db_operator_image must be a complete ECR repository URI pinned by sha256 digest"
   }
 }
+variable "ceo_canary_db_inventory_broker_registration_enabled" {
+  type    = bool
+  default = false
+}
 variable "object_store_force_destroy" {
   type    = bool
   default = false

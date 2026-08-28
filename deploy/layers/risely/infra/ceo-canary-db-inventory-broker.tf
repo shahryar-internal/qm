@@ -2,6 +2,7 @@ locals {
   ceo_canary_db_inventory_broker_name = "${local.ceo_canary_db_operator_contract.familyPrefix}-inventory-broker"
   ceo_canary_db_inventory_broker_arn  = "arn:aws:states:${var.region}:${data.aws_caller_identity.current.account_id}:stateMachine:${local.ceo_canary_db_inventory_broker_name}"
   ceo_canary_db_inventory_broker_enabled = (
+    var.ceo_canary_db_inventory_broker_registration_enabled &&
     local.ceo_canary_db_operator_enabled &&
     contains(keys(local.ceo_canary_db_operator_phases), "inventory")
   )

@@ -8,6 +8,8 @@ const read = (path) => readFileSync(`${layerDirectory}${path}`, "utf8");
 const broker = read("infra/ceo-canary-db-inventory-broker.tf");
 const main = read("infra/main.tf");
 const outputs = read("infra/outputs.tf");
+const tfvars = read("infra/terraform.tfvars");
+const variables = read("infra/variables.tf");
 
 test("inventory broker can launch only the exact read-only task with no caller overrides", () => {
   assert.match(broker, /phase\s+= "inventory"/);
@@ -46,6 +48,12 @@ test("broker execution role is source-bound and cannot pass unrelated roles", ()
 });
 
 test("broker is absent with the operator and has no automatic execution path", () => {
+  assert.match(variables, /variable "ceo_canary_db_inventory_broker_registration_enabled" \{[\s\S]*?default = false/);
+  assert.match(tfvars, /ceo_canary_db_inventory_broker_registration_enabled = false/);
+  assert.match(
+    broker,
+    /ceo_canary_db_inventory_broker_enabled = \(\s*var\.ceo_canary_db_inventory_broker_registration_enabled &&/,
+  );
   for (const resource of ["aws_iam_role", "aws_iam_role_policy", "aws_sfn_state_machine"]) {
     assert.match(
       broker,
