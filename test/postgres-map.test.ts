@@ -12,11 +12,12 @@ import {
   type KeychainGrant,
 } from "../src/credentials/keychain.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
-import {
-  createPrivateTurnObservationOutbox,
-  type PrivateTurnObservationOutboxRecord,
-} from "../src/api/private-turn-observation-outbox.ts";
+import { createPrivateTurnObservationOutbox } from "../src/api/private-turn-observation-outbox.ts";
 import type { PrivateTurnObservation } from "../src/api/private-turn-observer.ts";
+import {
+  createPostgresTransactionalOutbox,
+  createTransactionalOutboxEntry,
+} from "../src/persistence/transactional-outbox.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres map tests";
@@ -258,10 +259,8 @@ test("pg map: update transforms a row under a lock", { skip }, async () => {
 });
 
 test("pg map: private-turn outbox recovers an unconfirmed delivery across instances", { skip }, async () => {
-  let now = 1_000;
-  const firstBacking = createPostgresMapFactory(URL!).map<PrivateTurnObservationOutboxRecord>(
-    "map_private_turn_observations",
-  );
+  let now = Date.parse("2026-08-27T12:00:00.000Z");
+  const storage = createPostgresTransactionalOutbox(URL!);
   const observation: PrivateTurnObservation = {
     source: "web_chat",
     eventRef: `qm-private-turn:${"a".repeat(64)}`,
@@ -273,7 +272,7 @@ test("pg map: private-turn outbox recovers an unconfirmed delivery across instan
     inputSha256: "b".repeat(64),
   };
   const first = createPrivateTurnObservationOutbox({
-    backing: firstBacking,
+    storage,
     downstream: { observe: async () => Promise.reject(new Error("transport unavailable")) },
     timeoutMs: 10,
     retryBaseMs: 10,
@@ -284,7 +283,7 @@ test("pg map: private-turn outbox recovers an unconfirmed delivery across instan
   now += 10;
   let delivered = 0;
   const restarted = createPrivateTurnObservationOutbox({
-    backing: createPostgresMapFactory(URL!).map<PrivateTurnObservationOutboxRecord>("map_private_turn_observations"),
+    storage: createPostgresTransactionalOutbox(URL!),
     downstream: {
       observe: async () => {
         delivered += 1;
@@ -298,6 +297,36 @@ test("pg map: private-turn outbox recovers an unconfirmed delivery across instan
   assert.deepEqual(await restarted.sweep(), { attempted: 1, delivered: 1, pending: 0 });
   assert.equal(await restarted.observe(observation), "duplicate");
   assert.equal(delivered, 1);
+});
+
+test("pg transactional outbox claims bounded disjoint batches across instances", { skip }, async () => {
+  const first = createPostgresTransactionalOutbox(URL!);
+  const second = createPostgresTransactionalOutbox(URL!);
+  const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const topic = `test.claim.${Math.random().toString(36).slice(2)}`;
+  try {
+    for (let index = 0; index < 7; index += 1) {
+      await first.stage(
+        createTransactionalOutboxEntry({
+          id: `claim-${nonce}-${index}`,
+          topic,
+          payloadJson: JSON.stringify({ index }),
+          createdAt: Date.now() - 1_000,
+        }),
+      );
+    }
+    const [left, right] = await Promise.all([
+      first.claim(topic, 3, `left-${nonce}`, 60_000, Date.now()),
+      second.claim(topic, 3, `right-${nonce}`, 60_000, Date.now()),
+    ]);
+    assert.equal(left.length, 3);
+    assert.equal(right.length, 3);
+    assert.equal(new Set([...left, ...right].map((claim) => claim.id)).size, 6);
+    assert.equal((await first.claim(topic, 3, `tail-${nonce}`, 60_000, Date.now())).length, 1);
+  } finally {
+    await first.close?.();
+    await second.close?.();
+  }
 });
 
 test("pg map: concurrent keychain instances claim a once grant exactly once", { skip }, async () => {

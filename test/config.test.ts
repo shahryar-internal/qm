@@ -46,6 +46,35 @@ test("store kinds default to memory and accept postgres", () => {
   );
 });
 
+test("private-turn observer configuration is paired, signed, and HTTPS-only", () => {
+  const configured = loadConfig({
+    PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns",
+    PRIVATE_TURN_OBSERVER_SIGNING_SECRET: "private-turn-observer-secret-0123456789",
+  });
+  assert.equal(configured.privateTurnObserverUrl, "https://observer.example.test/v1/private-turns");
+  assert.equal(configured.privateTurnObserverSigningSecret, "private-turn-observer-secret-0123456789");
+  assert.throws(
+    () => loadConfig({ PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns" }),
+    /must be configured together/u,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        PRIVATE_TURN_OBSERVER_URL: "http://observer.example.test/v1/private-turns",
+        PRIVATE_TURN_OBSERVER_SIGNING_SECRET: "private-turn-observer-secret-0123456789",
+      }),
+    /must be an HTTPS URL/u,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        PRIVATE_TURN_OBSERVER_URL: "https://observer.example.test/v1/private-turns",
+        PRIVATE_TURN_OBSERVER_SIGNING_SECRET: "short",
+      }),
+    /at least 32 characters/u,
+  );
+});
+
 test("deploy provider defaults to docker and rejects unknown values", () => {
   assert.equal(loadConfig({}).deployProvider, "docker");
   assert.equal(loadConfig({ DEPLOY_PROVIDER: "fly", FLY_DEPLOY_API_TOKEN: "test-token" }).deployProvider, "fly");

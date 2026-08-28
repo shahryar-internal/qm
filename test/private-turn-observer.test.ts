@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import type { PrivateTurnObservation } from "../src/api/private-turn-observer.ts";
 import { createPrivateTurnObservationOutbox } from "../src/api/private-turn-observation-outbox.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createMemoryTransactionalOutbox } from "../src/persistence/transactional-outbox.ts";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
@@ -175,9 +175,8 @@ test("observer timeout configuration is bounded before the app accepts work", ()
 });
 
 test("durable observation delivery recovers after timeout and process restart", async () => {
-  const backing =
-    createMemoryMap<import("../src/api/private-turn-observation-outbox.ts").PrivateTurnObservationOutboxRecord>();
-  let now = 1_000;
+  const storage = createMemoryTransactionalOutbox();
+  let now = Date.parse("2026-08-27T12:00:00.000Z");
   let mode: "hang" | "accept" = "hang";
   let calls = 0;
   const downstream = {
@@ -198,7 +197,7 @@ test("durable observation delivery recovers after timeout and process restart", 
     inputSha256: "b".repeat(64),
   };
   const first = createPrivateTurnObservationOutbox({
-    backing,
+    storage,
     downstream,
     timeoutMs: 2,
     now: () => now,
@@ -206,12 +205,12 @@ test("durable observation delivery recovers after timeout and process restart", 
     retryBaseMs: 10,
   });
   assert.equal(await first.observe(observation), "unconfirmed");
-  assert.equal((await backing.get(observation.eventRef))?.state, "pending");
+  assert.equal((await storage.get(observation.eventRef))?.state, "pending");
 
   mode = "accept";
   now += 10;
   const restarted = createPrivateTurnObservationOutbox({
-    backing,
+    storage,
     downstream,
     timeoutMs: 2,
     now: () => now,
@@ -219,18 +218,17 @@ test("durable observation delivery recovers after timeout and process restart", 
     retryBaseMs: 10,
   });
   assert.deepEqual(await restarted.sweep(), { attempted: 1, delivered: 1, pending: 0 });
-  assert.equal((await backing.get(observation.eventRef))?.state, "delivered");
+  assert.equal((await storage.get(observation.eventRef))?.state, "delivered");
   assert.equal(await restarted.observe(observation), "duplicate");
   assert.equal(calls, 2);
 });
 
 test("durable observation delivery serializes concurrent attempts and rejects divergent reuse", async () => {
-  const backing =
-    createMemoryMap<import("../src/api/private-turn-observation-outbox.ts").PrivateTurnObservationOutboxRecord>();
+  const storage = createMemoryTransactionalOutbox();
   let release: (() => void) | undefined;
   let calls = 0;
   const outbox = createPrivateTurnObservationOutbox({
-    backing,
+    storage,
     timeoutMs: 100,
     leaseToken: () => "stable-lease",
     downstream: {
@@ -259,8 +257,44 @@ test("durable observation delivery serializes concurrent attempts and rejects di
   release?.();
   assert.equal(await first, "accepted");
   assert.equal(calls, 1);
-  await assert.rejects(
-    outbox.observe({ ...observation, inputSha256: "e".repeat(64) }),
-    /event identity is already bound/u,
-  );
+  await assert.rejects(outbox.observe({ ...observation, inputSha256: "e".repeat(64) }), /identity is already bound/u);
+});
+
+test("observation sweeps are single-flight and bounded while a delivery is slow", async () => {
+  const storage = createMemoryTransactionalOutbox();
+  let release: (() => void) | undefined;
+  let calls = 0;
+  const outbox = createPrivateTurnObservationOutbox({
+    storage,
+    timeoutMs: 1_000,
+    downstream: {
+      async observe() {
+        calls += 1;
+        if (calls === 1) await new Promise<void>((resolve) => (release = resolve));
+        return "accepted";
+      },
+    },
+  });
+  for (let index = 0; index < 3; index += 1) {
+    await storage.stage(
+      outbox.entry({
+        source: "web_chat",
+        eventRef: `qm-private-turn:${String(index).repeat(64)}`,
+        conversationRef: `web:owner:${index}`,
+        principalRef: "internal:owner",
+        audienceRef: "personal:internal:owner",
+        workspaceRef: "org:default-org",
+        observedAt: new Date(Date.now() - 1_000).toISOString(),
+        inputSha256: String(index + 3).repeat(64),
+      }),
+    );
+  }
+  const first = outbox.sweep(2);
+  await new Promise((resolve) => setImmediate(resolve));
+  const overlapping = outbox.sweep(100);
+  assert.strictEqual(overlapping, first);
+  release?.();
+  assert.deepEqual(await first, { attempted: 2, delivered: 2, pending: 0 });
+  assert.equal(calls, 2);
+  assert.deepEqual(await outbox.sweep(2), { attempted: 1, delivered: 1, pending: 0 });
 });

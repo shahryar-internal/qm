@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, withPgTransaction } from "../persistence/pg-pool.ts";
+import { insertTransactionalOutbox, TRANSACTIONAL_OUTBOX_SCHEMA } from "../persistence/transactional-outbox.ts";
 import type { TurnResult } from "../types.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
@@ -46,7 +47,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
   const events = new EventEmitter();
   events.setMaxListeners(0);
 
-  const { query: q, close: closePool } = createPgPool(connectionString, [
+  const pg = createPgPool(connectionString, [
     `CREATE TABLE IF NOT EXISTS runs(
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL, status TEXT NOT NULL,
         request TEXT NOT NULL, result TEXT, idempotency_key TEXT UNIQUE,
@@ -76,6 +77,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         PRIMARY KEY(run_id, attempt, call_index)
       )`,
     `ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 1`,
+    ...TRANSACTIONAL_OUTBOX_SCHEMA,
     // One-time migration to the (run_id, attempt, call_index) key. The whole
     // DO block is a single transaction, so a crash mid-migration can't leave
     // the table without a primary key the way the old unconditional
@@ -106,6 +108,8 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         END IF;
       END $$`,
   ]);
+  const q = pg.query;
+  const closePool = pg.close;
 
   async function getRun(id: string): Promise<Run | null> {
     const { rows } = await q("SELECT * FROM runs WHERE id = $1", [id]);
@@ -154,17 +158,29 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
   const runs: RunStore = {
     ...(Number.isFinite(maxClaims) ? { maxClaims } : {}),
 
-    async enqueue({ sessionId, request, dedupKey, maxAttempts = 3 }: EnqueueInput): Promise<EnqueueResult> {
-      const id = randomUUID();
-      const { rows: inserted } = await q(
-        `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at)
-         VALUES ($1,$2,'pending',$3,$4,0,$5,$6)
-         ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
-        [id, sessionId, JSON.stringify(request), dedupKey ?? null, maxAttempts, Date.now()],
-      );
-      if (inserted[0]) return { run: rowToRun(inserted[0]), deduped: false };
-      const { rows } = await q("SELECT * FROM runs WHERE idempotency_key = $1", [dedupKey]);
-      return { run: rowToRun(rows[0]!), deduped: true };
+    async enqueue({
+      sessionId,
+      request,
+      dedupKey,
+      maxAttempts = 3,
+      acceptanceOutbox,
+    }: EnqueueInput): Promise<EnqueueResult> {
+      return withPgTransaction(await pg.pool(), async (client) => {
+        const id = randomUUID();
+        const { rows: inserted } = await client.query(
+          `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at)
+           VALUES ($1,$2,'pending',$3,$4,0,$5,$6)
+           ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
+          [id, sessionId, JSON.stringify(request), dedupKey ?? null, maxAttempts, Date.now()],
+        );
+        const deduped = !inserted[0];
+        const row =
+          inserted[0] ?? (await client.query("SELECT * FROM runs WHERE idempotency_key = $1", [dedupKey])).rows[0];
+        const run = rowToRun(row!);
+        const entry = acceptanceOutbox?.({ runId: run.id, acceptedAt: run.createdAt });
+        if (entry) await insertTransactionalOutbox(client, entry);
+        return { run, deduped };
+      });
     },
 
     async claim(workerId, ttlMs): Promise<Run | null> {

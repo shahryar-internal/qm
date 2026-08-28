@@ -1,5 +1,6 @@
 import type { TurnResult } from "../types.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
+import type { TransactionalOutboxEntry } from "../persistence/transactional-outbox.ts";
 
 type RunStatus = "pending" | "running" | "done" | "failed";
 
@@ -40,6 +41,7 @@ export interface EnqueueInput {
   request: OrchestratorInput;
   dedupKey?: string;
   maxAttempts?: number;
+  acceptanceOutbox?: (accepted: { runId: string; acceptedAt: number }) => TransactionalOutboxEntry | undefined;
 }
 
 export interface EnqueueResult {
