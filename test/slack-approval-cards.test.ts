@@ -165,6 +165,7 @@ test("recoveredApprovalContext rebuilds a button context from core's durable rec
   assert.equal(ctx!.requesterId, "U1");
   assert.equal(ctx!.channel, "C1", "origin channel comes from the record, not the DM click");
   assert.equal(ctx!.replyThreadTs, "t1", "origin thread comes from the record's deliveryTarget");
+  assert.deepEqual(ctx!.nativeAgentSession, { channel: "C1", threadTs: "t1" });
   assert.equal(ctx!.approvalChannel, "D9", "the card lives where the click landed (the DM)");
   assert.equal(ctx!.threadOnly, true, "channel kind replies thread-only, like the original turn");
   assert.equal(ctx!.command, "git push --force origin main");
