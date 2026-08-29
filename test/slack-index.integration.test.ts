@@ -586,6 +586,37 @@ test("native approval resumes processing and streams the result into the same ag
   }
 });
 
+test("a transient approval continuation failure keeps a command-scoped card once-only", async () => {
+  const f = await fixture();
+  f.core.result = {
+    status: "pending_approval",
+    pendingApprovals: [
+      {
+        requestId: "approval-once-only",
+        command: "fixed-tool create --request work/fixed-tool/event.json --request-sha256 " + "a".repeat(64),
+        reason: "exact Google write",
+        grantModes: { session: false, always: false },
+      },
+    ],
+  };
+  try {
+    await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "schedule it", ts: "105.1" });
+    f.core.submitError = new Error("temporary core failure");
+    await f.app.emitAction("hilo_allow_once", "approval-once-only", {
+      user: { id: "U1" },
+      channel: { id: "D1" },
+      message: { ts: "posted-1", thread_ts: "105.1" },
+    });
+    const update = f.client.updates.at(-1);
+    const actionIds = (update?.blocks ?? [])
+      .filter((block: any) => block.type === "actions")
+      .flatMap((block: any) => block.elements.map((element: any) => element.action_id));
+    assert.deepEqual(actionIds, ["hilo_allow_once", "hilo_deny"]);
+  } finally {
+    await f.stop();
+  }
+});
+
 test("stopping a native approval continuation aborts its exact run and suppresses the late result", async () => {
   const f = await fixture();
   const statuses: string[] = [];

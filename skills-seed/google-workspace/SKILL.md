@@ -8,6 +8,8 @@ requiredCapabilities:
 
 # Google Workspace
 
+If trusted system or deployment guidance advertises a fixed Google execution tool, immediately read and use the named deployment-specific Google skill. Its commands and permission/approval UX replace every command and approval instruction below: show the exact preview, then attempt its sealed write so QM can pause on the native once-only approval. Do not ask a separate conversational yes/no question. Do not invoke this skill's Python helper, direct HTTP examples, or token variables alongside it.
+
 Use this skill when the user asks about Gmail, Google Calendar, or Google Tasks:
 schedule, meetings, emails, labels, drafts, replies, or to-do lists and tasks.
 

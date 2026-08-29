@@ -108,6 +108,7 @@ export interface ServerDeps {
   files?: FileArtifactStore;
   memory?: MemoryService;
   sandboxBackend?: string;
+  sandboxImage?: { identifier: string; version?: string };
   egressDeclaredEnforcement?: EgressEnforcement;
   egressEnforcement?: EgressEnforcement;
   egressControlPlaneConfigured?: boolean;

@@ -41,6 +41,7 @@ interface StoredApprovalView {
   reason?: string;
   purpose?: string;
   summary?: string;
+  grantModes?: { session: boolean; always: boolean };
   request?: Record<string, unknown>;
 }
 
@@ -325,6 +326,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
         ...(record.reason !== undefined ? { reason: record.reason } : {}),
         ...(record.purpose !== undefined ? { purpose: record.purpose } : {}),
         ...(record.summary !== undefined ? { summary: record.summary } : {}),
+        ...(record.grantModes !== undefined ? { grantModes: record.grantModes } : {}),
         ...(record.request !== undefined ? { request: record.request as unknown as Record<string, unknown> } : {}),
       };
     },

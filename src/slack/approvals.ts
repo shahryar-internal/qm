@@ -56,6 +56,7 @@ interface SlackApprovalContext {
   reason: string;
   purpose?: string;
   summary?: string;
+  grantModes?: { session: boolean; always: boolean };
   turn: Omit<CoreTurnBody, "approval">;
   allowedTs?: Set<string>;
   slackIdsByPrincipal?: ReadonlyMap<string, string>;
@@ -148,6 +149,7 @@ export function createApprovals(deps: {
         reason: approval.reason,
         ...(approval.purpose ? { purpose: approval.purpose } : {}),
         ...(approval.summary ? { summary: approval.summary } : {}),
+        ...(approval.grantModes ? { grantModes: approval.grantModes } : {}),
       });
     }
   }
@@ -871,6 +873,7 @@ export function createApprovals(deps: {
           reason: ctx.reason,
           ...(ctx.purpose ? { purpose: ctx.purpose } : {}),
           ...(ctx.summary ? { summary: ctx.summary } : {}),
+          ...(ctx.grantModes ? { grantModes: ctx.grantModes } : {}),
         },
       ]);
       await updateSlackMessage(

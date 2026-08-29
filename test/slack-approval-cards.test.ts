@@ -99,6 +99,7 @@ test("approvalMessage renders the plain-English summary alongside the raw comman
       command: "rm -rf build",
       reason: "recursive delete",
       summary: "Deletes the entire build/ directory and everything inside it.",
+      grantModes: { session: false, always: false },
     },
   ]);
   const section = msg.blocks.find((b) => b.type === "section") as any;
@@ -121,6 +122,7 @@ test("recoveredApprovalContext carries the durable summary through a restart", (
       command: "rm -rf build",
       reason: "recursive delete",
       summary: "Deletes the entire build/ directory and everything inside it.",
+      grantModes: { session: false, always: false },
       request: {
         surface: "slack",
         actor: { externalId: "U2" },
@@ -132,6 +134,7 @@ test("recoveredApprovalContext carries the durable summary through a restart", (
   );
   assert.ok(ctx);
   assert.equal(ctx!.summary, "Deletes the entire build/ directory and everything inside it.");
+  assert.deepEqual(ctx!.grantModes, { session: false, always: false });
 });
 
 test("approvalCardDestination DMs the requester for a channel turn and stays in place for a DM", () => {
