@@ -219,6 +219,7 @@ export function createNativeAgentPresenter(deps: {
   sanitize(text: string): string;
   checkpoint(ts: string): Promise<void>;
   onSurfacePosted(): void;
+  isCancelled?(): boolean;
   onError?(error: unknown): void;
 }): NativeAgentPresenter {
   const { client } = deps;
@@ -230,6 +231,7 @@ export function createNativeAgentPresenter(deps: {
   let failure: unknown;
   let chain = Promise.resolve();
   let finished = false;
+  const isCancelled = (): boolean => deps.isCancelled?.() === true;
 
   const statusArgs = (status: NativeAgentSessionStatus): Record<string, unknown> => ({
     channel_id: deps.channel,
@@ -251,7 +253,7 @@ export function createNativeAgentPresenter(deps: {
   });
   const enqueue = (op: () => Promise<void>): void => {
     chain = chain.then(async () => {
-      if (failure || finished) return;
+      if (failure || finished || isCancelled()) return;
       try {
         await op();
       } catch (error) {
@@ -264,7 +266,15 @@ export function createNativeAgentPresenter(deps: {
     await chain;
     if (failure) throw failure;
   };
+  const discardCancelledStream = async (): Promise<void> => {
+    if (!streamTs || !isCancelled()) return;
+    const ts = streamTs;
+    streamTs = undefined;
+    await client.chat.stopStream({ channel: deps.channel, ts, session_status: "active" }).catch(() => undefined);
+    await client.chat.delete?.({ channel: deps.channel, ts }).catch(() => undefined);
+  };
   const start = async (chunks: Array<Record<string, unknown>>): Promise<void> => {
+    if (isCancelled()) return;
     const response = (await client.chat.startStream({ ...startArgs(), chunks })) as {
       ts?: unknown;
       message?: { ts?: unknown };
@@ -272,6 +282,10 @@ export function createNativeAgentPresenter(deps: {
     const ts = response?.ts ?? response?.message?.ts;
     if (!ts) throw new Error("Slack started a stream without returning its message timestamp");
     streamTs = String(ts);
+    if (isCancelled()) {
+      await discardCancelledStream();
+      return;
+    }
     try {
       await deps.checkpoint(streamTs);
     } catch (error) {
@@ -285,9 +299,12 @@ export function createNativeAgentPresenter(deps: {
     deps.onSurfacePosted();
   };
   const append = async (chunks: Array<Record<string, unknown>>): Promise<void> => {
-    if (!chunks.length) return;
+    if (!chunks.length || isCancelled()) return;
     if (!streamTs) await start(chunks);
-    else await client.chat.appendStream({ channel: deps.channel, ts: streamTs, chunks });
+    else {
+      await client.chat.appendStream({ channel: deps.channel, ts: streamTs, chunks });
+      await discardCancelledStream();
+    }
   };
   const appendMarkdown = async (text: string): Promise<void> => {
     for (const chunk of nativeMarkdownChunks(text)) await append([{ type: "markdown_text", text: chunk }]);
@@ -342,11 +359,23 @@ export function createNativeAgentPresenter(deps: {
       if (finished) return streamTs;
       const finalText = text.trim();
       try {
+        if (isCancelled()) {
+          finished = true;
+          return streamTs;
+        }
         flushText(true);
         await drain();
+        if (isCancelled()) {
+          finished = true;
+          return streamTs;
+        }
         if (!streamTs && finalText) {
           emittedText = finalText;
           await appendMarkdown(finalText);
+          if (isCancelled()) {
+            finished = true;
+            return streamTs;
+          }
         }
         if (!streamTs) {
           await setStatus(status);
@@ -356,6 +385,11 @@ export function createNativeAgentPresenter(deps: {
         if (finalText.startsWith(emittedText)) {
           const suffix = finalText.slice(emittedText.length);
           if (suffix) await appendMarkdown(suffix);
+          if (isCancelled()) {
+            await discardCancelledStream();
+            finished = true;
+            return streamTs;
+          }
           await client.chat.stopStream({
             channel: deps.channel,
             ts: streamTs,
@@ -367,6 +401,7 @@ export function createNativeAgentPresenter(deps: {
             await client.chat.update({ channel: deps.channel, ts: streamTs, text: finalText, ...botIdentityArgs() });
           }
         }
+        if (isCancelled()) await discardCancelledStream();
         finished = true;
         return streamTs;
       } catch (error) {

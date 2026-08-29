@@ -469,6 +469,73 @@ test("uploadAttachments renders a valid workflow artifact as Block Kit instead o
   assert.equal(JSON.stringify(posts[0].blocks).includes("calendar.example.com/event/1"), true);
 });
 
+test("uploadAttachments deletes a workflow card whose Slack post finishes after cancellation", async () => {
+  let cancelled = false;
+  let releasePost: ((value: { ts: string }) => void) | undefined;
+  const deletes: any[] = [];
+  const client = {
+    chat: {
+      postMessage: async () => new Promise<{ ts: string }>((resolve) => (releasePost = resolve)),
+      delete: async (args: any) => void deletes.push(args),
+    },
+    files: {
+      uploadV2: async () => ({ ok: true }),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Late card",
+      payload: { heading: "Late card", sections: [] },
+    }),
+  );
+  const delivery = uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "late.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: artifact.length, blobId: "B1" }],
+    async () => artifact,
+    undefined,
+    { isCancelled: () => cancelled },
+  );
+  while (!releasePost) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  releasePost({ ts: "late-card-ts" });
+
+  assert.deepEqual(await delivery, { uploaded: false });
+  assert.deepEqual(deletes, [{ channel: "C1", ts: "late-card-ts" }]);
+});
+
+test("uploadAttachments deletes files whose Slack upload finishes after cancellation", async () => {
+  let cancelled = false;
+  let releaseUpload: ((value: { files: Array<{ id: string }> }) => void) | undefined;
+  const deletes: any[] = [];
+  const client = {
+    files: {
+      uploadV2: async () => new Promise<{ files: Array<{ id: string }> }>((resolve) => (releaseUpload = resolve)),
+      info: async () => ({ file: { shares: {} } }),
+      delete: async (args: any) => void deletes.push(args),
+    },
+  };
+  const delivery = uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "late.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B1" }],
+    async () => Buffer.from("late"),
+    undefined,
+    { isCancelled: () => cancelled },
+  );
+  while (!releaseUpload) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  releaseUpload({ files: [{ id: "F-late" }] });
+
+  assert.deepEqual(await delivery, { uploaded: false });
+  assert.deepEqual(deletes, [{ file: "F-late" }]);
+});
+
 test("uploadAttachments falls back to a normal file for malformed workflow artifacts", async () => {
   const posts: any[] = [];
   const uploads: any[] = [];

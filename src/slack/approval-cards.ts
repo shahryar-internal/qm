@@ -99,6 +99,7 @@ export interface RecoveredApprovalContext {
   requesterId: string;
   channel: string;
   replyThreadTs?: string;
+  nativeAgentSession?: { channel: string; threadTs: string };
   threadOnly: boolean;
   approvalChannel: string;
   command: string;
@@ -140,6 +141,7 @@ export function recoveredApprovalContext(
     requesterId: req.actor.externalId,
     channel: origin.channel,
     ...(origin.threadTs ? { replyThreadTs: origin.threadTs } : {}),
+    ...(origin.threadTs ? { nativeAgentSession: { channel: origin.channel, threadTs: origin.threadTs } } : {}),
     threadOnly: kind === "channel",
     approvalChannel: click.channel,
     command: stored.command,

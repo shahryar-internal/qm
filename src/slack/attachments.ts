@@ -195,8 +195,12 @@ export async function processInboundFiles(
 }
 
 export interface UploadClient {
-  files: { uploadV2(args: any): Promise<unknown>; info(args: { file: string }): Promise<unknown> };
-  chat?: { postMessage(args: any): Promise<unknown> };
+  files: {
+    uploadV2(args: any): Promise<unknown>;
+    info(args: { file: string }): Promise<unknown>;
+    delete?(args: { file: string }): Promise<unknown>;
+  };
+  chat?: { postMessage(args: any): Promise<unknown>; delete?(args: { channel: string; ts: string }): Promise<unknown> };
 }
 
 const SLACK_WORKFLOW_BASE_URL = "https://workflow-artifact.invalid/";
@@ -299,10 +303,17 @@ export async function uploadAttachments(
   attachments: readonly OutgoingAttachment[],
   fetchBlob: (blobId: string) => Promise<Buffer>,
   fetchArtifact?: (artifactId: string, viewerId: string) => Promise<Buffer>,
-  opts: { initialComment?: string } = {},
+  opts: { initialComment?: string; isCancelled?(): boolean } = {},
 ): Promise<{ uploaded: boolean; messageTs?: string }> {
   const fileUploads: Array<{ filename: string; file: Buffer }> = [];
   const cards: Array<{ fallbackText: string; blocks: Array<Record<string, unknown>> }> = [];
+  const postedCardTs: string[] = [];
+  const cleanupCards = async (): Promise<void> => {
+    await Promise.all(postedCardTs.map((ts) => client.chat?.delete?.({ channel, ts }).catch(() => undefined)));
+  };
+  const cleanupFiles = async (fileIds: readonly string[]): Promise<void> => {
+    await Promise.all(fileIds.map((file) => client.files.delete?.({ file }).catch(() => undefined)));
+  };
   for (const attachment of attachments) {
     let file: Buffer;
     try {
@@ -311,6 +322,7 @@ export async function uploadAttachments(
       if (!fetchArtifact || !attachment.artifactId || !attachment.artifactViewerId) throw err;
       file = await fetchArtifact(attachment.artifactId, attachment.artifactViewerId);
     }
+    if (opts.isCancelled?.()) return { uploaded: false };
     if (file.length === 0) continue;
     if (isWorkflowArtifact(attachment) && client.chat) {
       try {
@@ -324,6 +336,7 @@ export async function uploadAttachments(
 
   let messageTs: string | undefined;
   for (let i = 0; i < cards.length; i++) {
+    if (opts.isCancelled?.()) return { uploaded: false, ...(messageTs ? { messageTs } : {}) };
     const card = cards[i]!;
     const lead = i === 0 ? opts.initialComment?.trim() : undefined;
     const blocks = [
@@ -339,10 +352,19 @@ export async function uploadAttachments(
       unfurl_media: false,
       ...botIdentityArgs(),
     })) as { ts?: unknown };
-    if (!messageTs && response?.ts) messageTs = String(response.ts);
+    if (response?.ts) {
+      const ts = String(response.ts);
+      postedCardTs.push(ts);
+      messageTs ??= ts;
+    }
+    if (opts.isCancelled?.()) {
+      await cleanupCards();
+      return { uploaded: false };
+    }
   }
 
   if (!fileUploads.length) return { uploaded: cards.length > 0, ...(messageTs ? { messageTs } : {}) };
+  if (opts.isCancelled?.()) return { uploaded: false, ...(messageTs ? { messageTs } : {}) };
 
   const response = await client.files.uploadV2({
     channel_id: channel,
@@ -350,9 +372,18 @@ export async function uploadAttachments(
     ...(opts.initialComment && cards.length === 0 ? { initial_comment: opts.initialComment } : {}),
     file_uploads: fileUploads,
   });
-  for (const fileId of uploadedFileIds(response)) {
+  const fileIds = uploadedFileIds(response);
+  if (opts.isCancelled?.()) {
+    await cleanupFiles(fileIds);
+    return { uploaded: false };
+  }
+  for (const fileId of fileIds) {
     const sharedTs = await waitForShareCommit(client, channel, fileId);
     messageTs ??= sharedTs;
+  }
+  if (opts.isCancelled?.()) {
+    await cleanupFiles(fileIds);
+    return { uploaded: false };
   }
   return { uploaded: true, ...(messageTs ? { messageTs } : {}) };
 }
