@@ -106,7 +106,7 @@ import type { DeployGitArchive } from "./deploy/deploy-git-store.ts";
 import { createLocalWorkspaceStore, type WorkspaceStore } from "./workspace/workspace-store.ts";
 import { createMemoryService, type MemoryService } from "./memory/memory-service.ts";
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
-import { createMcpServerStore, type McpServer, type McpServerStore } from "./mcp/mcp-server-store.ts";
+import { createMcpServerStore, type McpServerStore, type StoredMcpServer } from "./mcp/mcp-server-store.ts";
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
 import {
   createLocalBlobTransferStore,
@@ -641,7 +641,8 @@ export function buildApp(
   const baseMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
-  const mcpServers = createMcpServerStore(artifactMap<McpServer>("mcp_servers"));
+  const mcpSecretKey = deriveConnectorKey(config.connectorSecretKey ?? randomBytes(32), "mcp-server-secrets");
+  const mcpServers = createMcpServerStore(artifactMap<StoredMcpServer>("mcp_servers"), mcpSecretKey);
   const mcpToolService = createMcpToolService({ servers: mcpServers, audit: auditLog });
   const mcpTools = () => mcpToolService.toolDefs();
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
