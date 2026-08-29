@@ -194,6 +194,39 @@ const CONNECTOR_HOSTS = Object.values(PROVIDERS).flatMap((p) => p.hosts);
 const INSTANCE_CACHE_MAX_ENTRIES = 5_000;
 const DIRECTORY_INDEX_CACHE_MAX_ENTRIES = 100;
 
+export function requestWorkspaceWriteAllowed(
+  input: unknown,
+  workspaces: readonly { prefix: string; maxBytes: number }[],
+): boolean {
+  if (input === null || typeof input !== "object") return false;
+  try {
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length !== 2 || !keys.every((key) => key === "path" || key === "data")) return false;
+    const path = descriptors.path?.value;
+    const data = descriptors.data?.value;
+    if (
+      typeof path !== "string" ||
+      typeof data !== "string" ||
+      path.length === 0 ||
+      path.startsWith("/") ||
+      path.startsWith("~") ||
+      path.includes("\\") ||
+      /\s/.test(path) ||
+      path.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+    ) {
+      return false;
+    }
+    return workspaces.some(
+      (workspace) => path.startsWith(`${workspace.prefix}/`) && Buffer.byteLength(data, "utf8") <= workspace.maxBytes,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const skillMaterializer = createSkillMaterializer(deps.advisoryLock);
   const residentAuthConnectors = (): ResidentAuthConnector[] =>
@@ -1011,7 +1044,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!resolution.approvalGrantModes[grant.scope]) continue;
         commandUses.set(grant.approvalKey ?? grant.command, Infinity);
       }
-      const authorizeToolCall = (tool: string): boolean => {
+      const authorizeToolCall = (tool: string, params?: unknown): boolean => {
+        if (
+          tool === "execute" &&
+          params !== null &&
+          typeof params === "object" &&
+          typeof (params as { command?: unknown }).command === "string" &&
+          evaluateCommandWithLayer((params as { command: string }).command, commandPolicy, layerCommandRules)
+            .subsumesToolApproval
+        ) {
+          return true;
+        }
+        if (tool === "write" && requestWorkspaceWriteAllowed(params, deps.deploymentLayer?.requestWorkspaces ?? [])) {
+          return true;
+        }
         const key = `tool:${tool}`;
         const n = commandUses.get(key) ?? 0;
         if (n <= 0) return false;
@@ -1451,11 +1497,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             };
           } else if (p && p.sessionId === session.id) {
             const scope = input.approval.scope ?? "once";
-            const recordDisallowsScope =
-              scope !== "once" &&
-              p.grantModes?.[scope] === false &&
-              p.approvalKey?.startsWith("security-screen-release:") === true;
+            const recordDisallowsScope = scope !== "once" && p.grantModes?.[scope] === false;
+            const quarantineOnceOnly = p.approvalKey?.startsWith("security-screen-release:") === true;
+            const commandOnceOnly = p.grantModes?.session === false && p.grantModes?.always === false;
             if (scope !== "once" && (!resolution.approvalGrantModes[scope] || recordDisallowsScope)) {
+              let reason = `the "${scope}" approval option is disabled by an admin here — approve once or deny`;
+              if (recordDisallowsScope && quarantineOnceOnly) {
+                reason = "quarantined content can only be released once — approve once or deny";
+              } else if (recordDisallowsScope && commandOnceOnly) {
+                reason = "this command can only be approved once — approve once or deny";
+              }
               deps.auditLog.record({
                 at: Date.now(),
                 principalId: actor.id,
@@ -1467,9 +1518,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               return {
                 status: "pending_approval",
                 sessionId: session.id,
-                reason: recordDisallowsScope
-                  ? `quarantined content can only be released once — approve once or deny`
-                  : `the "${scope}" approval option is disabled by an admin here — approve once or deny`,
+                reason,
                 pendingApprovals: [
                   {
                     requestId: input.approval.requestId,
@@ -1908,6 +1957,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     "approval",
                     gate.matched,
                     gate.approvalKey,
+                    gate.grantModes,
                   );
                 }
                 let aws;
@@ -3037,7 +3087,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           for (const pa of turnApprovals) {
             const blocks = approvalBlocksInput(pa.kind, outcome);
             const command = pa.command;
-            const requestId = commandApprovalId(session.id, command);
+            const onceOnly = pa.grantModes?.session === false && pa.grantModes.always === false;
+            const requestId = commandApprovalId(session.id, command, onceOnly ? randomUUID() : undefined);
             const summary = pa.summary ?? (await approvalSummary(scopeId, command, pa.reason, pa.purpose));
             prepared.push({
               requestId,
@@ -3125,11 +3176,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
         }
         if (err instanceof NeedsApproval) {
-          const requestId = commandApprovalId(session.id, err.command);
-          const grantModesField =
-            resolution.approvalGrantModes.session && resolution.approvalGrantModes.always
-              ? {}
-              : { grantModes: resolution.approvalGrantModes };
+          const onceOnly = err.grantModes?.session === false && err.grantModes.always === false;
+          const requestId = commandApprovalId(session.id, err.command, onceOnly ? randomUUID() : undefined);
+          let grantModesField: { grantModes?: { session: boolean; always: boolean } } = {};
+          if (err.grantModes) grantModesField = { grantModes: err.grantModes };
+          else if (!resolution.approvalGrantModes.session || !resolution.approvalGrantModes.always) {
+            grantModesField = { grantModes: resolution.approvalGrantModes };
+          }
           const summary = await approvalSummary(scopeId, err.command, err.approvalReason);
           try {
             await withManagedRosterVersion(async () => {

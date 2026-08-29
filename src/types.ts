@@ -324,6 +324,8 @@ export interface CommandRule {
   pattern: string;
   decision: CommandDecision;
   reason?: string;
+  approvalScope?: "rule" | "command";
+  subsumesToolApproval?: true;
 }
 
 type CommandPolicyMode = "denylist" | "allowlist";

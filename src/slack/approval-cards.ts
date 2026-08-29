@@ -92,6 +92,7 @@ export interface StoredApproval {
   reason?: string;
   purpose?: string;
   summary?: string;
+  grantModes?: { session: boolean; always: boolean };
   request?: Record<string, unknown>;
 }
 
@@ -106,11 +107,12 @@ export interface RecoveredApprovalContext {
   reason: string;
   purpose?: string;
   summary?: string;
+  grantModes?: { session: boolean; always: boolean };
   turn: Record<string, unknown>;
 }
 
 export function recoveredApprovalContext(
-  stored: Pick<StoredApproval, "command" | "reason" | "purpose" | "summary" | "request">,
+  stored: Pick<StoredApproval, "command" | "reason" | "purpose" | "summary" | "grantModes" | "request">,
   click: { channel: string; threadTs?: string },
 ): RecoveredApprovalContext | null {
   const req = stored.request as
@@ -148,6 +150,7 @@ export function recoveredApprovalContext(
     reason: stored.reason ?? "requires approval",
     ...(stored.purpose ? { purpose: stored.purpose } : {}),
     ...(stored.summary ? { summary: stored.summary } : {}),
+    ...(stored.grantModes ? { grantModes: stored.grantModes } : {}),
     turn,
   };
 }

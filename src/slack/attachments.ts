@@ -329,7 +329,10 @@ export async function uploadAttachments(
         const { envelope, card } = decodeWorkflowArtifactCard(file, SLACK_WORKFLOW_BASE_URL);
         cards.push({ fallbackText: envelope.fallbackText, blocks: workflowArtifactBlocks(card) });
         continue;
-      } catch {}
+      } catch {
+        fileUploads.push({ filename: attachment.name, file });
+        continue;
+      }
     }
     fileUploads.push({ filename: attachment.name, file });
   }

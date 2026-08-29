@@ -115,7 +115,15 @@ export class NeedsApproval extends Error {
   kind: "approval";
   matched?: string;
   approvalKey?: string;
-  constructor(command: string, reason: string, kind: "approval" = "approval", matched?: string, approvalKey?: string) {
+  grantModes?: { session: boolean; always: boolean };
+  constructor(
+    command: string,
+    reason: string,
+    kind: "approval" = "approval",
+    matched?: string,
+    approvalKey?: string,
+    grantModes?: { session: boolean; always: boolean },
+  ) {
     super(`command requires approval: ${command}`);
     this.name = "NeedsApproval";
     this.command = command;
@@ -123,6 +131,7 @@ export class NeedsApproval extends Error {
     this.kind = kind;
     this.matched = matched;
     this.approvalKey = approvalKey;
+    this.grantModes = grantModes;
   }
 }
 
@@ -593,7 +602,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         if (target.kind === "error") throw new Error(target.message);
         reached = { scopeId: target.scopeId, label: `#${target.channelName}` };
       }
-      const { decision, reason, matched, approvalKey } = evaluateCommandWithLayer(
+      const { decision, reason, matched, approvalKey, grantModes } = evaluateCommandWithLayer(
         command,
         deps.commandPolicy(),
         deps.layerCommandRules?.() ?? [],
@@ -602,7 +611,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         throw new CommandDenied(command, reason ?? "denied by policy");
       }
       if (decision === "require_approval" && !deps.authorizeCommand(command, approvalKey)) {
-        throw new NeedsApproval(command, reason ?? "requires approval", "approval", matched, approvalKey);
+        throw new NeedsApproval(command, reason ?? "requires approval", "approval", matched, approvalKey, grantModes);
       }
       let handle;
       if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
@@ -957,14 +966,14 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     async backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult> {
       if (!deps.backgroundBroker) throw new Error(BACKGROUND_UNAVAILABLE_MESSAGE);
       const handle = await deps.provision();
-      const { decision, reason, matched, approvalKey } = evaluateCommandWithLayer(
+      const { decision, reason, matched, approvalKey, grantModes } = evaluateCommandWithLayer(
         command,
         deps.commandPolicy(),
         deps.layerCommandRules?.() ?? [],
       );
       if (decision === "deny") throw new CommandDenied(command, reason ?? "denied by policy");
       if (decision === "require_approval" && !deps.authorizeCommand(command, approvalKey)) {
-        throw new NeedsApproval(command, reason ?? "requires approval", "approval", matched, approvalKey);
+        throw new NeedsApproval(command, reason ?? "requires approval", "approval", matched, approvalKey, grantModes);
       }
       if (deps.ensureSkillTree) {
         for (const skillDir of skillTreeDirsInCommand(command)) await deps.ensureSkillTree(skillDir);

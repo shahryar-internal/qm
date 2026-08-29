@@ -39,6 +39,7 @@ export interface ToolContextRef {
     matched?: string;
     purpose?: string;
     approvalKey?: string;
+    grantModes?: { session: boolean; always: boolean };
   }>;
   pausedOnApproval?: boolean;
   emit?: (entry: { type: EntryType; payload: unknown; scopeLabel: ScopeId }) => void | Promise<unknown>;
@@ -79,7 +80,7 @@ export interface ToolContextRef {
     tool: string;
     source: string;
   }) => Promise<SecurityScreenVerdict | undefined>;
-  toolApprovalGate?: (tool: string) => boolean;
+  toolApprovalGate?: (tool: string, input?: unknown) => boolean;
 }
 
 function text(s: string) {
@@ -598,6 +599,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           matched: e.matched,
           ...(params.purpose ? { purpose: params.purpose } : {}),
           ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
+          ...(e.grantModes ? { grantModes: e.grantModes } : {}),
         });
         ref.pausedOnApproval = true;
         return recordResult(
@@ -1493,6 +1495,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
             kind: e.kind,
             matched: e.matched,
             ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
+            ...(e.grantModes ? { grantModes: e.grantModes } : {}),
           });
           ref.pausedOnApproval = true;
           return recordResult(
@@ -2775,6 +2778,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
             kind: error.kind,
             matched: error.matched,
             ...(error.approvalKey ? { approvalKey: error.approvalKey } : {}),
+            ...(error.grantModes ? { grantModes: error.grantModes } : {}),
           });
           ref.pausedOnApproval = true;
           return recordResult(
@@ -3054,7 +3058,7 @@ function withToolApprovalGate(
     ...tool,
     async execute(callId: string, params: unknown) {
       const gate = ref.toolApprovalGate;
-      if (gate && !gate(tool.name)) {
+      if (gate && !gate(tool.name, params)) {
         ref.pendingApprovals?.push({
           command: tool.name,
           reason: STRICT_TOOL_APPROVAL_REASON,

@@ -1765,6 +1765,10 @@ export function serverDeps(
     memory: built.memory,
     blobTransfer: built.blobTransfer,
     sandboxBackend: built.sandbox.profile.backend,
+    sandboxImage: {
+      identifier: config.awsSandbox.imageIdentifier,
+      ...(config.awsSandbox.imageVersion ? { version: config.awsSandbox.imageVersion } : {}),
+    },
     egressDeclaredEnforcement: built.sandbox.profile.egressEnforcement ?? "none",
     egressEnforcement: effectiveEgressEnforcement(built.sandbox.profile, {
       signingSecret: config.signingSecret,
