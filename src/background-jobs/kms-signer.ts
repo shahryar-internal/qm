@@ -25,6 +25,8 @@ import {
 } from "./validation.ts";
 
 const KMS_ALGORITHM = SigningAlgorithmSpec.RSASSA_PKCS1_V1_5_SHA_256;
+const JWKS_CACHE_WINDOW_SECONDS = 600;
+const SHA256 = /^[a-f0-9]{64}$/;
 
 interface KmsSignerDependencies {
   kms?: KMSClient;
@@ -65,7 +67,59 @@ export function createBackgroundJobAuthoritySigner(
   const configuredJwk = exactPublicRsaJwk(config.publicJwk, tokenKid);
   const kms = dependencies.kms ?? new KMSClient(config.region ? { region: config.region } : {});
   const now = dependencies.now ?? Date.now;
+  const previousJwk = config.previousPublicJwk === undefined ? undefined : exactPublicRsaJwk(config.previousPublicJwk);
+  const previousKeyRetireAt = config.previousKeyRetireAt;
+  if (
+    (previousJwk === undefined) !== (previousKeyRetireAt === undefined) ||
+    (previousJwk !== undefined &&
+      (previousJwk.kid === configuredJwk.kid ||
+        sameRsaKey(previousJwk, configuredJwk) ||
+        !Number.isSafeInteger(previousKeyRetireAt) ||
+        previousKeyRetireAt! < now() + (lifetimeSeconds + JWKS_CACHE_WINDOW_SECONDS) * 1000))
+  ) {
+    throw new TypeError("background job key rotation is invalid");
+  }
   const randomId = dependencies.randomId ?? randomUUID;
+  let previousRetired = false;
+  const validatedApproval = (
+    body: Uint8Array,
+    grant: Parameters<BackgroundJobAuthoritySigner["signStart"]>[1],
+    effect: "background_job_start" | "background_job_cancel",
+    idempotencyKey: string,
+  ) => {
+    if (
+      !grant ||
+      typeof grant !== "object" ||
+      Array.isArray(grant) ||
+      Object.keys(grant).sort().join(",") !==
+        "actorPrincipalId,actorSlackId,approvalId,audienceScopeId,channelId,descriptorSha256,digest,effect,expiresAt,idempotencyKey,issuedAt,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" ||
+      grant.effect !== effect ||
+      grant.jobId !== definition.id ||
+      grant.organizationId !== profile.organizationId ||
+      grant.actorPrincipalId !== profile.actorPrincipalId ||
+      grant.actorSlackId !== profile.actorSlackId ||
+      grant.audienceScopeId !== profile.audienceScopeId ||
+      grant.slackTeamId !== profile.slackTeamId ||
+      grant.channelId !== profile.channelId ||
+      grant.descriptorSha256 !== binding.descriptorSha256 ||
+      grant.profileSha256 !== binding.profileSha256 ||
+      grant.schemaSha256 !== binding.schemaSha256 ||
+      grant.idempotencyKey !== idempotencyKey ||
+      grant.payloadSha256 !== createHash("sha256").update(body).digest("hex") ||
+      !Number.isSafeInteger(grant.issuedAt) ||
+      !Number.isSafeInteger(grant.expiresAt) ||
+      grant.issuedAt > now() ||
+      grant.expiresAt <= now() ||
+      grant.expiresAt - grant.issuedAt > 300_000
+    ) {
+      throw new TypeError("background job approval grant is invalid");
+    }
+    const { digest, ...unsigned } = grant;
+    if (!SHA256.test(digest) || createHash("sha256").update(canonicalJson(unsigned)).digest("hex") !== digest) {
+      throw new TypeError("background job approval grant is invalid");
+    }
+    return grant;
+  };
   let keyPromise: Promise<KeyObject> | undefined;
   const key = (): Promise<KeyObject> => {
     if (keyPromise) return keyPromise;
@@ -97,12 +151,26 @@ export function createBackgroundJobAuthoritySigner(
     route: Readonly<BackgroundJobRoute>,
     idempotencyKey: string,
     claimBinding: Readonly<BackgroundJobContractBinding> = binding,
+    approval?: Readonly<{
+      approvalId: string;
+      digest: string;
+      effect: "background_job_start" | "background_job_cancel";
+      messageTs: string;
+      threadTs: string;
+    }>,
   ): Promise<string> => {
     const messageTs = validateSlackTimestamp(slack.messageTs, "messageTs");
     const threadTs = validateSlackTimestamp(slack.threadTs, "threadTs");
     const exactBinding = Object.freeze({ ...claimBinding });
     validateContractBinding(exactBinding);
     const exactIdempotencyKey = identifier(idempotencyKey, "idempotency key");
+    if (approval) {
+      identifier(approval.approvalId, "approval id");
+      if (!SHA256.test(approval.digest)) throw new TypeError("approval digest is invalid");
+      if (approval.messageTs !== messageTs || approval.threadTs !== threadTs) {
+        throw new TypeError("approval Slack act is invalid");
+      }
+    }
     if (
       !(bodyBytes instanceof Uint8Array) ||
       bodyBytes.byteLength < 2 ||
@@ -146,6 +214,13 @@ export function createBackgroundJobAuthoritySigner(
       payloadSha256: createHash("sha256").update(exactBodyBytes).digest("hex"),
       httpMethod: "POST",
       httpPath: route.path,
+      ...(approval
+        ? {
+            approvalId: approval.approvalId,
+            approvalDigest: approval.digest,
+            approvalEffect: approval.effect,
+          }
+        : {}),
     };
     const payload = Buffer.from(canonicalJson(claims), "utf8").toString("base64url");
     const input = `${protectedHeader}.${payload}`;
@@ -185,12 +260,42 @@ export function createBackgroundJobAuthoritySigner(
       if (!definition.prepare) throw new Error("background job preparation is unavailable");
       return sign(body, slack, definition.prepare, idempotencyKey);
     },
-    signStart: (body: Uint8Array, slack: Readonly<{ messageTs: string; threadTs: string }>, idempotencyKey: string) =>
-      sign(body, slack, definition.start, idempotencyKey),
+    signStart: (
+      body: Parameters<BackgroundJobAuthoritySigner["signStart"]>[0],
+      grant: Parameters<BackgroundJobAuthoritySigner["signStart"]>[1],
+      idempotencyKey: string,
+    ) => {
+      return sign(
+        body,
+        grant,
+        definition.start,
+        idempotencyKey,
+        binding,
+        validatedApproval(body, grant, "background_job_start", idempotencyKey),
+      );
+    },
     signStatus: (body: Uint8Array, receipt: Parameters<BackgroundJobAuthoritySigner["signStatus"]>[1]) =>
       sign(body, receipt, definition.status, controlKey("status", body), receiptBinding(receipt)),
-    signCancel: (body: Uint8Array, receipt: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[1]) =>
-      sign(body, receipt, definition.cancel, controlKey("cancel", body), receiptBinding(receipt)),
-    jwks: () => Object.freeze({ keys: Object.freeze([configuredJwk]) }),
+    signCancel: (
+      body: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[0],
+      receipt: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[1],
+      grant: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[2],
+    ) => {
+      const idempotencyKey = controlKey("cancel", body);
+      return sign(
+        body,
+        grant,
+        definition.cancel,
+        idempotencyKey,
+        receiptBinding(receipt),
+        validatedApproval(body, grant, "background_job_cancel", idempotencyKey),
+      );
+    },
+    jwks: () => {
+      if (previousJwk && now() >= previousKeyRetireAt!) previousRetired = true;
+      return Object.freeze({
+        keys: Object.freeze(previousJwk && !previousRetired ? [configuredJwk, previousJwk] : [configuredJwk]),
+      });
+    },
   });
 }

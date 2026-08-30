@@ -54,7 +54,6 @@ const SCHEMA_KEYS = new Set([
   "minLength",
   "minProperties",
   "minimum",
-  "pattern",
   "properties",
   "required",
   "title",
@@ -122,7 +121,7 @@ function validateJsonBudget(value: unknown, depth = 0, budget = { nodes: 0, stri
   }
   if (value === null || typeof value === "boolean") return;
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("background job schema is invalid");
+    if (!Number.isSafeInteger(value)) throw new TypeError("background job schema is invalid");
     return;
   }
   if (Array.isArray(value)) {
@@ -156,7 +155,7 @@ function validateSchemaNode(value: unknown, name: string, definitions: ReadonlyS
     parsePublicHttpsUrl(item.$id, `${name}.$id`, false);
   }
   if (item.$ref !== undefined) {
-    const ref = string(item.$ref, `${name}.$ref`, /^#\/$defs\/[A-Za-z_][A-Za-z0-9_-]{0,127}$/, 136);
+    const ref = string(item.$ref, `${name}.$ref`, /^#\/\$defs\/[A-Za-z_][A-Za-z0-9_-]{0,127}$/, 136);
     if (!definitions.has(ref.slice("#/$defs/".length))) throw new TypeError(`${name}.$ref is unresolved`);
     const allowed = new Set(["$ref", "title", "description"]);
     if (Object.keys(item).some((key) => !allowed.has(key))) throw new TypeError(`${name}.$ref has siblings`);
@@ -173,15 +172,6 @@ function validateSchemaNode(value: unknown, name: string, definitions: ReadonlyS
   if (item.const !== undefined) canonicalJson(item.const);
   if (item.format !== undefined && (item.type !== "string" || !SCHEMA_FORMATS.has(item.format as string))) {
     throw new TypeError(`${name}.format is unsupported`);
-  }
-  if (item.pattern !== undefined) {
-    const pattern = schemaString(item.pattern, `${name}.pattern`);
-    if (pattern.length > 500) throw new TypeError(`${name}.pattern is invalid`);
-    try {
-      new RegExp(pattern, "u");
-    } catch {
-      throw new TypeError(`${name}.pattern is invalid`);
-    }
   }
   if (item.type === "object") {
     const properties = record(item.properties, `${name}.properties`);
@@ -222,19 +212,14 @@ function validateSchemaNode(value: unknown, name: string, definitions: ReadonlyS
       throw new TypeError(`${name}.maxLength is required`);
     }
     if (item.minLength !== undefined) integer(item.minLength, `${name}.minLength`, 0, maxLength ?? 20_000);
-  } else if (
-    item.minLength !== undefined ||
-    item.maxLength !== undefined ||
-    item.pattern !== undefined ||
-    item.format !== undefined
-  ) {
+  } else if (item.minLength !== undefined || item.maxLength !== undefined || item.format !== undefined) {
     throw new TypeError(`${name} has string keywords on a non-string`);
   }
   if (item.type === "number" || item.type === "integer") {
-    if (item.minimum !== undefined && (typeof item.minimum !== "number" || !Number.isFinite(item.minimum))) {
+    if (item.minimum !== undefined && !Number.isSafeInteger(item.minimum)) {
       throw new TypeError(`${name}.minimum is invalid`);
     }
-    if (item.maximum !== undefined && (typeof item.maximum !== "number" || !Number.isFinite(item.maximum))) {
+    if (item.maximum !== undefined && !Number.isSafeInteger(item.maximum)) {
       throw new TypeError(`${name}.maximum is invalid`);
     }
     if (typeof item.minimum === "number" && typeof item.maximum === "number" && item.minimum > item.maximum) {
@@ -250,6 +235,33 @@ function validateSchemaNode(value: unknown, name: string, definitions: ReadonlyS
   }
 }
 
+function definitionRefs(value: unknown, refs = new Set<string>()): ReadonlySet<string> {
+  if (!value || typeof value !== "object") return refs;
+  if (Array.isArray(value)) {
+    for (const entry of value) definitionRefs(entry, refs);
+    return refs;
+  }
+  const item = value as Record<string, unknown>;
+  if (typeof item.$ref === "string") refs.add(item.$ref.slice("#/$defs/".length));
+  for (const entry of Object.values(item)) definitionRefs(entry, refs);
+  return refs;
+}
+
+function validateDefinitionGraph(definitions: Readonly<Record<string, unknown>>): void {
+  const graph = new Map(Object.keys(definitions).map((name) => [name, definitionRefs(definitions[name])]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (name: string, depth: number): void => {
+    if (depth > 32 || visiting.has(name)) throw new TypeError("schema.json.$defs must be acyclic and bounded");
+    if (visited.has(name)) return;
+    visiting.add(name);
+    for (const next of graph.get(name) ?? []) visit(next, depth + 1);
+    visiting.delete(name);
+    visited.add(name);
+  };
+  for (const name of graph.keys()) visit(name, 0);
+}
+
 function validateSchemaJson(value: unknown): void {
   validateJsonBudget(value);
   const root = record(value, "schema.json");
@@ -257,6 +269,7 @@ function validateSchemaJson(value: unknown): void {
   const names = Object.keys(defs);
   if (names.some((key) => !PROPERTY_ID.test(key))) throw new TypeError("schema.json.$defs is invalid");
   validateSchemaNode(root, "schema.json", new Set(names), true);
+  validateDefinitionGraph(defs);
   if (root.type !== "object") throw new TypeError("schema.json must be a closed object schema");
 }
 
@@ -267,10 +280,34 @@ function schemaEqual(left: unknown, right: unknown): boolean {
 function validateStringFormat(value: string, format: unknown): boolean {
   if (format === undefined) return true;
   if (format === "date-time") {
-    return (
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
-      !Number.isNaN(Date.parse(value))
-    );
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/);
+    if (!match) return false;
+    const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = [
+      match[1],
+      match[2],
+      match[3],
+      match[4],
+      match[5],
+      match[6],
+      match[8] ?? "0",
+      match[9] ?? "0",
+    ].map(Number);
+    if (
+      year! < 1 ||
+      month! < 1 ||
+      month! > 12 ||
+      day! < 1 ||
+      day! > new Date(Date.UTC(year!, month!, 0)).getUTCDate() ||
+      hour! > 23 ||
+      minute! > 59 ||
+      second! > 59 ||
+      offsetHour! > 14 ||
+      offsetMinute! > 59 ||
+      (offsetHour === 14 && offsetMinute !== 0)
+    ) {
+      return false;
+    }
+    return !Number.isNaN(Date.parse(value));
   }
   if (format === "email") return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
   if (format === "hostname") {
@@ -282,7 +319,7 @@ function validateStringFormat(value: string, format: unknown): boolean {
   if (format === "uri") {
     try {
       const parsed = new URL(value);
-      return Boolean(parsed.protocol);
+      return parsed.protocol === "https:" && !parsed.username && !parsed.password && parsed.toString() === value;
     } catch {
       return false;
     }
@@ -294,21 +331,21 @@ function validateSchemaInstance(
   schema: Record<string, unknown>,
   value: unknown,
   definitions: Readonly<Record<string, unknown>>,
+  depth = 0,
 ): boolean {
+  if (depth > 64) return false;
   if (typeof schema.$ref === "string") {
     const resolved = definitions[schema.$ref.slice("#/$defs/".length)];
-    return Boolean(resolved) && validateSchemaInstance(record(resolved, "schema definition"), value, definitions);
+    return (
+      Boolean(resolved) && validateSchemaInstance(record(resolved, "schema definition"), value, definitions, depth + 1)
+    );
   }
   if (schema.enum !== undefined && !(schema.enum as unknown[]).some((entry) => schemaEqual(entry, value))) return false;
   if (Object.hasOwn(schema, "const") && !schemaEqual(schema.const, value)) return false;
   if (schema.type === "null") return value === null;
   if (schema.type === "boolean") return typeof value === "boolean";
   if (schema.type === "number" || schema.type === "integer") {
-    if (
-      typeof value !== "number" ||
-      !Number.isFinite(value) ||
-      (schema.type === "integer" && !Number.isInteger(value))
-    ) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
       return false;
     }
     if (typeof schema.minimum === "number" && value < schema.minimum) return false;
@@ -320,7 +357,6 @@ function validateSchemaInstance(
     const length = [...value].length;
     if (typeof schema.minLength === "number" && length < schema.minLength) return false;
     if (typeof schema.maxLength === "number" && length > schema.maxLength) return false;
-    if (typeof schema.pattern === "string" && !new RegExp(schema.pattern, "u").test(value)) return false;
     return validateStringFormat(value, schema.format);
   }
   if (schema.type === "array") {
@@ -328,7 +364,7 @@ function validateSchemaInstance(
     if (typeof schema.minItems === "number" && value.length < schema.minItems) return false;
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems) return false;
     const items = record(schema.items, "schema items");
-    return value.every((entry) => validateSchemaInstance(items, entry, definitions));
+    return value.every((entry) => validateSchemaInstance(items, entry, definitions, depth + 1));
   }
   if (schema.type === "object") {
     if (
@@ -347,7 +383,7 @@ function validateSchemaInstance(
     if (typeof schema.minProperties === "number" && keys.length < schema.minProperties) return false;
     if (typeof schema.maxProperties === "number" && keys.length > schema.maxProperties) return false;
     return keys.every((key) =>
-      validateSchemaInstance(record(properties[key], "schema property"), instance[key], definitions),
+      validateSchemaInstance(record(properties[key], "schema property"), instance[key], definitions, depth + 1),
     );
   }
   return false;

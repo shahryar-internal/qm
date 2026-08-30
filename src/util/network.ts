@@ -46,3 +46,12 @@ export function isPrivateNetworkIp(raw: string): boolean {
   if (!value) return false;
   return PRIVATE_NETWORKS.check(value, isIP(value) === 4 ? "ipv4" : "ipv6");
 }
+
+export function isPublicNetworkIp(raw: string): boolean {
+  const value = normalizedIp(raw);
+  if (!value || raw.includes("%") || isPrivateNetworkIp(value)) return false;
+  const family = isIP(value);
+  if (family === 4) return true;
+  const first = Number.parseInt(value.split(":", 1)[0] ?? "", 16);
+  return Number.isInteger(first) && first >= 0x2000 && first <= 0x3fff;
+}

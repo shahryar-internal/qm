@@ -4,9 +4,11 @@ import { validateBackgroundJobSchemaValue } from "./deployment-profile.ts";
 import type {
   BackgroundJobAdapter,
   BackgroundJobAdmissionIntent,
+  BackgroundJobApprovalGrant,
   BackgroundJobApprovalExpectation,
   BackgroundJobApprovalStore,
   BackgroundJobClient,
+  BackgroundJobControlIntent,
   BackgroundJobDeploymentProfile,
   BackgroundJobInvocationAuthority,
   BackgroundJobOutcome,
@@ -73,6 +75,59 @@ function hash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+export function backgroundJobApprovalDigest(grant: Readonly<Omit<BackgroundJobApprovalGrant, "digest">>): string {
+  return hash(Buffer.from(canonicalJson(grant), "utf8"));
+}
+
+function validatedApprovalGrant(
+  profile: Readonly<BackgroundJobDeploymentProfile>,
+  authority: Readonly<BackgroundJobInvocationAuthority>,
+  expected: Readonly<BackgroundJobApprovalExpectation>,
+  value: Readonly<BackgroundJobApprovalGrant> | null,
+): Readonly<BackgroundJobApprovalGrant> | null {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !==
+      "actorPrincipalId,actorSlackId,approvalId,audienceScopeId,channelId,descriptorSha256,digest,effect,expiresAt,idempotencyKey,issuedAt,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" ||
+    value.approvalId !== authority.receiptId ||
+    value.effect !== expected.effect ||
+    value.jobId !== expected.jobId ||
+    value.organizationId !== expected.organizationId ||
+    value.actorPrincipalId !== expected.actorPrincipalId ||
+    value.actorSlackId !== expected.actorSlackId ||
+    value.audienceScopeId !== expected.audienceScopeId ||
+    value.slackTeamId !== expected.slackTeamId ||
+    value.channelId !== expected.channelId ||
+    value.threadTs !== expected.threadTs ||
+    value.messageTs !== expected.messageTs ||
+    value.descriptorSha256 !== profile.binding.descriptorSha256 ||
+    value.profileSha256 !== profile.binding.profileSha256 ||
+    value.schemaSha256 !== profile.binding.schemaSha256 ||
+    value.payloadSha256 !== expected.payloadSha256 ||
+    value.idempotencyKey !== expected.idempotencyKey ||
+    !Number.isSafeInteger(value.issuedAt) ||
+    !Number.isSafeInteger(value.expiresAt) ||
+    value.issuedAt > expected.now ||
+    value.expiresAt <= expected.now ||
+    value.expiresAt > expected.maximumExpiresAt ||
+    !SHA256.test(value.digest)
+  ) {
+    return null;
+  }
+  try {
+    identifier(value.approvalId, "approval id");
+    validateSlackTimestamp(value.messageTs, "messageTs");
+    validateSlackTimestamp(value.threadTs, "threadTs");
+  } catch {
+    return null;
+  }
+  const { digest, ...unsigned } = value;
+  if (backgroundJobApprovalDigest(unsigned) !== digest) return null;
+  return Object.freeze(structuredClone(value));
+}
+
 function validateCompiledBody(profile: Readonly<BackgroundJobDeploymentProfile>, bytes: Uint8Array): void {
   let value: unknown;
   try {
@@ -86,7 +141,7 @@ function validateCompiledBody(profile: Readonly<BackgroundJobDeploymentProfile>,
   validateBackgroundJobSchemaValue(profile.schema.json, value);
 }
 
-function receiptOwned(
+export function backgroundJobReceiptOwned(
   receipt: Readonly<BackgroundJobReceipt>,
   expected: Readonly<BackgroundJobOwner>,
   profile: Readonly<BackgroundJobDeploymentProfile>,
@@ -96,18 +151,23 @@ function receiptOwned(
     typeof receipt !== "object" ||
     Array.isArray(receipt) ||
     Object.keys(receipt).sort().join(",") !==
-      "actorPrincipalId,actorSlackId,audienceScopeId,authorityId,channelId,createdAt,descriptorSha256,idempotencyKey,jobId,messageTs,organizationId,payloadSha256,profileSha256,runId,schemaSha256,slackTeamId,threadTs" ||
+      "actorPrincipalId,actorSlackId,approvalDigest,approvalEffect,approvalId,approvalMessageTs,approvalThreadTs,audienceScopeId,authorityId,channelId,createdAt,descriptorSha256,idempotencyKey,jobId,messageTs,organizationId,payloadSha256,profileSha256,runId,schemaSha256,slackTeamId,threadTs" ||
     !identifierOrFalse(receipt.authorityId) ||
     !identifierOrFalse(receipt.runId) ||
     !identifierOrFalse(receipt.idempotencyKey) ||
     !Number.isSafeInteger(receipt.createdAt) ||
-    receipt.createdAt < 1
+    receipt.createdAt < 1 ||
+    !identifierOrFalse(receipt.approvalId) ||
+    !SHA256.test(receipt.approvalDigest) ||
+    receipt.approvalEffect !== "background_job_start"
   ) {
     return false;
   }
   try {
     validateSlackTimestamp(receipt.messageTs, "messageTs");
     validateSlackTimestamp(receipt.threadTs, "threadTs");
+    validateSlackTimestamp(receipt.approvalMessageTs, "approvalMessageTs");
+    validateSlackTimestamp(receipt.approvalThreadTs, "approvalThreadTs");
   } catch {
     return false;
   }
@@ -120,6 +180,8 @@ function receiptOwned(
     receipt.slackTeamId === expected.slackTeamId &&
     receipt.channelId === expected.channelId &&
     receipt.threadTs === expected.threadTs &&
+    receipt.approvalThreadTs === receipt.threadTs &&
+    receipt.approvalMessageTs === receipt.messageTs &&
     receipt.descriptorSha256 === profile.binding.descriptorSha256 &&
     receipt.profileSha256 === profile.binding.profileSha256 &&
     receipt.schemaSha256 === profile.binding.schemaSha256 &&
@@ -136,7 +198,7 @@ function admissionIntentMatches(
     typeof actual === "object" &&
     !Array.isArray(actual) &&
     Object.keys(actual).sort().join(",") ===
-      "actorPrincipalId,actorSlackId,audienceScopeId,bodyBytes,channelId,createdAt,descriptorSha256,idempotencyKey,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" &&
+      "actorPrincipalId,actorSlackId,approvalDigest,approvalEffect,approvalId,approvalMessageTs,approvalThreadTs,audienceScopeId,bodyBytes,channelId,createdAt,descriptorSha256,idempotencyKey,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" &&
     actual.bodyBytes instanceof Uint8Array &&
     actual.jobId === expected.jobId &&
     actual.organizationId === expected.organizationId &&
@@ -147,6 +209,11 @@ function admissionIntentMatches(
     actual.channelId === expected.channelId &&
     actual.threadTs === expected.threadTs &&
     actual.messageTs === expected.messageTs &&
+    actual.approvalId === expected.approvalId &&
+    actual.approvalDigest === expected.approvalDigest &&
+    actual.approvalEffect === expected.approvalEffect &&
+    actual.approvalMessageTs === expected.approvalMessageTs &&
+    actual.approvalThreadTs === expected.approvalThreadTs &&
     actual.descriptorSha256 === expected.descriptorSha256 &&
     actual.profileSha256 === expected.profileSha256 &&
     actual.schemaSha256 === expected.schemaSha256 &&
@@ -248,7 +315,7 @@ function expectation(
   });
 }
 
-function validateStatusView(value: Readonly<BackgroundJobStatusView>): BackgroundJobStatusView {
+export function validateBackgroundJobStatusView(value: Readonly<BackgroundJobStatusView>): BackgroundJobStatusView {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("status view is invalid");
   const keys = Object.keys(value);
   if (keys.some((key) => key !== "state" && key !== "artifacts") || !STATES.has(value.state)) {
@@ -317,7 +384,7 @@ function resultCard(
   });
 }
 
-function statusOutcome(
+export function backgroundJobStatusOutcome(
   profile: Readonly<BackgroundJobDeploymentProfile>,
   receipt: Readonly<BackgroundJobReceipt>,
   view: Readonly<BackgroundJobStatusView>,
@@ -337,7 +404,16 @@ function statusOutcome(
     ...(card
       ? {
           card,
-          cardDeliveryKey: `background-job-card:${profile.definition.id}:${receipt.runId}`,
+          cardDeliveryKey: `background-job-card:${hash(
+            Buffer.from(
+              canonicalJson({
+                descriptorSha256: profile.binding.descriptorSha256,
+                jobId: profile.definition.id,
+                runId: receipt.runId,
+              }),
+              "utf8",
+            ),
+          )}`,
         }
       : {}),
   });
@@ -359,6 +435,7 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
         dependencies.receipts.durability !== "durable" ||
         dependencies.receipts.admission !== "durable_intent_outbox" ||
         dependencies.receipts.reconciliation !== "automatic_idempotent" ||
+        dependencies.receipts.controls !== "durable_intent_outbox" ||
         !dependencies.receipts.readiness().ready
       ) {
         return Object.freeze({ ready: false, reason: "background_job_receipt_store_unavailable" });
@@ -366,6 +443,8 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
       if (
         dependencies.approvals.durability !== "durable" ||
         dependencies.approvals.consumption !== "one_time" ||
+        dependencies.approvals.grants !== "verified_immutable" ||
+        dependencies.approvals.retirementFence !== "atomic_permanent" ||
         !dependencies.approvals.readiness().ready
       ) {
         return Object.freeze({ ready: false, reason: "background_job_approval_store_unavailable" });
@@ -391,7 +470,7 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
       const owned = async () => {
         if (!ready()) return null;
         const receipt = await dependencies.receipts.latestOwned(profile.definition.id, expectedOwner);
-        return receipt && receiptOwned(receipt, expectedOwner, profile) ? receipt : null;
+        return receipt && backgroundJobReceiptOwned(receipt, expectedOwner, profile) ? receipt : null;
       };
       return Object.freeze({
         profileId: profile.definition.id,
@@ -424,26 +503,34 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
             validateCompiledBody(profile, bodyBytes);
             const payloadSha256 = hash(bodyBytes);
             const at = now();
-            const approved = await dependencies.approvals.consume(
+            const expected = expectation(
+              profile,
+              expectedOwner,
               authority,
-              expectation(
-                profile,
-                expectedOwner,
-                authority,
-                "background_job_start",
-                payloadSha256,
-                compiled.idempotencyKey,
-                at,
-              ),
+              "background_job_start",
+              payloadSha256,
+              compiled.idempotencyKey,
+              at,
             );
-            if (!approved || !canStart()) return denied();
+            const grant = validatedApprovalGrant(
+              profile,
+              authority,
+              expected,
+              await dependencies.approvals.consume(authority, expected),
+            );
+            if (!grant || !canStart()) return denied();
             const intent: Readonly<BackgroundJobAdmissionIntent> = Object.freeze({
               jobId: profile.definition.id,
               ...expectedOwner,
-              messageTs: authority.slack.messageTs,
+              messageTs: grant.messageTs,
               ...profile.binding,
               bodyBytes,
               payloadSha256,
+              approvalId: grant.approvalId,
+              approvalDigest: grant.digest,
+              approvalEffect: "background_job_start",
+              approvalMessageTs: grant.messageTs,
+              approvalThreadTs: grant.threadTs,
               idempotencyKey: compiled.idempotencyKey,
               createdAt: at,
             });
@@ -451,17 +538,15 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
               if (!canStart() || !admissionIntentMatches(durable, intent)) {
                 throw new Error("background job admission intent is invalid");
               }
-              return dependencies.client.start(
-                durable.bodyBytes,
-                { messageTs: durable.messageTs, threadTs: durable.threadTs },
-                durable.idempotencyKey,
-              );
+              return dependencies.client.start(durable.bodyBytes, grant, durable.idempotencyKey);
             });
             if (
-              !receiptOwned(receipt, expectedOwner, profile) ||
+              !backgroundJobReceiptOwned(receipt, expectedOwner, profile) ||
               receipt.messageTs !== intent.messageTs ||
               receipt.idempotencyKey !== intent.idempotencyKey ||
               receipt.payloadSha256 !== intent.payloadSha256 ||
+              receipt.approvalId !== intent.approvalId ||
+              receipt.approvalDigest !== intent.approvalDigest ||
               receipt.createdAt !== intent.createdAt
             ) {
               return unavailable();
@@ -483,8 +568,10 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
                 message: "No active background job is bound to this thread.",
               });
             }
-            const view = validateStatusView(dependencies.adapter.statusView(await dependencies.client.status(receipt)));
-            return statusOutcome(profile, receipt, view);
+            const view = validateBackgroundJobStatusView(
+              dependencies.adapter.statusView(await dependencies.client.status(receipt)),
+            );
+            return backgroundJobStatusOutcome(profile, receipt, view);
           } catch {
             return unavailable();
           }
@@ -507,20 +594,40 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
             const payloadSha256 = hash(controlBytes);
             const idempotencyKey = `${profile.definition.id}-cancel:${payloadSha256}`;
             const at = now();
-            const approved = await dependencies.approvals.consume(
+            const expected = expectation(
+              profile,
+              expectedOwner,
               authority,
-              expectation(
-                profile,
-                expectedOwner,
-                authority,
-                "background_job_cancel",
-                payloadSha256,
-                idempotencyKey,
-                at,
-              ),
+              "background_job_cancel",
+              payloadSha256,
+              idempotencyKey,
+              at,
             );
-            if (!approved || !ready()) return denied();
-            const state = dependencies.adapter.cancellationState(await dependencies.client.cancel(receipt));
+            const grant = validatedApprovalGrant(
+              profile,
+              authority,
+              expected,
+              await dependencies.approvals.consume(authority, expected),
+            );
+            if (!grant || !ready()) return denied();
+            const intent: Readonly<BackgroundJobControlIntent> = Object.freeze({
+              effect: "background_job_cancel",
+              jobId: profile.definition.id,
+              ...expectedOwner,
+              ...profile.binding,
+              authorityId: receipt.authorityId,
+              runId: receipt.runId,
+              approvalId: grant.approvalId,
+              approvalDigest: grant.digest,
+              approvalMessageTs: grant.messageTs,
+              approvalThreadTs: grant.threadTs,
+              payloadSha256,
+              idempotencyKey,
+              createdAt: at,
+            });
+            const state = dependencies.adapter.cancellationState(
+              await dependencies.receipts.control(intent, () => dependencies.client.cancel(receipt, grant)),
+            );
             if (state !== "cancel_requested" && state !== "cancelled") return unavailable();
             return Object.freeze({
               ok: true,

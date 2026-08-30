@@ -168,8 +168,15 @@ export function exactPublicRsaJwks(value: unknown): Readonly<{ keys: readonly Re
     throw new TypeError("background job JWKS is invalid");
   }
   const item = value as Record<string, unknown>;
-  if (Object.keys(item).join(",") !== "keys" || !Array.isArray(item.keys) || item.keys.length !== 1) {
+  if (
+    Object.keys(item).join(",") !== "keys" ||
+    !Array.isArray(item.keys) ||
+    item.keys.length < 1 ||
+    item.keys.length > 2
+  ) {
     throw new TypeError("background job JWKS is invalid");
   }
-  return Object.freeze({ keys: Object.freeze([exactPublicRsaJwk(item.keys[0])]) });
+  const keys = item.keys.map((key) => exactPublicRsaJwk(key));
+  if (new Set(keys.map((key) => key.kid)).size !== keys.length) throw new TypeError("background job JWKS is invalid");
+  return Object.freeze({ keys: Object.freeze(keys) });
 }

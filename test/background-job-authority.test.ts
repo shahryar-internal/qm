@@ -10,9 +10,18 @@ import {
   type KMSClient,
 } from "@aws-sdk/client-kms";
 import { createBackgroundJobAuthoritySigner } from "../src/background-jobs/kms-signer.ts";
-import { createFixedBackgroundJobClient } from "../src/background-jobs/fixed-client.ts";
+import {
+  createFixedBackgroundJobClient,
+  type BackgroundJobHttpResponse,
+  type BackgroundJobPinnedRequest,
+} from "../src/background-jobs/fixed-client.ts";
 import { exactPublicRsaJwks, validateDefinition } from "../src/background-jobs/validation.ts";
-import type { BackgroundJobDefinition, BackgroundJobReceipt } from "../src/background-jobs/types.ts";
+import { canonicalJson } from "../src/cron/schedule-authority.ts";
+import type {
+  BackgroundJobApprovalGrant,
+  BackgroundJobDefinition,
+  BackgroundJobReceipt,
+} from "../src/background-jobs/types.ts";
 
 const DEFINITION: Readonly<BackgroundJobDefinition> = Object.freeze({
   id: "report-preview",
@@ -52,9 +61,63 @@ const RECEIPT: Readonly<BackgroundJobReceipt> = Object.freeze({
   ...BINDING,
   ...SLACK,
   payloadSha256: "d".repeat(64),
+  approvalId: "approval-start",
+  approvalDigest: "e".repeat(64),
+  approvalEffect: "background_job_start",
+  approvalMessageTs: SLACK.messageTs,
+  approvalThreadTs: SLACK.threadTs,
   idempotencyKey: "decision-123",
   createdAt: 1,
 });
+
+const START_GRANT: Readonly<BackgroundJobApprovalGrant> = Object.freeze({
+  ...PROFILE,
+  ...BINDING,
+  threadTs: SLACK.threadTs,
+  messageTs: SLACK.messageTs,
+  approvalId: "approval-start",
+  digest: "e".repeat(64),
+  effect: "background_job_start",
+  jobId: DEFINITION.id,
+  payloadSha256: RECEIPT.payloadSha256,
+  idempotencyKey: RECEIPT.idempotencyKey,
+  issuedAt: 1_788_030_000_000,
+  expiresAt: 1_788_030_300_000,
+});
+
+const CANCEL_GRANT: Readonly<BackgroundJobApprovalGrant> = Object.freeze({
+  ...START_GRANT,
+  approvalId: "approval-cancel",
+  digest: "f".repeat(64),
+  effect: "background_job_cancel",
+  messageTs: "1788030002.123456",
+});
+
+function approvalGrant(
+  body: Uint8Array,
+  effect: "background_job_start" | "background_job_cancel",
+  idempotencyKey: string,
+  approvalId: string,
+  messageTs: string = SLACK.messageTs,
+): Readonly<BackgroundJobApprovalGrant> {
+  const unsigned = {
+    ...PROFILE,
+    ...BINDING,
+    threadTs: SLACK.threadTs,
+    messageTs,
+    approvalId,
+    effect,
+    jobId: DEFINITION.id,
+    payloadSha256: createHash("sha256").update(body).digest("hex"),
+    idempotencyKey,
+    issuedAt: 1_788_030_000_000,
+    expiresAt: 1_788_030_300_000,
+  } as const;
+  return Object.freeze({
+    ...unsigned,
+    digest: createHash("sha256").update(canonicalJson(unsigned)).digest("hex"),
+  });
+}
 
 function material() {
   const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -126,11 +189,15 @@ function decode(token: string) {
 test("generic KMS authority signs exact configured claims and exposes only the configured public JWK", async () => {
   const signer = makeSigner();
   const body = Buffer.from('{"report":"weekly"}');
-  const { header, claims } = decode(await signer.signStart(body, SLACK, "decision-123"));
+  const grant = approvalGrant(body, "background_job_start", "decision-123", "approval-start");
+  const { header, claims } = decode(await signer.signStart(body, grant, "decision-123"));
   assert.deepEqual(header, { alg: "RS256", kid: "key-1", typ: DEFINITION.tokenType });
   assert.deepEqual(claims, {
     actorPrincipalId: PROFILE.actorPrincipalId,
     actorSlackId: PROFILE.actorSlackId,
+    approvalDigest: grant.digest,
+    approvalEffect: "background_job_start",
+    approvalId: grant.approvalId,
     aud: "https://jobs.example.com/authority",
     audienceScopeId: PROFILE.audienceScopeId,
     capability: DEFINITION.capability,
@@ -160,7 +227,16 @@ test("generic KMS authority signs exact configured claims and exposes only the c
   const mutableDefinition = structuredClone(DEFINITION);
   const snapshotted = makeSigner(material(), "ok", mutableDefinition);
   (mutableDefinition.start as { path: string }).path = "/api/jobs/report-preview/tampered";
-  assert.equal(decode(await snapshotted.signStart(body, SLACK, "decision-456")).claims.httpPath, DEFINITION.start.path);
+  assert.equal(
+    decode(
+      await snapshotted.signStart(
+        body,
+        approvalGrant(body, "background_job_start", "decision-456", "approval-start-2"),
+        "decision-456",
+      ),
+    ).claims.httpPath,
+    DEFINITION.start.path,
+  );
 });
 
 test("status and cancel use fixed configured paths, stable control idempotency, and fresh request nonces", async () => {
@@ -170,13 +246,24 @@ test("status and cancel use fixed configured paths, stable control idempotency, 
   const controlReceipt = { ...RECEIPT, descriptorSha256: "f".repeat(64) };
   const first = decode(await signer.signStatus(body, controlReceipt)).claims;
   const second = decode(await signer.signStatus(body, RECEIPT)).claims;
-  const cancel = decode(await signer.signCancel(body, RECEIPT)).claims;
+  const cancelGrant = approvalGrant(
+    body,
+    "background_job_cancel",
+    `${DEFINITION.id}-cancel:${createHash("sha256").update(body).digest("hex")}`,
+    "approval-cancel",
+    CANCEL_GRANT.messageTs,
+  );
+  const cancel = decode(await signer.signCancel(body, RECEIPT, cancelGrant)).claims;
   assert.equal(prepare.httpPath, DEFINITION.prepare!.path);
   assert.equal(first.httpPath, DEFINITION.status.path);
   assert.equal(first.descriptorSha256, controlReceipt.descriptorSha256);
   assert.equal(first.messageTs, RECEIPT.messageTs);
   assert.equal(second.idempotencyKey, first.idempotencyKey);
   assert.equal(cancel.httpPath, DEFINITION.cancel.path);
+  assert.equal(cancel.approvalId, cancelGrant.approvalId);
+  assert.equal(cancel.approvalEffect, "background_job_cancel");
+  assert.equal(cancel.messageTs, cancelGrant.messageTs);
+  assert.notEqual(cancel.approvalId, RECEIPT.approvalId);
   assert.notEqual(cancel.idempotencyKey, first.idempotencyKey);
   assert.notEqual(first.jti, second.jti);
   assert.notEqual(first.requestId, second.requestId);
@@ -205,7 +292,26 @@ test("generic signer fails closed on KMS outages, JWKS mismatch, bad signatures,
     { kms: fakeKms(actual) },
   );
   await assert.rejects(() => mismatch.ready(), /does not match/);
-  await assert.rejects(() => makeSigner().signStart(new Uint8Array(1025), SLACK, "decision-123"), /payload/);
+  const oversized = new Uint8Array(1025);
+  await assert.rejects(
+    () =>
+      makeSigner().signStart(
+        oversized,
+        approvalGrant(oversized, "background_job_start", "decision-123", "approval-oversize"),
+        "decision-123",
+      ),
+    /payload/,
+  );
+  const exactBody = Buffer.from("{}");
+  const exactGrant = approvalGrant(exactBody, "background_job_start", "decision-123", "approval-exact");
+  assert.throws(
+    () => makeSigner().signStart(exactBody, { ...exactGrant, digest: "0".repeat(64) }, "decision-123"),
+    /approval grant/,
+  );
+  assert.throws(
+    () => makeSigner().signStart(exactBody, { ...exactGrant, effect: "background_job_cancel" }, "decision-123"),
+    /approval grant/,
+  );
   assert.throws(() =>
     createBackgroundJobAuthoritySigner(
       {
@@ -244,17 +350,120 @@ test("generic signer fails closed on KMS outages, JWKS mismatch, bad signatures,
   );
 });
 
-function json(value: unknown, url = "") {
-  const body = JSON.stringify(value);
-  const response = new Response(body, {
-    headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
-  });
-  if (url) Object.defineProperty(response, "url", { value: url });
-  return response;
+test("JWKS rotation exposes a bounded unique overlap and retires the old key only after token and cache windows", async () => {
+  const current = material();
+  const previous = material();
+  let now = 1_788_030_000_000;
+  const retireAt = now + 900_000;
+  const signer = createBackgroundJobAuthoritySigner(
+    {
+      issuer: "https://gateway.example.com/authority",
+      audience: "https://jobs.example.com/authority",
+      keyId: "kms-key-1",
+      tokenKid: "key-1",
+      publicJwk: current.jwk,
+      previousPublicJwk: { ...previous.jwk, kid: "key-0" },
+      previousKeyRetireAt: retireAt,
+      profile: PROFILE,
+      definition: DEFINITION,
+      binding: BINDING,
+      lifetimeSeconds: 300,
+    },
+    {
+      kms: fakeKms(current),
+      now: () => now,
+      randomId: (() => {
+        let id = 0;
+        return () => `rotation_${++id}`;
+      })(),
+    },
+  );
+  assert.deepEqual(
+    signer.jwks().keys.map((key) => key.kid),
+    ["key-1", "key-0"],
+  );
+  const body = Buffer.from("{}");
+  assert.equal(
+    decode(
+      await signer.signStart(
+        body,
+        approvalGrant(body, "background_job_start", "decision-123", "approval-rotation"),
+        "decision-123",
+      ),
+    ).header.kid,
+    "key-1",
+  );
+  now = retireAt - 1;
+  assert.equal(signer.jwks().keys.length, 2);
+  now = retireAt;
+  assert.deepEqual(
+    signer.jwks().keys.map((key) => key.kid),
+    ["key-1"],
+  );
+  now = retireAt - 1;
+  assert.deepEqual(
+    signer.jwks().keys.map((key) => key.kid),
+    ["key-1"],
+  );
+  assert.throws(() =>
+    createBackgroundJobAuthoritySigner(
+      {
+        issuer: "https://gateway.example.com/authority",
+        audience: "https://jobs.example.com/authority",
+        keyId: "kms-key-1",
+        tokenKid: "key-1",
+        publicJwk: current.jwk,
+        previousPublicJwk: { ...previous.jwk, kid: "key-0" },
+        previousKeyRetireAt: 1_788_030_899_999,
+        profile: PROFILE,
+        definition: DEFINITION,
+        binding: BINDING,
+        lifetimeSeconds: 300,
+      },
+      { kms: fakeKms(current), now: () => 1_788_030_000_000 },
+    ),
+  );
+  assert.throws(() => exactPublicRsaJwks({ keys: [current.jwk, previous.jwk, material().jwk] }));
+});
+
+function httpResponse(
+  value: unknown,
+  url: string,
+  options: Readonly<{
+    status?: number;
+    contentType?: string;
+    contentLength?: string;
+    contentEncoding?: string;
+    stalled?: boolean;
+  }> = {},
+) {
+  const body = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
+  let cancelled = 0;
+  const headers = new Map<string, string>([
+    ["content-type", options.contentType ?? "application/json"],
+    ["content-length", options.contentLength ?? String(body.byteLength)],
+  ]);
+  if (options.contentEncoding) headers.set("content-encoding", options.contentEncoding);
+  const response: BackgroundJobHttpResponse = {
+    status: options.status ?? 200,
+    url,
+    headers: { get: (name) => headers.get(name.toLowerCase()) ?? null },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(body);
+        if (!options.stalled) controller.close();
+      },
+    }),
+    cancel: async () => {
+      cancelled += 1;
+    },
+  };
+  return { response, cancelled: () => cancelled };
 }
 
-test("fixed client uses only configured HTTPS paths, exact canonical control bytes, no redirects, and bounded responses", async () => {
-  const calls: { url: string; init: RequestInit; body: string }[] = [];
+test("fixed client pins public DNS on every exact request with SNI, no proxy, and no redirects", async () => {
+  const calls: { url: string; init: Parameters<BackgroundJobPinnedRequest>[1]; body: string }[] = [];
+  let resolves = 0;
   const signed: string[] = [];
   const signer = {
     ready: async () => undefined,
@@ -273,14 +482,14 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
       return "token-cancel";
     },
   };
-  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, init: init!, body: Buffer.from(init!.body as Uint8Array).toString("utf8") });
+  const request: BackgroundJobPinnedRequest = async (url, init) => {
+    calls.push({ url, init, body: Buffer.from(init.body).toString("utf8") });
     if (url.endsWith(DEFINITION.start.path))
-      return json({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }, url);
-    if (url.endsWith(DEFINITION.status.path)) return json({ runId: RECEIPT.runId, state: "complete" }, url);
-    return json({ runId: RECEIPT.runId, state: "cancelling" }, url);
-  }) as typeof fetch;
+      return httpResponse({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }, url).response;
+    if (url.endsWith(DEFINITION.status.path))
+      return httpResponse({ runId: RECEIPT.runId, state: "complete" }, url).response;
+    return httpResponse({ runId: RECEIPT.runId, state: "cancelling" }, url).response;
+  };
   const strict = (value: unknown) => {
     assert.ok(value && typeof value === "object" && !Array.isArray(value));
     return value as { runId: string; state: string };
@@ -289,7 +498,11 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     {
       origin: "https://jobs.example.com",
       definition: DEFINITION,
-      fetch: fetcher,
+      resolveHost: async () => {
+        resolves += 1;
+        return ["2606:2800:220:1:248:1893:25c8:1946", "93.184.216.34"];
+      },
+      request,
       parsers: {
         admission: (value) => {
           const item = value as { authorityId: string; runId: string };
@@ -303,10 +516,10 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     },
     signer,
   );
-  await client.start(Buffer.from("{}"), RECEIPT, RECEIPT.idempotencyKey);
+  await client.start(Buffer.from("{}"), START_GRANT, RECEIPT.idempotencyKey);
   await client.status(RECEIPT);
   await client.status(RECEIPT);
-  await client.cancel(RECEIPT);
+  await client.cancel(RECEIPT, CANCEL_GRANT);
   assert.deepEqual(signed, ["start", "status", "status", "cancel"]);
   assert.deepEqual(
     calls.map((call) => call.url),
@@ -318,10 +531,15 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     ],
   );
   assert.equal(calls[1]!.body, '{"authorityId":"authority-1","runId":"run-0000001"}');
+  assert.equal(resolves, 4);
   for (const call of calls) {
     assert.equal(call.init.redirect, "error");
-    assert.equal((call.init.headers as Record<string, string>)[DEFINITION.authorityHeader]?.startsWith("token-"), true);
-    assert.equal((call.init.headers as Record<string, string>)["content-length"], String(Buffer.byteLength(call.body)));
+    assert.equal(call.init.proxy, "disabled");
+    assert.equal(call.init.servername, "jobs.example.com");
+    assert.equal(call.init.resolvedAddress, "93.184.216.34");
+    assert.deepEqual(call.init.resolvedAddresses, ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]);
+    assert.equal(call.init.headers[DEFINITION.authorityHeader]?.startsWith("token-"), true);
+    assert.equal(call.init.headers["content-length"], String(Buffer.byteLength(call.body)));
   }
   const mutableDefinition = structuredClone(DEFINITION);
   const fixedCalls: string[] = [];
@@ -329,10 +547,11 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     {
       origin: "https://jobs.example.com",
       definition: mutableDefinition,
-      fetch: (async (input) => {
-        fixedCalls.push(String(input));
-        return json({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }, String(input));
-      }) as typeof fetch,
+      resolveHost: async () => ["93.184.216.34"],
+      request: async (url) => {
+        fixedCalls.push(url);
+        return httpResponse({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }, url).response;
+      },
       parsers: {
         admission: () => ({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }),
         status: strict,
@@ -344,7 +563,7 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     signer,
   );
   (mutableDefinition.start as { path: string }).path = "/api/jobs/report-preview/tampered";
-  await snapshotted.start(Buffer.from("{}"), RECEIPT, RECEIPT.idempotencyKey);
+  await snapshotted.start(Buffer.from("{}"), START_GRANT, RECEIPT.idempotencyKey);
   assert.deepEqual(fixedCalls, [`https://jobs.example.com${DEFINITION.start.path}`]);
 });
 
@@ -369,11 +588,16 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     signCancel: async () => "private-token",
   };
   assert.throws(() => createFixedBackgroundJobClient({ ...base, origin: "https://127.0.0.1" }, signer));
+  const resolution = async () => ["93.184.216.34"];
+  const rejectedResponse = httpResponse("private-body", `https://jobs.example.com${DEFINITION.status.path}`, {
+    status: 503,
+    contentType: "text/plain",
+  });
   const rejected = createFixedBackgroundJobClient(
     {
       ...base,
-      fetch: (async () =>
-        new Response("private-body", { status: 503, headers: { "content-type": "text/plain" } })) as typeof fetch,
+      resolveHost: resolution,
+      request: async () => rejectedResponse.response,
     },
     signer,
   );
@@ -381,29 +605,45 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     () => rejected.status(RECEIPT),
     (error: Error) => error.message === "background job server rejected the request (503)",
   );
+  assert.equal(rejectedResponse.cancelled(), 1);
+  const changedResponse = httpResponse({ runId: RECEIPT.runId }, "https://evil.example/status");
   const changed = createFixedBackgroundJobClient(
-    { ...base, fetch: (async () => json({ runId: RECEIPT.runId }, "https://evil.example/status")) as typeof fetch },
+    { ...base, resolveHost: resolution, request: async () => changedResponse.response },
     signer,
   );
   await assert.rejects(() => changed.status(RECEIPT), /origin/);
+  assert.equal(changedResponse.cancelled(), 1);
+  const oversizeResponse = httpResponse("{}", `https://jobs.example.com${DEFINITION.status.path}`, {
+    contentLength: String(256 * 1024 + 1),
+  });
   const oversize = createFixedBackgroundJobClient(
     {
       ...base,
-      fetch: (async () =>
-        new Response("{}", {
-          headers: { "content-type": "application/json", "content-length": String(256 * 1024 + 1) },
-        })) as typeof fetch,
+      resolveHost: resolution,
+      request: async () => oversizeResponse.response,
     },
     signer,
   );
   await assert.rejects(() => oversize.status(RECEIPT), /invalid/);
+  assert.equal(oversizeResponse.cancelled(), 1);
+  const encodedResponse = httpResponse("{}", `https://jobs.example.com${DEFINITION.status.path}`, {
+    contentEncoding: "gzip",
+  });
+  const encoded = createFixedBackgroundJobClient(
+    { ...base, resolveHost: resolution, request: async () => encodedResponse.response },
+    signer,
+  );
+  await assert.rejects(() => encoded.status(RECEIPT), /invalid/);
+  assert.equal(encodedResponse.cancelled(), 1);
   const redirect = createFixedBackgroundJobClient(
     {
       ...base,
-      fetch: (async (_input, init) => {
-        assert.equal(init?.redirect, "error");
+      resolveHost: resolution,
+      request: async (_url, init) => {
+        assert.equal(init.redirect, "error");
+        assert.equal(init.proxy, "disabled");
         throw new Error("redirect-private");
-      }) as typeof fetch,
+      },
     },
     signer,
   );
@@ -412,17 +652,34 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     {
       ...base,
       timeoutMs: 100,
-      fetch: (async () =>
-        new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(Buffer.from("{"));
-            },
-          }),
-          { headers: { "content-type": "application/json" } },
-        )) as typeof fetch,
+      resolveHost: resolution,
+      request: async () =>
+        httpResponse("{", `https://jobs.example.com${DEFINITION.status.path}`, {
+          contentLength: "1",
+          stalled: true,
+        }).response,
     },
     signer,
   );
   await assert.rejects(() => stalled.status(RECEIPT), /^Error: background job request failed$/);
+  let dnsCalls = 0;
+  const rebinding = createFixedBackgroundJobClient(
+    {
+      ...base,
+      resolveHost: async () => (++dnsCalls === 1 ? ["93.184.216.34"] : ["93.184.216.34", "127.0.0.1"]),
+      request: async (url) => httpResponse({ runId: RECEIPT.runId }, url).response,
+    },
+    signer,
+  );
+  await rebinding.status(RECEIPT);
+  await assert.rejects(() => rebinding.status(RECEIPT), /did not resolve only to public addresses/);
+  const mixed = createFixedBackgroundJobClient(
+    {
+      ...base,
+      resolveHost: async () => ["93.184.216.34", "224.0.0.1"],
+      request: async (url) => httpResponse({ runId: RECEIPT.runId }, url).response,
+    },
+    signer,
+  );
+  await assert.rejects(() => mixed.status(RECEIPT), /did not resolve only to public addresses/);
 });

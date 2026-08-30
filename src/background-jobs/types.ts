@@ -79,6 +79,8 @@ export interface BackgroundJobAuthoritySignerConfig {
   keyId: string;
   tokenKid: string;
   publicJwk: JsonWebKey;
+  previousPublicJwk?: JsonWebKey;
+  previousKeyRetireAt?: number;
   profile: Readonly<BackgroundJobAudienceProfile>;
   definition: Readonly<BackgroundJobDefinition>;
   binding: Readonly<BackgroundJobContractBinding>;
@@ -95,11 +97,15 @@ export interface BackgroundJobAuthoritySigner {
   ): Promise<string>;
   signStart(
     bodyBytes: Uint8Array,
-    slack: Readonly<Pick<VerifiedSlackTurn, "messageTs" | "threadTs">>,
+    grant: Readonly<BackgroundJobApprovalGrant>,
     idempotencyKey: string,
   ): Promise<string>;
   signStatus(bodyBytes: Uint8Array, receipt: Readonly<BackgroundJobReceipt>): Promise<string>;
-  signCancel(bodyBytes: Uint8Array, receipt: Readonly<BackgroundJobReceipt>): Promise<string>;
+  signCancel(
+    bodyBytes: Uint8Array,
+    receipt: Readonly<BackgroundJobReceipt>,
+    grant: Readonly<BackgroundJobApprovalGrant>,
+  ): Promise<string>;
   jwks(): Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
 }
 
@@ -116,6 +122,11 @@ export interface BackgroundJobReceipt extends BackgroundJobAudienceProfile, Back
   messageTs: string;
   idempotencyKey: string;
   payloadSha256: string;
+  approvalId: string;
+  approvalDigest: string;
+  approvalEffect: "background_job_start";
+  approvalMessageTs: string;
+  approvalThreadTs: string;
   createdAt: number;
 }
 
@@ -128,6 +139,25 @@ export interface BackgroundJobAdmissionIntent extends BackgroundJobOwner, Backgr
   messageTs: string;
   bodyBytes: Uint8Array;
   payloadSha256: string;
+  approvalId: string;
+  approvalDigest: string;
+  approvalEffect: "background_job_start";
+  approvalMessageTs: string;
+  approvalThreadTs: string;
+  idempotencyKey: string;
+  createdAt: number;
+}
+
+export interface BackgroundJobControlIntent extends BackgroundJobOwner, BackgroundJobContractBinding {
+  effect: "background_job_cancel";
+  jobId: string;
+  authorityId: string;
+  runId: string;
+  approvalId: string;
+  approvalDigest: string;
+  approvalMessageTs: string;
+  approvalThreadTs: string;
+  payloadSha256: string;
   idempotencyKey: string;
   createdAt: number;
 }
@@ -136,12 +166,54 @@ export interface BackgroundJobReceiptStore {
   durability: "durable";
   admission: "durable_intent_outbox";
   reconciliation: "automatic_idempotent";
+  controls: "durable_intent_outbox";
   readiness(): Readonly<{ ready: true }> | Readonly<{ ready: false }>;
   admit(
     intent: Readonly<BackgroundJobAdmissionIntent>,
     start: (intent: Readonly<BackgroundJobAdmissionIntent>) => Promise<Readonly<BackgroundJobAdmission>>,
   ): Promise<Readonly<BackgroundJobReceipt>>;
   latestOwned(jobId: string, owner: Readonly<BackgroundJobOwner>): Promise<Readonly<BackgroundJobReceipt> | null>;
+  control<T>(intent: Readonly<BackgroundJobControlIntent>, execute: () => Promise<T>): Promise<T>;
+}
+
+export interface BackgroundJobCompletionReceiptStore {
+  durability: "durable";
+  polling: "bounded_active_only";
+  terminalTransition: "after_delivery_outbox";
+  active(jobId: string, limit: number): Promise<readonly Readonly<BackgroundJobReceipt>[]>;
+  terminal(
+    receipt: Readonly<BackgroundJobReceipt>,
+    state: "complete" | "failed" | "cancelled",
+    deliveryKey: string,
+  ): Promise<void>;
+}
+
+export interface BackgroundJobDeliveryIntent extends BackgroundJobAudienceProfile, BackgroundJobContractBinding {
+  deliveryKey: string;
+  jobId: string;
+  authorityId: string;
+  runId: string;
+  messageTs: string;
+  threadTs: string;
+  state: "complete" | "failed" | "cancelled";
+  text: string;
+  card?: Readonly<WorkflowCardEnvelope>;
+  createdAt: number;
+}
+
+export interface BackgroundJobDeliveryOutbox {
+  durability: "durable";
+  admission: "persist_before_send";
+  reconciliation: "automatic_idempotent_delivery";
+  transport: "slack_first_party_render_only";
+  rawFallback: "forbidden";
+  enqueue(intent: Readonly<BackgroundJobDeliveryIntent>): Promise<"persisted" | "already_persisted">;
+}
+
+export interface BackgroundJobCompletionRuntime<TStatus = unknown> {
+  receipts: BackgroundJobCompletionReceiptStore;
+  client: Readonly<Pick<BackgroundJobClient<TStatus, unknown>, "status">>;
+  adapter: Readonly<Pick<BackgroundJobAdapter<unknown, TStatus, unknown>, "statusView">>;
 }
 
 export interface BackgroundJobInvocationAuthority {
@@ -159,14 +231,28 @@ export interface BackgroundJobApprovalExpectation extends BackgroundJobOwner, Ba
   maximumExpiresAt: number;
 }
 
+export interface BackgroundJobApprovalGrant extends BackgroundJobOwner, BackgroundJobContractBinding {
+  approvalId: string;
+  digest: string;
+  effect: "background_job_start" | "background_job_cancel";
+  jobId: string;
+  messageTs: string;
+  payloadSha256: string;
+  idempotencyKey: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
 export interface BackgroundJobApprovalStore {
   durability: "durable";
   consumption: "one_time";
+  grants: "verified_immutable";
+  retirementFence: "atomic_permanent";
   readiness(): Readonly<{ ready: true }> | Readonly<{ ready: false }>;
   consume(
     authority: Readonly<BackgroundJobInvocationAuthority>,
     expected: Readonly<BackgroundJobApprovalExpectation>,
-  ): Promise<boolean>;
+  ): Promise<Readonly<BackgroundJobApprovalGrant> | null>;
 }
 
 export interface WorkflowCardEnvelope {
@@ -221,11 +307,14 @@ export interface BackgroundJobStatusView {
 export interface BackgroundJobClient<TStatus = unknown, TCancellation = unknown> {
   start(
     bodyBytes: Uint8Array,
-    slack: Readonly<Pick<VerifiedSlackTurn, "messageTs" | "threadTs">>,
+    grant: Readonly<BackgroundJobApprovalGrant>,
     idempotencyKey: string,
   ): Promise<Readonly<BackgroundJobAdmission>>;
   status(receipt: Readonly<BackgroundJobReceipt>): Promise<Readonly<TStatus>>;
-  cancel(receipt: Readonly<BackgroundJobReceipt>): Promise<Readonly<TCancellation>>;
+  cancel(
+    receipt: Readonly<BackgroundJobReceipt>,
+    grant: Readonly<BackgroundJobApprovalGrant>,
+  ): Promise<Readonly<TCancellation>>;
 }
 
 export interface BackgroundJobTurnBinding {

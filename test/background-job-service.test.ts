@@ -2,11 +2,20 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicTurnBody } from "../src/api/routes/turns.ts";
-import { parseBackgroundJobDeploymentProfile } from "../src/background-jobs/deployment-profile.ts";
-import { createBackgroundJobProfileService, createBackgroundJobRegistry } from "../src/background-jobs/service.ts";
+import {
+  parseBackgroundJobDeploymentProfile,
+  validateBackgroundJobSchemaValue,
+} from "../src/background-jobs/deployment-profile.ts";
+import { createBackgroundJobCompletionPoller } from "../src/background-jobs/completion-poller.ts";
+import {
+  backgroundJobApprovalDigest,
+  createBackgroundJobProfileService,
+  createBackgroundJobRegistry,
+} from "../src/background-jobs/service.ts";
 import type {
   BackgroundJobAdapter,
   BackgroundJobAdmissionIntent,
+  BackgroundJobApprovalGrant,
   BackgroundJobApprovalExpectation,
   BackgroundJobApprovalStore,
   BackgroundJobClient,
@@ -91,6 +100,12 @@ function profile(value = manifest(), enabled = true) {
   return parseBackgroundJobDeploymentProfile(JSON.stringify(value), PROFILE_PATH, enabled);
 }
 
+function profileWithSchema(json: unknown) {
+  const value = structuredClone(manifest()) as unknown as { schema: { sha256: string; json: unknown } };
+  value.schema = { sha256: createHash("sha256").update(canonicalJson(json)).digest("hex"), json };
+  return parseBackgroundJobDeploymentProfile(JSON.stringify(value), PROFILE_PATH);
+}
+
 const TURN: Readonly<BackgroundJobTurnBinding> = Object.freeze({
   surface: "slack",
   actorId: "principal_owner",
@@ -127,11 +142,13 @@ function receiptStore(
   } = {},
 ) {
   let receipt: Readonly<BackgroundJobReceipt> | null = null;
+  const controls: unknown[] = [];
   const events: string[] = [];
   const value: BackgroundJobReceiptStore = {
     durability: "durable",
     admission: "durable_intent_outbox",
     reconciliation: "automatic_idempotent",
+    controls: "durable_intent_outbox",
     readiness: () => ({ ready: true }),
     admit: async (intent, start) => {
       events.push("intent_persisted");
@@ -155,16 +172,27 @@ function receiptStore(
         profileSha256: intent.profileSha256,
         schemaSha256: intent.schemaSha256,
         payloadSha256: intent.payloadSha256,
+        approvalId: intent.approvalId,
+        approvalDigest: intent.approvalDigest,
+        approvalEffect: intent.approvalEffect,
+        approvalMessageTs: intent.approvalMessageTs,
+        approvalThreadTs: intent.approvalThreadTs,
         idempotencyKey: intent.idempotencyKey,
         createdAt: intent.createdAt,
       });
       return receipt;
     },
     latestOwned: async () => receipt,
+    control: async (intent, execute) => {
+      events.push("control_intent_persisted");
+      controls.push(structuredClone(intent));
+      return execute();
+    },
   };
   return {
     value,
     events,
+    controls,
     get: () => receipt,
     replace: (value: Readonly<BackgroundJobReceipt> | null) => {
       receipt = value;
@@ -172,18 +200,44 @@ function receiptStore(
   };
 }
 
-function approvalStore(approve = true) {
+function approvalStore(
+  approve = true,
+  mutate?: (grant: Readonly<BackgroundJobApprovalGrant>) => Readonly<BackgroundJobApprovalGrant>,
+) {
   const consumed = new Set<string>();
   const expectations: BackgroundJobApprovalExpectation[] = [];
   const value: BackgroundJobApprovalStore = {
     durability: "durable",
     consumption: "one_time",
+    grants: "verified_immutable",
+    retirementFence: "atomic_permanent",
     readiness: () => ({ ready: true }),
     consume: async (authority, expected) => {
       expectations.push(expected);
-      if (!approve || consumed.has(authority.receiptId)) return false;
+      if (!approve || consumed.has(authority.receiptId)) return null;
       consumed.add(authority.receiptId);
-      return true;
+      const unsigned = {
+        approvalId: authority.receiptId,
+        effect: expected.effect,
+        jobId: expected.jobId,
+        organizationId: expected.organizationId,
+        actorPrincipalId: expected.actorPrincipalId,
+        actorSlackId: expected.actorSlackId,
+        audienceScopeId: expected.audienceScopeId,
+        slackTeamId: expected.slackTeamId,
+        channelId: expected.channelId,
+        threadTs: expected.threadTs,
+        messageTs: expected.messageTs,
+        descriptorSha256: expected.descriptorSha256,
+        profileSha256: expected.profileSha256,
+        schemaSha256: expected.schemaSha256,
+        payloadSha256: expected.payloadSha256,
+        idempotencyKey: expected.idempotencyKey,
+        issuedAt: expected.now,
+        expiresAt: expected.maximumExpiresAt,
+      } as const;
+      const grant = Object.freeze({ ...unsigned, digest: backgroundJobApprovalDigest(unsigned) });
+      return mutate ? mutate(grant) : grant;
     },
   };
   return { value, expectations };
@@ -231,16 +285,22 @@ function adapter(): BackgroundJobAdapter<
 
 function client(events: string[] = []) {
   let starts = 0;
+  const startGrants: Readonly<BackgroundJobApprovalGrant>[] = [];
+  const cancelGrants: Readonly<BackgroundJobApprovalGrant>[] = [];
   const value: BackgroundJobClient<{ state: string }, { state: string }> = {
-    start: async () => {
+    start: async (_body, grant) => {
       starts += 1;
+      startGrants.push(grant);
       events.push("remote_started");
       return { authorityId: "authority-1", runId: "run-0000001" };
     },
     status: async () => ({ state: "complete" }),
-    cancel: async () => ({ state: "cancelling" }),
+    cancel: async (_receipt, grant) => {
+      cancelGrants.push(grant);
+      return { state: "cancelling" };
+    },
   };
-  return { value, starts: () => starts };
+  return { value, starts: () => starts, startGrants, cancelGrants };
 }
 
 function service(
@@ -248,17 +308,19 @@ function service(
     active?: () => boolean;
     receipts?: ReturnType<typeof receiptStore>;
     approve?: boolean;
+    mutateGrant?: (grant: Readonly<BackgroundJobApprovalGrant>) => Readonly<BackgroundJobApprovalGrant>;
     deployment?: ReturnType<typeof profile>;
     adapter?: ReturnType<typeof adapter>;
   } = {},
 ) {
   const receipts = options.receipts ?? receiptStore();
-  const approvals = approvalStore(options.approve);
+  const approvals = approvalStore(options.approve, options.mutateGrant);
   const remote = client(receipts.events);
   const deployment = options.deployment ?? profile();
+  const jobAdapter = options.adapter ?? adapter();
   const value = createBackgroundJobProfileService({
     deployment,
-    adapter: options.adapter ?? adapter(),
+    adapter: jobAdapter,
     receipts: receipts.value,
     approvals: approvals.value,
     client: remote.value,
@@ -266,7 +328,7 @@ function service(
     active: options.active ?? (() => true),
     now: () => 1_788_030_000_000,
   });
-  return { value, deployment, receipts, approvals, remote };
+  return { value, deployment, receipts, approvals, remote, adapter: jobAdapter };
 }
 
 test("start requires an exact fresh invocation receipt and persists the durable intent before remote admission", async () => {
@@ -284,11 +346,36 @@ test("start requires an exact fresh invocation receipt and persists the durable 
   assert.equal(built.receipts.get()!.messageTs, INVOCATION.slack.messageTs);
   assert.equal(built.receipts.get()!.threadTs, INVOCATION.slack.threadTs);
   assert.equal(built.receipts.get()!.descriptorSha256, built.deployment.binding.descriptorSha256);
+  assert.equal(built.receipts.get()!.approvalId, INVOCATION.receiptId);
+  assert.equal(built.receipts.get()!.approvalEffect, "background_job_start");
+  assert.equal(built.receipts.get()!.approvalMessageTs, INVOCATION.slack.messageTs);
+  assert.match(built.receipts.get()!.approvalDigest, /^[a-f0-9]{64}$/);
+  assert.equal(Object.isFrozen(built.remote.startGrants[0]), true);
   assert.equal(built.approvals.expectations[0]!.effect, "background_job_start");
   assert.equal(built.approvals.expectations[0]!.payloadSha256, built.receipts.get()!.payloadSha256);
   assert.equal(built.approvals.expectations[0]!.maximumExpiresAt - built.approvals.expectations[0]!.now, 5 * 60 * 1000);
   assert.equal(built.approvals.expectations[0]!.messageTs, INVOCATION.slack.messageTs);
   assert.equal((await bound.start({ recordId: "record-1", receiptIds: ["decision-1"] }, INVOCATION)).state, "denied");
+});
+
+test("approval grants are closed, digest-bound to the current Slack act, and immutable before any remote effect", async () => {
+  const stale = service({
+    mutateGrant: (grant) => {
+      const { digest: _digest, ...unsigned } = { ...grant, messageTs: TURN.verifiedSlack!.messageTs };
+      return Object.freeze({ ...unsigned, digest: backgroundJobApprovalDigest(unsigned) });
+    },
+  });
+  assert.equal(
+    (await stale.value.bind(TURN)!.start({ recordId: "record-1", receiptIds: ["decision-1"] }, INVOCATION)).state,
+    "denied",
+  );
+  assert.equal(stale.remote.starts(), 0);
+  const badDigest = service({ mutateGrant: (grant) => ({ ...grant, digest: "0".repeat(64) }) });
+  assert.equal(
+    (await badDigest.value.bind(TURN)!.start({ recordId: "record-1", receiptIds: ["decision-1"] }, INVOCATION)).state,
+    "denied",
+  );
+  assert.equal(badDigest.remote.starts(), 0);
 });
 
 test("durable intent failure and disable races yield zero remote admission", async () => {
@@ -355,12 +442,17 @@ test("owner control survives disable while start disappears and completion cards
   const status = await bound.status();
   assert.equal(status.state, "complete");
   assert.ok(status.ok && status.card);
+  assert.match(status.cardDeliveryKey!, /^background-job-card:[a-f0-9]{64}$/);
   const visible = JSON.stringify(status.card);
   assert.match(visible, /Report/);
   assert.doesNotMatch(visible, /Evaluation|evaluation-1|[de]{64}|sha256/i);
   const cancelInvocation = { ...INVOCATION, receiptId: "approval-cancel" };
   assert.equal((await bound.cancel(cancelInvocation)).state, "cancel_requested");
   assert.equal(built.approvals.expectations[1]!.effect, "background_job_cancel");
+  assert.equal(built.remote.cancelGrants[0]!.approvalId, cancelInvocation.receiptId);
+  assert.equal(built.remote.cancelGrants[0]!.messageTs, cancelInvocation.slack.messageTs);
+  assert.notEqual(built.remote.cancelGrants[0]!.approvalId, built.receipts.get()!.approvalId);
+  assert.equal((built.receipts.controls[0] as { approvalId: string }).approvalId, cancelInvocation.receiptId);
   assert.equal((await bound.cancel(cancelInvocation)).state, "denied");
   const disabledProfile = profile(manifest(), false);
   assert.equal(disabledProfile.binding.descriptorSha256, built.deployment.binding.descriptorSha256);
@@ -370,6 +462,82 @@ test("owner control survives disable while start disappears and completion cards
   assert.equal(controls.length, 1);
   assert.equal(controls[0]!.canStart(), false);
   assert.equal((await controls[0]!.status()).state, "complete");
+});
+
+test("the automatic completion poller durably reconciles one-time owner-thread delivery across restart", async () => {
+  const built = service();
+  const bound = built.value.bind(TURN)!;
+  assert.equal((await bound.start({ recordId: "record-1", receiptIds: ["decision-1"] }, INVOCATION)).state, "accepted");
+  const disabled = profile(manifest(), false);
+  let terminal = false;
+  let failTerminalOnce = true;
+  const deliveries = new Map<string, unknown>();
+  const visible: string[] = [];
+  const completionReceipts = {
+    durability: "durable" as const,
+    polling: "bounded_active_only" as const,
+    terminalTransition: "after_delivery_outbox" as const,
+    active: async (jobId: string, limit: number) => {
+      assert.equal(jobId, disabled.definition.id);
+      assert.ok(limit <= 10);
+      return terminal ? [] : [built.receipts.get()!];
+    },
+    terminal: async (
+      receipt: BackgroundJobReceipt,
+      state: "complete" | "failed" | "cancelled",
+      deliveryKey: string,
+    ) => {
+      assert.equal(receipt.runId, "run-0000001");
+      assert.equal(state, "complete");
+      assert.match(deliveryKey, /^background-job-delivery:[a-f0-9]{64}$/);
+      if (failTerminalOnce) {
+        failTerminalOnce = false;
+        throw new Error("restart after delivery persistence");
+      }
+      terminal = true;
+    },
+  };
+  const outbox = {
+    durability: "durable" as const,
+    admission: "persist_before_send" as const,
+    reconciliation: "automatic_idempotent_delivery" as const,
+    transport: "slack_first_party_render_only" as const,
+    rawFallback: "forbidden" as const,
+    enqueue: async (
+      intent: Parameters<import("../src/background-jobs/types.ts").BackgroundJobDeliveryOutbox["enqueue"]>[0],
+    ) => {
+      if (deliveries.has(intent.deliveryKey)) return "already_persisted" as const;
+      deliveries.set(intent.deliveryKey, structuredClone(intent));
+      visible.push(JSON.stringify({ text: intent.text, card: intent.card }));
+      return "persisted" as const;
+    },
+  };
+  const dependencies = {
+    profiles: () => [disabled],
+    resolve: () => ({ receipts: completionReceipts, client: built.remote.value, adapter: built.adapter }),
+    outbox,
+    batchSize: 10,
+    intervalMs: 1_000,
+    now: () => 1_788_030_100_000,
+  };
+  await assert.rejects(() => createBackgroundJobCompletionPoller(dependencies).runOnce(), /restart/);
+  assert.equal(deliveries.size, 1);
+  assert.equal(visible.length, 1);
+  const restarted = createBackgroundJobCompletionPoller(dependencies);
+  assert.equal(await restarted.runOnce(), 1);
+  assert.equal(await restarted.runOnce(), 0);
+  assert.equal(deliveries.size, 1);
+  assert.equal(visible.length, 1);
+  const delivered = [...deliveries.values()][0] as Record<string, unknown>;
+  assert.equal(delivered.organizationId, disabled.profile.organizationId);
+  assert.equal(delivered.actorSlackId, disabled.profile.actorSlackId);
+  assert.equal(delivered.channelId, disabled.profile.channelId);
+  assert.equal(delivered.threadTs, INVOCATION.slack.threadTs);
+  assert.equal(delivered.messageTs, INVOCATION.slack.messageTs);
+  assert.equal(delivered.runId, "run-0000001");
+  assert.doesNotMatch(visible[0]!, /Evaluation|evaluation-1|sha256|prompt|tool|model|[de]{64}/i);
+  restarted.start();
+  restarted.stop();
 });
 
 test("owner control rejects receipts from an older descriptor revision", async () => {
@@ -495,15 +663,70 @@ test("the dedicated registry is closed, deeply frozen, bounded, public-origin-on
   }
 });
 
+test("the closed schema subset rejects patterns, malformed or cyclic refs, unsafe numbers, false dates, and non-HTTPS URIs", () => {
+  const schemaWith = (property: unknown, defs?: unknown) => ({
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    additionalProperties: false,
+    properties: { value: property },
+    required: ["value"],
+    ...(defs === undefined ? {} : { $defs: defs }),
+  });
+  assert.throws(() => profileWithSchema(schemaWith({ type: "string", maxLength: 100, pattern: "^(a+)+$" })));
+  assert.throws(() =>
+    profileWithSchema(schemaWith({ $ref: "#/$defsX/Value" }, { Value: { type: "string", maxLength: 10 } })),
+  );
+  assert.throws(() =>
+    profileWithSchema(
+      schemaWith({ $ref: "#/$defs/First" }, { First: { $ref: "#/$defs/Second" }, Second: { $ref: "#/$defs/First" } }),
+    ),
+  );
+  const datetime = profileWithSchema(schemaWith({ type: "string", format: "date-time", maxLength: 40 }));
+  validateBackgroundJobSchemaValue(datetime.schema.json, { value: "2024-02-29T23:59:59Z" });
+  assert.throws(() => validateBackgroundJobSchemaValue(datetime.schema.json, { value: "2025-02-29T23:59:59Z" }));
+  const uri = profileWithSchema(schemaWith({ type: "string", format: "uri", maxLength: 200 }));
+  validateBackgroundJobSchemaValue(uri.schema.json, { value: "https://public.example.org/resource" });
+  assert.throws(() =>
+    validateBackgroundJobSchemaValue(uri.schema.json, { value: "http://public.example.org/resource" }),
+  );
+  const number = profileWithSchema(schemaWith({ type: "number", minimum: 0, maximum: 100 }));
+  validateBackgroundJobSchemaValue(number.schema.json, { value: 100 });
+  assert.throws(() => validateBackgroundJobSchemaValue(number.schema.json, { value: 1.5 }));
+  assert.throws(() =>
+    profileWithSchema(schemaWith({ type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER + 1 })),
+  );
+  const referenced = profileWithSchema(
+    schemaWith({ $ref: "#/$defs/Value" }, { Value: { type: "string", maxLength: 10 } }),
+  );
+  validateBackgroundJobSchemaValue(referenced.schema.json, { value: "bounded" });
+});
+
 test("the deployment store durably tombstones removals and restores owner control configuration on restart", async () => {
   const backing = createMemoryMap<StoredDeploymentLayer>();
   const skills = createSkillStore({ signingSecret: "background-job-layer-test" });
   const runtime = emptyDeploymentLayer();
+  let terminalAndExpired = false;
+  let fenceDigest = "f".repeat(64);
+  const retirement = {
+    durability: "durable" as const,
+    receiptCoverage: "all_owned" as const,
+    approvalCoverage: "all_unused" as const,
+    retiredIdLedger: "permanent" as const,
+    approvalIssuanceFence: "atomic" as const,
+    retireAndFenceApprovalIssuance: async (candidate: ReturnType<typeof profile>) => ({
+      jobId: candidate.definition.id,
+      descriptorSha256: candidate.binding.descriptorSha256,
+      approvalFenceDigest: fenceDigest,
+      retiredAt: 1_788_030_000_000,
+      terminalAndExpired,
+    }),
+  };
   const deployment = createDeploymentLayerStore({
     backing,
     runtime,
     skills,
     scopeId: scopeId("org", "example"),
+    backgroundJobRetirement: retirement,
   });
   const job = { path: PROFILE_PATH, content: JSON.stringify(manifest()) };
   await assert.rejects(
@@ -550,12 +773,20 @@ test("the deployment store durably tombstones removals and restores owner contro
   assert.equal(runtime.backgroundJobs[0]!.enabled, false);
   const record = await deployment.get();
   assert.equal(record!.bundle.backgroundJobs!.length, 1);
+  assert.equal(record!.retiredBackgroundJobs!.length, 1);
+  fenceDigest = "0".repeat(64);
+  await assert.rejects(
+    deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin"),
+    /permanent retirement ledger changed/,
+  );
+  fenceDigest = "f".repeat(64);
   const hydratedRuntime = emptyDeploymentLayer();
   const hydrated = createDeploymentLayerStore({
     backing,
     runtime: hydratedRuntime,
     skills,
     scopeId: scopeId("org", "example"),
+    backgroundJobRetirement: retirement,
   });
   await hydrated.hydrate();
   assert.equal(hydratedRuntime.backgroundJobs.length, 1);
@@ -572,40 +803,86 @@ test("the deployment store durably tombstones removals and restores owner contro
     ),
     /collides/,
   );
+  terminalAndExpired = true;
+  await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin");
+  assert.equal(runtime.backgroundJobs.length, 0);
+  assert.equal((await deployment.get())!.retiredBackgroundJobs!.length, 1);
+  await assert.rejects(
+    deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin"),
+    /permanently retired/,
+  );
+});
+
+test("retirement cannot disable or remove a profile without the durable atomic approval fence", async () => {
+  const backing = createMemoryMap<StoredDeploymentLayer>();
+  const runtime = emptyDeploymentLayer();
+  const deployment = createDeploymentLayerStore({
+    backing,
+    runtime,
+    skills: createSkillStore({ signingSecret: "background-job-fence-test" }),
+    scopeId: scopeId("org", "example"),
+  });
+  const job = { path: PROFILE_PATH, content: JSON.stringify(manifest()) };
+  await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin");
+  await assert.rejects(
+    deployment.put(
+      { contract: 1, tools: [], skills: [], backgroundJobs: [{ ...job, enabled: false }] },
+      "signed-admin",
+    ),
+    /durable atomic approval fence/,
+  );
+  await assert.rejects(
+    deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin"),
+    /durable atomic approval fence/,
+  );
+  assert.equal(runtime.backgroundJobs[0]!.enabled, true);
+  assert.equal((await deployment.get())!.retiredBackgroundJobs, undefined);
 });
 
 test("terminal receipts and expired approvals permit explicit durable tombstone cleanup", async () => {
   const backing = createMemoryMap<StoredDeploymentLayer>();
   const skills = createSkillStore({ signingSecret: "background-job-retirement-test" });
   const runtime = emptyDeploymentLayer();
+  let terminalAndExpired = false;
+  const retirement = {
+    durability: "durable" as const,
+    receiptCoverage: "all_owned" as const,
+    approvalCoverage: "all_unused" as const,
+    retiredIdLedger: "permanent" as const,
+    approvalIssuanceFence: "atomic" as const,
+    retireAndFenceApprovalIssuance: async (candidate: ReturnType<typeof profile>) => ({
+      jobId: candidate.definition.id,
+      descriptorSha256: candidate.binding.descriptorSha256,
+      approvalFenceDigest: "e".repeat(64),
+      retiredAt: 1_788_030_000_000,
+      terminalAndExpired,
+    }),
+  };
   const base = createDeploymentLayerStore({
     backing,
     runtime,
     skills,
     scopeId: scopeId("org", "example"),
+    backgroundJobRetirement: retirement,
   });
   const job = { path: PROFILE_PATH, content: JSON.stringify(manifest()) };
   await base.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin");
   const descriptorSha256 = runtime.backgroundJobs[0]!.binding.descriptorSha256;
   await base.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin");
   assert.equal(runtime.backgroundJobs[0]!.enabled, false);
+  terminalAndExpired = true;
   const cleanup = createDeploymentLayerStore({
     backing,
     runtime,
     skills,
     scopeId: scopeId("org", "example"),
-    backgroundJobRetirement: {
-      durability: "durable",
-      receiptCoverage: "all_owned",
-      approvalCoverage: "all_unused",
-      decision: "terminal_and_expired",
-      canPurge: async (candidate) => candidate.binding.descriptorSha256 === descriptorSha256,
-    },
+    backgroundJobRetirement: retirement,
   });
   await cleanup.hydrate();
   await cleanup.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin");
   assert.equal(runtime.backgroundJobs.length, 0);
   assert.equal((await cleanup.get())!.bundle.backgroundJobs!.length, 0);
+  assert.equal((await cleanup.get())!.retiredBackgroundJobs![0]!.descriptorSha256, descriptorSha256);
 });
 
 test("public and replayable turn shapes never carry internal Slack provenance", () => {
