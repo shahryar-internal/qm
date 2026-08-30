@@ -60,7 +60,7 @@ const SCHEMA_KEYS = new Set([
   "type",
 ]);
 const SCHEMA_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
-const SCHEMA_FORMATS = new Set(["date-time", "email", "hostname", "uri", "uuid"]);
+const SCHEMA_FORMATS = new Set(["date-time", "email", "uuid"]);
 
 function record(value: unknown, name: string): Record<string, unknown> {
   if (
@@ -250,16 +250,20 @@ function definitionRefs(value: unknown, refs = new Set<string>()): ReadonlySet<s
 function validateDefinitionGraph(definitions: Readonly<Record<string, unknown>>): void {
   const graph = new Map(Object.keys(definitions).map((name) => [name, definitionRefs(definitions[name])]));
   const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const visit = (name: string, depth: number): void => {
-    if (depth > 32 || visiting.has(name)) throw new TypeError("schema.json.$defs must be acyclic and bounded");
-    if (visited.has(name)) return;
+  const depths = new Map<string, number>();
+  const visit = (name: string): number => {
+    if (visiting.has(name)) throw new TypeError("schema.json.$defs must be acyclic and bounded");
+    const prior = depths.get(name);
+    if (prior !== undefined) return prior;
     visiting.add(name);
-    for (const next of graph.get(name) ?? []) visit(next, depth + 1);
+    let depth = 1;
+    for (const next of graph.get(name) ?? []) depth = Math.max(depth, visit(next) + 1);
     visiting.delete(name);
-    visited.add(name);
+    if (depth > 32) throw new TypeError("schema.json.$defs must be acyclic and bounded");
+    depths.set(name, depth);
+    return depth;
   };
-  for (const name of graph.keys()) visit(name, 0);
+  for (const name of graph.keys()) visit(name);
 }
 
 function validateSchemaJson(value: unknown): void {
@@ -310,19 +314,8 @@ function validateStringFormat(value: string, format: unknown): boolean {
     return !Number.isNaN(Date.parse(value));
   }
   if (format === "email") return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
-  if (format === "hostname") {
-    return value.length <= 253 && value.split(".").every((label) => /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$/.test(label));
-  }
   if (format === "uuid") {
     return /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
-  }
-  if (format === "uri") {
-    try {
-      const parsed = new URL(value);
-      return parsed.protocol === "https:" && !parsed.username && !parsed.password && parsed.toString() === value;
-    } catch {
-      return false;
-    }
   }
   return false;
 }

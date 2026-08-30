@@ -9,6 +9,7 @@ import {
 import { createBackgroundJobCompletionPoller } from "../src/background-jobs/completion-poller.ts";
 import {
   backgroundJobApprovalDigest,
+  backgroundJobEffectApprovalKey,
   createBackgroundJobProfileService,
   createBackgroundJobRegistry,
 } from "../src/background-jobs/service.ts";
@@ -123,15 +124,17 @@ const TURN: Readonly<BackgroundJobTurnBinding> = Object.freeze({
     threadTs: "1788030000.123456",
     threaded: true,
     liveHuman: true,
+    actionTs: "1788030002.123456",
   }),
 });
 
+const STANDARD_INPUT = Object.freeze({ recordId: "record-1", receiptIds: Object.freeze(["decision-1"]) });
+const STANDARD_APPROVAL_KEY = backgroundJobEffectApprovalKey(profile(), "background_job_start", STANDARD_INPUT);
 const INVOCATION: Readonly<BackgroundJobInvocationAuthority> = Object.freeze({
   receiptId: "approval-1",
-  slack: Object.freeze({
-    ...TURN.verifiedSlack!,
-    messageTs: "1788030002.123456",
-  }),
+  approvalKey: STANDARD_APPROVAL_KEY,
+  actionTs: TURN.verifiedSlack!.actionTs!,
+  slack: Object.freeze({ ...TURN.verifiedSlack! }),
 });
 
 function receiptStore(
@@ -144,19 +147,29 @@ function receiptStore(
   let receipt: Readonly<BackgroundJobReceipt> | null = null;
   const controls: unknown[] = [];
   const events: string[] = [];
+  let startEffect:
+    | ((intent: Readonly<BackgroundJobAdmissionIntent>) => Promise<Readonly<{ authorityId: string; runId: string }>>)
+    | undefined;
+  let cancelEffect: ((intent: Parameters<BackgroundJobReceiptStore["enqueueControl"]>[0]) => Promise<void>) | undefined;
+  let effectAllowed = () => true;
   const value: BackgroundJobReceiptStore = {
     durability: "durable",
     admission: "durable_intent_outbox",
     reconciliation: "automatic_idempotent",
     controls: "durable_intent_outbox",
     readiness: () => ({ ready: true }),
-    admit: async (intent, start) => {
+    enqueueAdmission: async (intent) => {
       events.push("intent_persisted");
       if (options.failBeforeRemote) throw new Error("database unavailable");
       options.beforeRemote?.();
-      const admission = await start(options.durableIntent?.(intent) ?? intent);
+      if (!effectAllowed() || !startEffect) throw new Error("effect unavailable");
+      const durableIntent = options.durableIntent?.(intent) ?? intent;
+      if (canonicalJson(durableIntent) !== canonicalJson(intent)) throw new Error("durable intent changed");
+      const admission = await startEffect(durableIntent);
       events.push("admission_recorded");
+      const grant = intent.approvalGrant;
       receipt = Object.freeze({
+        intentId: intent.intentId,
         jobId: intent.jobId,
         authorityId: admission.authorityId,
         runId: admission.runId,
@@ -167,27 +180,42 @@ function receiptStore(
         slackTeamId: intent.slackTeamId,
         channelId: intent.channelId,
         threadTs: intent.threadTs,
+        conversationThreadRef: intent.conversationThreadRef,
         messageTs: intent.messageTs,
         descriptorSha256: intent.descriptorSha256,
         profileSha256: intent.profileSha256,
         schemaSha256: intent.schemaSha256,
         payloadSha256: intent.payloadSha256,
-        approvalId: intent.approvalId,
-        approvalDigest: intent.approvalDigest,
-        approvalEffect: intent.approvalEffect,
-        approvalMessageTs: intent.approvalMessageTs,
-        approvalThreadTs: intent.approvalThreadTs,
+        approvalId: grant.approvalId,
+        approvalDigest: grant.digest,
+        approvalEffect: "background_job_start",
+        approvalKey: grant.approvalKey,
+        approvalActionTs: grant.actionTs,
+        approvalMessageTs: grant.messageTs,
+        approvalThreadTs: grant.threadTs,
         idempotencyKey: intent.idempotencyKey,
         createdAt: intent.createdAt,
       });
+      return "persisted";
+    },
+    leaseAdmissions: async () => [],
+    completeAdmission: async () => {
+      if (!receipt) throw new Error("missing receipt");
       return receipt;
     },
+    retryAdmission: async () => undefined,
     latestOwned: async () => receipt,
-    control: async (intent, execute) => {
+    ownedRun: async () => receipt,
+    enqueueControl: async (intent) => {
       events.push("control_intent_persisted");
-      controls.push(structuredClone(intent));
-      return execute();
+      controls.push({ ...structuredClone(intent), approvalId: intent.approvalGrant.approvalId });
+      if (!cancelEffect) throw new Error("effect unavailable");
+      await cancelEffect(intent);
+      return "persisted";
     },
+    leaseControls: async () => [],
+    completeControl: async () => undefined,
+    retryControl: async () => undefined,
   };
   return {
     value,
@@ -196,6 +224,15 @@ function receiptStore(
     get: () => receipt,
     replace: (value: Readonly<BackgroundJobReceipt> | null) => {
       receipt = value;
+    },
+    configure: (input: {
+      start: NonNullable<typeof startEffect>;
+      cancel: NonNullable<typeof cancelEffect>;
+      active: () => boolean;
+    }) => {
+      startEffect = input.start;
+      cancelEffect = input.cancel;
+      effectAllowed = input.active;
     },
   };
 }
@@ -218,6 +255,8 @@ function approvalStore(
       consumed.add(authority.receiptId);
       const unsigned = {
         approvalId: authority.receiptId,
+        approvalKey: authority.approvalKey,
+        actionTs: authority.actionTs,
         effect: expected.effect,
         jobId: expected.jobId,
         organizationId: expected.organizationId,
@@ -226,6 +265,7 @@ function approvalStore(
         audienceScopeId: expected.audienceScopeId,
         slackTeamId: expected.slackTeamId,
         channelId: expected.channelId,
+        conversationThreadRef: expected.conversationThreadRef,
         threadTs: expected.threadTs,
         messageTs: expected.messageTs,
         descriptorSha256: expected.descriptorSha256,
@@ -318,6 +358,22 @@ function service(
   const remote = client(receipts.events);
   const deployment = options.deployment ?? profile();
   const jobAdapter = options.adapter ?? adapter();
+  const active = options.active ?? (() => true);
+  receipts.configure({
+    start: (intent) =>
+      remote.value.start(
+        Buffer.from(intent.bodyBase64, "base64"),
+        intent.approvalGrant,
+        intent.idempotencyKey,
+        intent.createdAt,
+      ),
+    cancel: async (intent) => {
+      const receipt = receipts.get();
+      if (!receipt) throw new Error("receipt unavailable");
+      await remote.value.cancel(receipt, intent.approvalGrant, intent.createdAt);
+    },
+    active,
+  });
   const value = createBackgroundJobProfileService({
     deployment,
     adapter: jobAdapter,
@@ -325,7 +381,7 @@ function service(
     approvals: approvals.value,
     client: remote.value,
     authorityReady: () => true,
-    active: options.active ?? (() => true),
+    active,
     now: () => 1_788_030_000_000,
   });
   return { value, deployment, receipts, approvals, remote, adapter: jobAdapter };
@@ -339,7 +395,7 @@ test("start requires an exact fresh invocation receipt and persists the durable 
   assert.equal(built.remote.starts(), 0);
   assert.equal(
     (await bound.start({ recordId: "record-1", receiptIds: ["decision-1"], pricing: "forged" }, INVOCATION)).state,
-    "invalid",
+    "denied",
   );
   assert.equal((await bound.start({ recordId: "record-1", receiptIds: ["decision-1"] }, INVOCATION)).state, "accepted");
   assert.deepEqual(built.receipts.events, ["intent_persisted", "remote_started", "admission_recorded"]);
@@ -361,7 +417,7 @@ test("start requires an exact fresh invocation receipt and persists the durable 
 test("approval grants are closed, digest-bound to the current Slack act, and immutable before any remote effect", async () => {
   const stale = service({
     mutateGrant: (grant) => {
-      const { digest: _digest, ...unsigned } = { ...grant, messageTs: TURN.verifiedSlack!.messageTs };
+      const { digest: _digest, ...unsigned } = { ...grant, actionTs: "1788030001.123456" };
       return Object.freeze({ ...unsigned, digest: backgroundJobApprovalDigest(unsigned) });
     },
   });
@@ -446,7 +502,14 @@ test("owner control survives disable while start disappears and completion cards
   const visible = JSON.stringify(status.card);
   assert.match(visible, /Report/);
   assert.doesNotMatch(visible, /Evaluation|evaluation-1|[de]{64}|sha256/i);
-  const cancelInvocation = { ...INVOCATION, receiptId: "approval-cancel" };
+  const cancelInvocation = {
+    ...INVOCATION,
+    receiptId: "approval-cancel",
+    approvalKey: backgroundJobEffectApprovalKey(built.deployment, "background_job_cancel", {
+      authorityId: built.receipts.get()!.authorityId,
+      runId: built.receipts.get()!.runId,
+    }),
+  };
   assert.equal((await bound.cancel(cancelInvocation)).state, "cancel_requested");
   assert.equal(built.approvals.expectations[1]!.effect, "background_job_cancel");
   assert.equal(built.remote.cancelGrants[0]!.approvalId, cancelInvocation.receiptId);
@@ -477,13 +540,17 @@ test("the automatic completion poller durably reconciles one-time owner-thread d
     durability: "durable" as const,
     polling: "bounded_active_only" as const,
     terminalTransition: "after_delivery_outbox" as const,
-    active: async (jobId: string, limit: number) => {
+    leaseActive: async (jobId: string, _now: number, limit: number, leaseId: string, leaseExpiresAt: number) => {
       assert.equal(jobId, disabled.definition.id);
       assert.ok(limit <= 10);
-      return terminal ? [] : [built.receipts.get()!];
+      return terminal
+        ? []
+        : [{ receipt: built.receipts.get()!, leaseId, leaseExpiresAt, attempt: 1, failureAttempt: 0 }];
     },
+    retry: async () => undefined,
     terminal: async (
       receipt: BackgroundJobReceipt,
+      _leaseId: string,
       state: "complete" | "failed" | "cancelled",
       deliveryKey: string,
     ) => {
@@ -503,6 +570,7 @@ test("the automatic completion poller durably reconciles one-time owner-thread d
     reconciliation: "automatic_idempotent_delivery" as const,
     transport: "slack_first_party_render_only" as const,
     rawFallback: "forbidden" as const,
+    readiness: () => ({ ready: true as const }),
     enqueue: async (
       intent: Parameters<import("../src/background-jobs/types.ts").BackgroundJobDeliveryOutbox["enqueue"]>[0],
     ) => {
@@ -511,6 +579,9 @@ test("the automatic completion poller durably reconciles one-time owner-thread d
       visible.push(JSON.stringify({ text: intent.text, card: intent.card }));
       return "persisted" as const;
     },
+    lease: async () => [],
+    sent: async () => undefined,
+    retry: async () => undefined,
   };
   const dependencies = {
     profiles: () => [disabled],
@@ -520,7 +591,7 @@ test("the automatic completion poller durably reconciles one-time owner-thread d
     intervalMs: 1_000,
     now: () => 1_788_030_100_000,
   };
-  await assert.rejects(() => createBackgroundJobCompletionPoller(dependencies).runOnce(), /restart/);
+  assert.equal(await createBackgroundJobCompletionPoller(dependencies).runOnce(), 0);
   assert.equal(deliveries.size, 1);
   assert.equal(visible.length, 1);
   const restarted = createBackgroundJobCompletionPoller(dependencies);
@@ -681,14 +752,20 @@ test("the closed schema subset rejects patterns, malformed or cyclic refs, unsaf
       schemaWith({ $ref: "#/$defs/First" }, { First: { $ref: "#/$defs/Second" }, Second: { $ref: "#/$defs/First" } }),
     ),
   );
+  const shared: Record<string, unknown> = {};
+  for (let index = 0; index < 16; index += 1) {
+    shared[`Shared${index}`] =
+      index === 15 ? { type: "string", maxLength: 10 } : { $ref: `#/$defs/Shared${index + 1}` };
+  }
+  for (let index = 0; index < 20; index += 1) {
+    shared[`Long${index}`] = { $ref: index === 19 ? "#/$defs/Shared0" : `#/$defs/Long${index + 1}` };
+  }
+  assert.throws(() => profileWithSchema(schemaWith({ $ref: "#/$defs/Long0" }, shared)));
   const datetime = profileWithSchema(schemaWith({ type: "string", format: "date-time", maxLength: 40 }));
   validateBackgroundJobSchemaValue(datetime.schema.json, { value: "2024-02-29T23:59:59Z" });
   assert.throws(() => validateBackgroundJobSchemaValue(datetime.schema.json, { value: "2025-02-29T23:59:59Z" }));
-  const uri = profileWithSchema(schemaWith({ type: "string", format: "uri", maxLength: 200 }));
-  validateBackgroundJobSchemaValue(uri.schema.json, { value: "https://public.example.org/resource" });
-  assert.throws(() =>
-    validateBackgroundJobSchemaValue(uri.schema.json, { value: "http://public.example.org/resource" }),
-  );
+  assert.throws(() => profileWithSchema(schemaWith({ type: "string", format: "uri", maxLength: 200 })));
+  assert.throws(() => profileWithSchema(schemaWith({ type: "string", format: "hostname", maxLength: 200 })));
   const number = profileWithSchema(schemaWith({ type: "number", minimum: 0, maximum: 100 }));
   validateBackgroundJobSchemaValue(number.schema.json, { value: 100 });
   assert.throws(() => validateBackgroundJobSchemaValue(number.schema.json, { value: 1.5 }));

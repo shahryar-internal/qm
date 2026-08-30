@@ -10,7 +10,7 @@ export interface PendingApproval {
   reason: string;
   purpose?: string;
   summary?: string;
-  kind?: "approval" | "input";
+  kind?: "approval" | "background_job" | "input";
   grantModes?: { session: boolean; always: boolean };
 }
 

@@ -31,7 +31,7 @@ import {
   validateSlackTimestamp,
 } from "./validation.ts";
 
-interface BackgroundJobProfileServiceDependencies<TInput, TStatus, TCancellation> {
+export interface BackgroundJobProfileServiceDependencies<TInput, TStatus, TCancellation> {
   deployment: Readonly<BackgroundJobDeploymentProfile>;
   adapter: BackgroundJobAdapter<TInput, TStatus, TCancellation>;
   receipts: BackgroundJobReceiptStore;
@@ -63,12 +63,21 @@ function invalid(): BackgroundJobOutcome {
   return Object.freeze({ ok: false, state: "invalid", message: "The background job request is invalid." });
 }
 
-function denied(): BackgroundJobOutcome {
-  return Object.freeze({ ok: false, state: "denied", message: "A fresh approval is required for this action." });
+function denied(approvalKey?: string): BackgroundJobOutcome {
+  return Object.freeze({
+    ok: false,
+    state: "denied",
+    message: "A fresh approval is required for this action.",
+    ...(approvalKey ? { approvalKey } : {}),
+  });
 }
 
-function owner(profile: Readonly<BackgroundJobDeploymentProfile>, threadTs: string): Readonly<BackgroundJobOwner> {
-  return Object.freeze({ ...profile.profile, threadTs });
+function owner(
+  profile: Readonly<BackgroundJobDeploymentProfile>,
+  threadTs: string,
+  conversationThreadRef: string,
+): Readonly<BackgroundJobOwner> {
+  return Object.freeze({ ...profile.profile, threadTs, conversationThreadRef });
 }
 
 function hash(bytes: Uint8Array): string {
@@ -77,6 +86,24 @@ function hash(bytes: Uint8Array): string {
 
 export function backgroundJobApprovalDigest(grant: Readonly<Omit<BackgroundJobApprovalGrant, "digest">>): string {
   return hash(Buffer.from(canonicalJson(grant), "utf8"));
+}
+
+export function backgroundJobEffectApprovalKey(
+  profile: Readonly<BackgroundJobDeploymentProfile>,
+  effect: "background_job_start" | "background_job_cancel",
+  value: unknown,
+): string {
+  return `background-job-approval:${hash(
+    Buffer.from(
+      canonicalJson({
+        descriptorSha256: profile.binding.descriptorSha256,
+        effect,
+        jobId: profile.definition.id,
+        value,
+      }),
+      "utf8",
+    ),
+  )}`;
 }
 
 function validatedApprovalGrant(
@@ -90,9 +117,11 @@ function validatedApprovalGrant(
     typeof value !== "object" ||
     Array.isArray(value) ||
     Object.keys(value).sort().join(",") !==
-      "actorPrincipalId,actorSlackId,approvalId,audienceScopeId,channelId,descriptorSha256,digest,effect,expiresAt,idempotencyKey,issuedAt,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" ||
+      "actionTs,actorPrincipalId,actorSlackId,approvalId,approvalKey,audienceScopeId,channelId,conversationThreadRef,descriptorSha256,digest,effect,expiresAt,idempotencyKey,issuedAt,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" ||
     value.approvalId !== authority.receiptId ||
     value.effect !== expected.effect ||
+    value.approvalKey !== expected.approvalKey ||
+    value.actionTs !== expected.actionTs ||
     value.jobId !== expected.jobId ||
     value.organizationId !== expected.organizationId ||
     value.actorPrincipalId !== expected.actorPrincipalId ||
@@ -100,6 +129,7 @@ function validatedApprovalGrant(
     value.audienceScopeId !== expected.audienceScopeId ||
     value.slackTeamId !== expected.slackTeamId ||
     value.channelId !== expected.channelId ||
+    value.conversationThreadRef !== expected.conversationThreadRef ||
     value.threadTs !== expected.threadTs ||
     value.messageTs !== expected.messageTs ||
     value.descriptorSha256 !== profile.binding.descriptorSha256 ||
@@ -109,7 +139,8 @@ function validatedApprovalGrant(
     value.idempotencyKey !== expected.idempotencyKey ||
     !Number.isSafeInteger(value.issuedAt) ||
     !Number.isSafeInteger(value.expiresAt) ||
-    value.issuedAt > expected.now ||
+    value.issuedAt < expected.now ||
+    value.issuedAt >= value.expiresAt ||
     value.expiresAt <= expected.now ||
     value.expiresAt > expected.maximumExpiresAt ||
     !SHA256.test(value.digest)
@@ -118,6 +149,8 @@ function validatedApprovalGrant(
   }
   try {
     identifier(value.approvalId, "approval id");
+    identifier(value.approvalKey, "approval key");
+    validateSlackTimestamp(value.actionTs, "actionTs");
     validateSlackTimestamp(value.messageTs, "messageTs");
     validateSlackTimestamp(value.threadTs, "threadTs");
   } catch {
@@ -151,13 +184,15 @@ export function backgroundJobReceiptOwned(
     typeof receipt !== "object" ||
     Array.isArray(receipt) ||
     Object.keys(receipt).sort().join(",") !==
-      "actorPrincipalId,actorSlackId,approvalDigest,approvalEffect,approvalId,approvalMessageTs,approvalThreadTs,audienceScopeId,authorityId,channelId,createdAt,descriptorSha256,idempotencyKey,jobId,messageTs,organizationId,payloadSha256,profileSha256,runId,schemaSha256,slackTeamId,threadTs" ||
+      "actorPrincipalId,actorSlackId,approvalActionTs,approvalDigest,approvalEffect,approvalId,approvalKey,approvalMessageTs,approvalThreadTs,audienceScopeId,authorityId,channelId,conversationThreadRef,createdAt,descriptorSha256,idempotencyKey,intentId,jobId,messageTs,organizationId,payloadSha256,profileSha256,runId,schemaSha256,slackTeamId,threadTs" ||
     !identifierOrFalse(receipt.authorityId) ||
     !identifierOrFalse(receipt.runId) ||
     !identifierOrFalse(receipt.idempotencyKey) ||
     !Number.isSafeInteger(receipt.createdAt) ||
     receipt.createdAt < 1 ||
+    !identifierOrFalse(receipt.intentId) ||
     !identifierOrFalse(receipt.approvalId) ||
+    !identifierOrFalse(receipt.approvalKey) ||
     !SHA256.test(receipt.approvalDigest) ||
     receipt.approvalEffect !== "background_job_start"
   ) {
@@ -168,6 +203,7 @@ export function backgroundJobReceiptOwned(
     validateSlackTimestamp(receipt.threadTs, "threadTs");
     validateSlackTimestamp(receipt.approvalMessageTs, "approvalMessageTs");
     validateSlackTimestamp(receipt.approvalThreadTs, "approvalThreadTs");
+    validateSlackTimestamp(receipt.approvalActionTs, "approvalActionTs");
   } catch {
     return false;
   }
@@ -179,48 +215,14 @@ export function backgroundJobReceiptOwned(
     receipt.audienceScopeId === expected.audienceScopeId &&
     receipt.slackTeamId === expected.slackTeamId &&
     receipt.channelId === expected.channelId &&
-    receipt.threadTs === expected.threadTs &&
+    receipt.conversationThreadRef === expected.conversationThreadRef &&
     receipt.approvalThreadTs === receipt.threadTs &&
     receipt.approvalMessageTs === receipt.messageTs &&
+    validateSlackTimestampOrFalse(receipt.approvalActionTs) &&
     receipt.descriptorSha256 === profile.binding.descriptorSha256 &&
     receipt.profileSha256 === profile.binding.profileSha256 &&
     receipt.schemaSha256 === profile.binding.schemaSha256 &&
     SHA256.test(receipt.payloadSha256)
-  );
-}
-
-function admissionIntentMatches(
-  actual: Readonly<BackgroundJobAdmissionIntent>,
-  expected: Readonly<BackgroundJobAdmissionIntent>,
-): boolean {
-  return (
-    actual &&
-    typeof actual === "object" &&
-    !Array.isArray(actual) &&
-    Object.keys(actual).sort().join(",") ===
-      "actorPrincipalId,actorSlackId,approvalDigest,approvalEffect,approvalId,approvalMessageTs,approvalThreadTs,audienceScopeId,bodyBytes,channelId,createdAt,descriptorSha256,idempotencyKey,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" &&
-    actual.bodyBytes instanceof Uint8Array &&
-    actual.jobId === expected.jobId &&
-    actual.organizationId === expected.organizationId &&
-    actual.actorPrincipalId === expected.actorPrincipalId &&
-    actual.actorSlackId === expected.actorSlackId &&
-    actual.audienceScopeId === expected.audienceScopeId &&
-    actual.slackTeamId === expected.slackTeamId &&
-    actual.channelId === expected.channelId &&
-    actual.threadTs === expected.threadTs &&
-    actual.messageTs === expected.messageTs &&
-    actual.approvalId === expected.approvalId &&
-    actual.approvalDigest === expected.approvalDigest &&
-    actual.approvalEffect === expected.approvalEffect &&
-    actual.approvalMessageTs === expected.approvalMessageTs &&
-    actual.approvalThreadTs === expected.approvalThreadTs &&
-    actual.descriptorSha256 === expected.descriptorSha256 &&
-    actual.profileSha256 === expected.profileSha256 &&
-    actual.schemaSha256 === expected.schemaSha256 &&
-    actual.payloadSha256 === expected.payloadSha256 &&
-    actual.idempotencyKey === expected.idempotencyKey &&
-    actual.createdAt === expected.createdAt &&
-    hash(actual.bodyBytes) === expected.payloadSha256
   );
 }
 
@@ -264,9 +266,17 @@ function bindable(
 function invocationMatches(
   profile: Readonly<BackgroundJobDeploymentProfile>,
   expectedOwner: Readonly<BackgroundJobOwner>,
+  currentSlack: Readonly<BackgroundJobInvocationAuthority["slack"]>,
   authority: Readonly<BackgroundJobInvocationAuthority> | undefined,
 ): authority is Readonly<BackgroundJobInvocationAuthority> {
-  if (!authority || !identifierOrFalse(authority.receiptId)) return false;
+  if (
+    !authority ||
+    !identifierOrFalse(authority.receiptId) ||
+    !identifierOrFalse(authority.approvalKey) ||
+    authority.actionTs !== currentSlack.actionTs
+  ) {
+    return false;
+  }
   const slack = authority.slack;
   try {
     validateSlackTimestamp(slack.messageTs, "messageTs");
@@ -280,6 +290,11 @@ function invocationMatches(
     slack.userId === profile.profile.actorSlackId &&
     slack.channelId === profile.profile.channelId &&
     slack.threadTs === expectedOwner.threadTs &&
+    slack.teamId === currentSlack.teamId &&
+    slack.userId === currentSlack.userId &&
+    slack.channelId === currentSlack.channelId &&
+    slack.messageTs === currentSlack.messageTs &&
+    slack.threadTs === currentSlack.threadTs &&
     (slack.threaded ? slack.threadTs !== slack.messageTs : slack.threadTs === slack.messageTs)
   );
 }
@@ -287,6 +302,15 @@ function invocationMatches(
 function identifierOrFalse(value: unknown): boolean {
   try {
     identifier(value, "approval receipt id");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateSlackTimestampOrFalse(value: unknown): boolean {
+  try {
+    validateSlackTimestamp(value, "Slack timestamp");
     return true;
   } catch {
     return false;
@@ -307,6 +331,8 @@ function expectation(
     jobId: profile.definition.id,
     ...expectedOwner,
     messageTs: authority.slack.messageTs,
+    approvalKey: authority.approvalKey,
+    actionTs: authority.actionTs,
     ...profile.binding,
     payloadSha256,
     idempotencyKey,
@@ -466,7 +492,7 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
     bind(turn: Readonly<BackgroundJobTurnBinding>): BoundBackgroundJobTools | undefined {
       if (!ready() || !bindable(profile, turn)) return undefined;
       const audienceSlack = turn.verifiedSlack!;
-      const expectedOwner = owner(profile, audienceSlack.threadTs);
+      const expectedOwner = owner(profile, audienceSlack.threadTs, turn.conversationThreadRef);
       const owned = async () => {
         if (!ready()) return null;
         const receipt = await dependencies.receipts.latestOwned(profile.definition.id, expectedOwner);
@@ -479,7 +505,19 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
           raw: unknown,
           authority: Readonly<BackgroundJobInvocationAuthority> | undefined,
         ): Promise<BackgroundJobOutcome> {
-          if (!canStart() || !invocationMatches(profile, expectedOwner, authority)) return denied();
+          if (!canStart()) return denied();
+          let approvalKey: string;
+          try {
+            approvalKey = backgroundJobEffectApprovalKey(profile, "background_job_start", raw);
+          } catch {
+            return invalid();
+          }
+          if (
+            !invocationMatches(profile, expectedOwner, audienceSlack, authority) ||
+            authority.approvalKey !== approvalKey
+          ) {
+            return denied(approvalKey);
+          }
           let input: TInput;
           try {
             input = dependencies.adapter.parseInput(raw);
@@ -520,39 +558,30 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
             );
             if (!grant || !canStart()) return denied();
             const intent: Readonly<BackgroundJobAdmissionIntent> = Object.freeze({
+              intentId: `background-job-intent:${hash(
+                Buffer.from(
+                  canonicalJson({
+                    approvalId: grant.approvalId,
+                    descriptorSha256: profile.binding.descriptorSha256,
+                    effect: "background_job_start",
+                    idempotencyKey: compiled.idempotencyKey,
+                    payloadSha256,
+                    threadTs: expectedOwner.threadTs,
+                  }),
+                  "utf8",
+                ),
+              )}`,
               jobId: profile.definition.id,
               ...expectedOwner,
               messageTs: grant.messageTs,
               ...profile.binding,
-              bodyBytes,
+              bodyBase64: Buffer.from(bodyBytes).toString("base64"),
               payloadSha256,
-              approvalId: grant.approvalId,
-              approvalDigest: grant.digest,
-              approvalEffect: "background_job_start",
-              approvalMessageTs: grant.messageTs,
-              approvalThreadTs: grant.threadTs,
+              approvalGrant: grant,
               idempotencyKey: compiled.idempotencyKey,
-              createdAt: at,
+              createdAt: grant.issuedAt,
             });
-            const receipt = await dependencies.receipts.admit(intent, (durable) => {
-              if (!canStart() || !admissionIntentMatches(durable, intent)) {
-                throw new Error("background job admission intent is invalid");
-              }
-              return dependencies.client.start(durable.bodyBytes, grant, durable.idempotencyKey);
-            });
-            if (
-              !backgroundJobReceiptOwned(receipt, expectedOwner, profile) ||
-              receipt.messageTs !== intent.messageTs ||
-              receipt.idempotencyKey !== intent.idempotencyKey ||
-              receipt.payloadSha256 !== intent.payloadSha256 ||
-              receipt.approvalId !== intent.approvalId ||
-              receipt.approvalDigest !== intent.approvalDigest ||
-              receipt.createdAt !== intent.createdAt
-            ) {
-              return unavailable();
-            }
-            identifier(receipt.authorityId, "authority id");
-            identifier(receipt.runId, "run id");
+            await dependencies.receipts.enqueueAdmission(intent);
             return Object.freeze({ ok: true, state: "accepted", message: "The background job is queued." });
           } catch {
             return unavailable();
@@ -586,13 +615,22 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
                 message: "No active background job is bound to this thread.",
               });
             }
-            if (!invocationMatches(profile, expectedOwner, authority)) return denied();
             const controlBytes = Buffer.from(
               canonicalJson({ authorityId: receipt.authorityId, runId: receipt.runId }),
               "utf8",
             );
             const payloadSha256 = hash(controlBytes);
             const idempotencyKey = `${profile.definition.id}-cancel:${payloadSha256}`;
+            const approvalKey = backgroundJobEffectApprovalKey(profile, "background_job_cancel", {
+              authorityId: receipt.authorityId,
+              runId: receipt.runId,
+            });
+            if (
+              !invocationMatches(profile, expectedOwner, audienceSlack, authority) ||
+              authority.approvalKey !== approvalKey
+            ) {
+              return denied(approvalKey);
+            }
             const at = now();
             const expected = expectation(
               profile,
@@ -611,28 +649,35 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
             );
             if (!grant || !ready()) return denied();
             const intent: Readonly<BackgroundJobControlIntent> = Object.freeze({
+              intentId: `background-job-control:${hash(
+                Buffer.from(
+                  canonicalJson({
+                    approvalId: grant.approvalId,
+                    authorityId: receipt.authorityId,
+                    descriptorSha256: profile.binding.descriptorSha256,
+                    effect: "background_job_cancel",
+                    runId: receipt.runId,
+                    threadTs: expectedOwner.threadTs,
+                  }),
+                  "utf8",
+                ),
+              )}`,
               effect: "background_job_cancel",
               jobId: profile.definition.id,
               ...expectedOwner,
               ...profile.binding,
               authorityId: receipt.authorityId,
               runId: receipt.runId,
-              approvalId: grant.approvalId,
-              approvalDigest: grant.digest,
-              approvalMessageTs: grant.messageTs,
-              approvalThreadTs: grant.threadTs,
+              approvalGrant: grant,
               payloadSha256,
               idempotencyKey,
-              createdAt: at,
+              createdAt: grant.issuedAt,
             });
-            const state = dependencies.adapter.cancellationState(
-              await dependencies.receipts.control(intent, () => dependencies.client.cancel(receipt, grant)),
-            );
-            if (state !== "cancel_requested" && state !== "cancelled") return unavailable();
+            await dependencies.receipts.enqueueControl(intent);
             return Object.freeze({
               ok: true,
-              state,
-              message: state === "cancelled" ? "The background job was cancelled." : "Cancellation was requested.",
+              state: "cancel_requested",
+              message: "Cancellation was requested.",
             });
           } catch {
             return unavailable();

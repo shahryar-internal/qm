@@ -54,16 +54,20 @@ const BINDING = Object.freeze({
 const SLACK = Object.freeze({ messageTs: "1788030001.123456", threadTs: "1788030000.123456" });
 
 const RECEIPT: Readonly<BackgroundJobReceipt> = Object.freeze({
+  intentId: "background-job-intent-1",
   jobId: DEFINITION.id,
   authorityId: "authority-1",
   runId: "run-0000001",
   ...PROFILE,
   ...BINDING,
   ...SLACK,
+  conversationThreadRef: "dm:DOWNER1:1788030000.123456",
   payloadSha256: "d".repeat(64),
   approvalId: "approval-start",
   approvalDigest: "e".repeat(64),
   approvalEffect: "background_job_start",
+  approvalKey: `background-job-approval:${"a".repeat(64)}`,
+  approvalActionTs: SLACK.messageTs,
   approvalMessageTs: SLACK.messageTs,
   approvalThreadTs: SLACK.threadTs,
   idempotencyKey: "decision-123",
@@ -75,7 +79,10 @@ const START_GRANT: Readonly<BackgroundJobApprovalGrant> = Object.freeze({
   ...BINDING,
   threadTs: SLACK.threadTs,
   messageTs: SLACK.messageTs,
+  conversationThreadRef: "dm:DOWNER1:1788030000.123456",
   approvalId: "approval-start",
+  approvalKey: `background-job-approval:${"a".repeat(64)}`,
+  actionTs: SLACK.messageTs,
   digest: "e".repeat(64),
   effect: "background_job_start",
   jobId: DEFINITION.id,
@@ -105,7 +112,10 @@ function approvalGrant(
     ...BINDING,
     threadTs: SLACK.threadTs,
     messageTs,
+    conversationThreadRef: "dm:DOWNER1:1788030000.123456",
     approvalId,
+    approvalKey: `background-job-approval:${"a".repeat(64)}`,
+    actionTs: messageTs,
     effect,
     jobId: DEFINITION.id,
     payloadSha256: createHash("sha256").update(body).digest("hex"),
@@ -190,18 +200,22 @@ test("generic KMS authority signs exact configured claims and exposes only the c
   const signer = makeSigner();
   const body = Buffer.from('{"report":"weekly"}');
   const grant = approvalGrant(body, "background_job_start", "decision-123", "approval-start");
-  const { header, claims } = decode(await signer.signStart(body, grant, "decision-123"));
+  const { header, claims } = decode(await signer.signStart(body, grant, "decision-123", grant.issuedAt));
   assert.deepEqual(header, { alg: "RS256", kid: "key-1", typ: DEFINITION.tokenType });
   assert.deepEqual(claims, {
     actorPrincipalId: PROFILE.actorPrincipalId,
     actorSlackId: PROFILE.actorSlackId,
+    approvalActionTs: grant.actionTs,
+    approvalAuthorizedAt: grant.issuedAt,
     approvalDigest: grant.digest,
     approvalEffect: "background_job_start",
     approvalId: grant.approvalId,
+    approvalKey: grant.approvalKey,
     aud: "https://jobs.example.com/authority",
     audienceScopeId: PROFILE.audienceScopeId,
     capability: DEFINITION.capability,
     channelId: PROFILE.channelId,
+    conversationThreadRef: RECEIPT.conversationThreadRef,
     exp: 1_788_030_300,
     httpMethod: "POST",
     httpPath: DEFINITION.start.path,
@@ -233,6 +247,7 @@ test("generic KMS authority signs exact configured claims and exposes only the c
         body,
         approvalGrant(body, "background_job_start", "decision-456", "approval-start-2"),
         "decision-456",
+        START_GRANT.issuedAt,
       ),
     ).claims.httpPath,
     DEFINITION.start.path,
@@ -253,7 +268,7 @@ test("status and cancel use fixed configured paths, stable control idempotency, 
     "approval-cancel",
     CANCEL_GRANT.messageTs,
   );
-  const cancel = decode(await signer.signCancel(body, RECEIPT, cancelGrant)).claims;
+  const cancel = decode(await signer.signCancel(body, RECEIPT, cancelGrant, cancelGrant.issuedAt)).claims;
   assert.equal(prepare.httpPath, DEFINITION.prepare!.path);
   assert.equal(first.httpPath, DEFINITION.status.path);
   assert.equal(first.descriptorSha256, controlReceipt.descriptorSha256);
@@ -299,17 +314,25 @@ test("generic signer fails closed on KMS outages, JWKS mismatch, bad signatures,
         oversized,
         approvalGrant(oversized, "background_job_start", "decision-123", "approval-oversize"),
         "decision-123",
+        START_GRANT.issuedAt,
       ),
     /payload/,
   );
   const exactBody = Buffer.from("{}");
   const exactGrant = approvalGrant(exactBody, "background_job_start", "decision-123", "approval-exact");
   assert.throws(
-    () => makeSigner().signStart(exactBody, { ...exactGrant, digest: "0".repeat(64) }, "decision-123"),
+    () =>
+      makeSigner().signStart(exactBody, { ...exactGrant, digest: "0".repeat(64) }, "decision-123", exactGrant.issuedAt),
     /approval grant/,
   );
   assert.throws(
-    () => makeSigner().signStart(exactBody, { ...exactGrant, effect: "background_job_cancel" }, "decision-123"),
+    () =>
+      makeSigner().signStart(
+        exactBody,
+        { ...exactGrant, effect: "background_job_cancel" },
+        "decision-123",
+        exactGrant.issuedAt,
+      ),
     /approval grant/,
   );
   assert.throws(() =>
@@ -389,6 +412,7 @@ test("JWKS rotation exposes a bounded unique overlap and retires the old key onl
         body,
         approvalGrant(body, "background_job_start", "decision-123", "approval-rotation"),
         "decision-123",
+        START_GRANT.issuedAt,
       ),
     ).header.kid,
     "key-1",
@@ -516,10 +540,10 @@ test("fixed client pins public DNS on every exact request with SNI, no proxy, an
     },
     signer,
   );
-  await client.start(Buffer.from("{}"), START_GRANT, RECEIPT.idempotencyKey);
+  await client.start(Buffer.from("{}"), START_GRANT, RECEIPT.idempotencyKey, START_GRANT.issuedAt);
   await client.status(RECEIPT);
   await client.status(RECEIPT);
-  await client.cancel(RECEIPT, CANCEL_GRANT);
+  await client.cancel(RECEIPT, CANCEL_GRANT, CANCEL_GRANT.issuedAt);
   assert.deepEqual(signed, ["start", "status", "status", "cancel"]);
   assert.deepEqual(
     calls.map((call) => call.url),
@@ -563,7 +587,7 @@ test("fixed client pins public DNS on every exact request with SNI, no proxy, an
     signer,
   );
   (mutableDefinition.start as { path: string }).path = "/api/jobs/report-preview/tampered";
-  await snapshotted.start(Buffer.from("{}"), START_GRANT, RECEIPT.idempotencyKey);
+  await snapshotted.start(Buffer.from("{}"), START_GRANT, RECEIPT.idempotencyKey, START_GRANT.issuedAt);
   assert.deepEqual(fixedCalls, [`https://jobs.example.com${DEFINITION.start.path}`]);
 });
 
@@ -648,20 +672,21 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     signer,
   );
   await assert.rejects(() => redirect.status(RECEIPT), /^Error: background job request failed$/);
+  const stalledResponse = httpResponse("{", `https://jobs.example.com${DEFINITION.status.path}`, {
+    contentLength: "1",
+    stalled: true,
+  });
   const stalled = createFixedBackgroundJobClient(
     {
       ...base,
       timeoutMs: 100,
       resolveHost: resolution,
-      request: async () =>
-        httpResponse("{", `https://jobs.example.com${DEFINITION.status.path}`, {
-          contentLength: "1",
-          stalled: true,
-        }).response,
+      request: async () => stalledResponse.response,
     },
     signer,
   );
   await assert.rejects(() => stalled.status(RECEIPT), /^Error: background job request failed$/);
+  assert.equal(stalledResponse.cancelled(), 1);
   let dnsCalls = 0;
   const rebinding = createFixedBackgroundJobClient(
     {
@@ -682,4 +707,27 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     signer,
   );
   await assert.rejects(() => mixed.status(RECEIPT), /did not resolve only to public addresses/);
+  for (const address of [
+    "192.88.99.1",
+    "2001::1",
+    "2001:db8::1",
+    "2002:c000:0201::",
+    "3fff::1",
+    "2620:4f:8000::1",
+    "64:ff9b:1::1",
+    "fec0::1",
+    "fe80::1",
+    "fc00::1",
+    "ff00::1",
+  ]) {
+    const specialUse = createFixedBackgroundJobClient(
+      {
+        ...base,
+        resolveHost: async () => [address],
+        request: async (url) => httpResponse({ runId: RECEIPT.runId }, url).response,
+      },
+      signer,
+    );
+    await assert.rejects(() => specialUse.status(RECEIPT), /did not resolve only to public addresses/);
+  }
 });

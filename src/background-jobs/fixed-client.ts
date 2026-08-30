@@ -283,9 +283,10 @@ export function createFixedBackgroundJobClient<TStatus, TCancellation>(
       body: Parameters<BackgroundJobClient<TStatus, TCancellation>["start"]>[0],
       grant: Parameters<BackgroundJobClient<TStatus, TCancellation>["start"]>[1],
       idempotencyKey: string,
+      authorizedAt: number,
     ) {
       const exactBody = Uint8Array.from(body);
-      const token = await signer.signStart(exactBody, grant, idempotencyKey);
+      const token = await signer.signStart(exactBody, grant, idempotencyKey, authorizedAt);
       return config.parsers.admission(
         await post(definition.start.path, definition.start.maxRequestBytes, exactBody, token),
       );
@@ -304,9 +305,10 @@ export function createFixedBackgroundJobClient<TStatus, TCancellation>(
     async cancel(
       receipt: Parameters<BackgroundJobClient<TStatus, TCancellation>["cancel"]>[0],
       grant: Parameters<BackgroundJobClient<TStatus, TCancellation>["cancel"]>[1],
+      authorizedAt: number,
     ) {
       const body = controlBody(receipt);
-      const token = await signer.signCancel(body, receipt, grant);
+      const token = await signer.signCancel(body, receipt, grant, authorizedAt);
       const cancellation = config.parsers.cancellation(
         await post(definition.cancel.path, definition.cancel.maxRequestBytes, body, token),
       );

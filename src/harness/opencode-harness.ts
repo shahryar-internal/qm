@@ -51,6 +51,7 @@ export interface OpenCodeHarnessOptions {
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
   signals?: RunSignalStore;
+  backgroundJobProfiles?: () => readonly Readonly<{ profileId: string; label: string }>[];
   binaryPath?: string;
   startupTimeoutMs?: number;
   tasks?: TaskStore;
@@ -117,6 +118,7 @@ function toolOptions(opts: OpenCodeHarnessOptions, turn?: HarnessTurnInput): PiT
     execTimeoutCeilingMs: opts.execTimeoutCeilingMs,
     backgroundJobTtlMs: opts.backgroundJobTtlMs,
     backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs,
+    ...(opts.backgroundJobProfiles ? { backgroundJobProfiles: opts.backgroundJobProfiles } : {}),
     ...(turn
       ? {
           readOnly: turn.readOnly,

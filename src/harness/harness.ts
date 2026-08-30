@@ -118,7 +118,7 @@ export interface HarnessTurnResult {
   pendingApprovals?: Array<{
     command: string;
     reason: string;
-    kind?: "approval";
+    kind?: "approval" | "background_job";
     matched?: string;
     purpose?: string;
     approvalKey?: string;

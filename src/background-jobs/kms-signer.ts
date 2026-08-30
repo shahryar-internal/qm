@@ -28,7 +28,7 @@ const KMS_ALGORITHM = SigningAlgorithmSpec.RSASSA_PKCS1_V1_5_SHA_256;
 const JWKS_CACHE_WINDOW_SECONDS = 600;
 const SHA256 = /^[a-f0-9]{64}$/;
 
-interface KmsSignerDependencies {
+export interface BackgroundJobKmsSignerDependencies {
   kms?: KMSClient;
   now?: () => number;
   randomId?: () => string;
@@ -40,7 +40,7 @@ function sameRsaKey(left: JsonWebKey, right: JsonWebKey): boolean {
 
 export function createBackgroundJobAuthoritySigner(
   config: Readonly<BackgroundJobAuthoritySignerConfig>,
-  dependencies: KmsSignerDependencies = {},
+  dependencies: BackgroundJobKmsSignerDependencies = {},
 ): BackgroundJobAuthoritySigner {
   const profile = Object.freeze({ ...config.profile });
   const binding = Object.freeze({ ...config.binding });
@@ -86,13 +86,14 @@ export function createBackgroundJobAuthoritySigner(
     grant: Parameters<BackgroundJobAuthoritySigner["signStart"]>[1],
     effect: "background_job_start" | "background_job_cancel",
     idempotencyKey: string,
+    authorizedAt: number,
   ) => {
     if (
       !grant ||
       typeof grant !== "object" ||
       Array.isArray(grant) ||
       Object.keys(grant).sort().join(",") !==
-        "actorPrincipalId,actorSlackId,approvalId,audienceScopeId,channelId,descriptorSha256,digest,effect,expiresAt,idempotencyKey,issuedAt,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" ||
+        "actionTs,actorPrincipalId,actorSlackId,approvalId,approvalKey,audienceScopeId,channelId,conversationThreadRef,descriptorSha256,digest,effect,expiresAt,idempotencyKey,issuedAt,jobId,messageTs,organizationId,payloadSha256,profileSha256,schemaSha256,slackTeamId,threadTs" ||
       grant.effect !== effect ||
       grant.jobId !== definition.id ||
       grant.organizationId !== profile.organizationId ||
@@ -106,10 +107,12 @@ export function createBackgroundJobAuthoritySigner(
       grant.schemaSha256 !== binding.schemaSha256 ||
       grant.idempotencyKey !== idempotencyKey ||
       grant.payloadSha256 !== createHash("sha256").update(body).digest("hex") ||
+      !Number.isSafeInteger(authorizedAt) ||
       !Number.isSafeInteger(grant.issuedAt) ||
       !Number.isSafeInteger(grant.expiresAt) ||
-      grant.issuedAt > now() ||
-      grant.expiresAt <= now() ||
+      grant.issuedAt > authorizedAt ||
+      grant.expiresAt <= authorizedAt ||
+      authorizedAt > now() ||
       grant.expiresAt - grant.issuedAt > 300_000
     ) {
       throw new TypeError("background job approval grant is invalid");
@@ -155,8 +158,12 @@ export function createBackgroundJobAuthoritySigner(
       approvalId: string;
       digest: string;
       effect: "background_job_start" | "background_job_cancel";
+      approvalKey: string;
+      actionTs: string;
+      authorizedAt: number;
       messageTs: string;
       threadTs: string;
+      conversationThreadRef: string;
     }>,
   ): Promise<string> => {
     const messageTs = validateSlackTimestamp(slack.messageTs, "messageTs");
@@ -166,6 +173,8 @@ export function createBackgroundJobAuthoritySigner(
     const exactIdempotencyKey = identifier(idempotencyKey, "idempotency key");
     if (approval) {
       identifier(approval.approvalId, "approval id");
+      identifier(approval.approvalKey, "approval key");
+      validateSlackTimestamp(approval.actionTs, "approval actionTs");
       if (!SHA256.test(approval.digest)) throw new TypeError("approval digest is invalid");
       if (approval.messageTs !== messageTs || approval.threadTs !== threadTs) {
         throw new TypeError("approval Slack act is invalid");
@@ -202,6 +211,7 @@ export function createBackgroundJobAuthoritySigner(
       audienceScopeId: profile.audienceScopeId,
       slackTeamId: profile.slackTeamId,
       channelId: profile.channelId,
+      ...(approval ? { conversationThreadRef: approval.conversationThreadRef } : {}),
       threadTs,
       messageTs,
       descriptorSha256: exactBinding.descriptorSha256,
@@ -219,6 +229,9 @@ export function createBackgroundJobAuthoritySigner(
             approvalId: approval.approvalId,
             approvalDigest: approval.digest,
             approvalEffect: approval.effect,
+            approvalKey: approval.approvalKey,
+            approvalActionTs: approval.actionTs,
+            approvalAuthorizedAt: approval.authorizedAt,
           }
         : {}),
     };
@@ -264,15 +277,12 @@ export function createBackgroundJobAuthoritySigner(
       body: Parameters<BackgroundJobAuthoritySigner["signStart"]>[0],
       grant: Parameters<BackgroundJobAuthoritySigner["signStart"]>[1],
       idempotencyKey: string,
+      authorizedAt: number,
     ) => {
-      return sign(
-        body,
-        grant,
-        definition.start,
-        idempotencyKey,
-        binding,
-        validatedApproval(body, grant, "background_job_start", idempotencyKey),
-      );
+      return sign(body, grant, definition.start, idempotencyKey, binding, {
+        ...validatedApproval(body, grant, "background_job_start", idempotencyKey, authorizedAt),
+        authorizedAt,
+      });
     },
     signStatus: (body: Uint8Array, receipt: Parameters<BackgroundJobAuthoritySigner["signStatus"]>[1]) =>
       sign(body, receipt, definition.status, controlKey("status", body), receiptBinding(receipt)),
@@ -280,16 +290,13 @@ export function createBackgroundJobAuthoritySigner(
       body: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[0],
       receipt: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[1],
       grant: Parameters<BackgroundJobAuthoritySigner["signCancel"]>[2],
+      authorizedAt: number,
     ) => {
       const idempotencyKey = controlKey("cancel", body);
-      return sign(
-        body,
-        grant,
-        definition.cancel,
-        idempotencyKey,
-        receiptBinding(receipt),
-        validatedApproval(body, grant, "background_job_cancel", idempotencyKey),
-      );
+      return sign(body, grant, definition.cancel, idempotencyKey, receiptBinding(receipt), {
+        ...validatedApproval(body, grant, "background_job_cancel", idempotencyKey, authorizedAt),
+        authorizedAt,
+      });
     },
     jwks: () => {
       if (previousJwk && now() >= previousKeyRetireAt!) previousRetired = true;

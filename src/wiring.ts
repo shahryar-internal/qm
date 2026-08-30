@@ -316,6 +316,24 @@ import { createSlackAgentStatusIntentStore } from "./surfaces/slack-agent-status
 import { createSlackReactionDesireStore } from "./surfaces/slack-reaction-desire.ts";
 import { createSlackReactionCleanupStore } from "./surfaces/slack-reaction-cleanup.ts";
 import { createSlackApprovalAuthorityStore } from "./surfaces/slack-approval-authority.ts";
+import {
+  backgroundJobTerminalAndExpired,
+  createDurableBackgroundJobDeliveryOutbox,
+  createDurableBackgroundJobStore,
+  type BackgroundJobDeliveryRecord,
+  type BackgroundJobDurableRecord,
+} from "./background-jobs/durable-store.ts";
+import {
+  createDurableBackgroundJobApprovalLedger,
+  type BackgroundJobApprovalLedgerRecord,
+} from "./background-jobs/approval-ledger.ts";
+import {
+  createProductionBackgroundJobRuntime,
+  type BackgroundJobNativeDependencyRegistry,
+  type ProductionBackgroundJobRuntime,
+} from "./background-jobs/runtime.ts";
+import type { BackgroundJobRenderOnlySender, BackgroundJobService } from "./background-jobs/types.ts";
+import type { BackgroundJobAuthorityStageRecord } from "./background-jobs/staged-authority.ts";
 
 export interface Runtime {
   start(): void;
@@ -420,6 +438,8 @@ export interface BuiltApp {
   slackCore: SlackCoreClient;
   privateTurnObservationOutbox?: PrivateTurnObservationOutbox;
   scheduleAuthority?: PostgresScheduleAuthority;
+  backgroundJobRuntimeReady: Promise<ProductionBackgroundJobRuntime | undefined>;
+  jobAuthorityJwks: () => Readonly<{ keys: readonly Readonly<import("node:crypto").JsonWebKey>[] }>;
 }
 
 export function buildApp(
@@ -430,6 +450,12 @@ export function buildApp(
     modelCredentialFetch?: typeof fetch;
     privateTurnObserver?: import("./api/private-turn-observer.ts").PrivateTurnObservationSink;
     privateTurnObserverTimeoutMs?: number;
+    backgroundJobs?: Readonly<{
+      registry: BackgroundJobNativeDependencyRegistry;
+      sender: BackgroundJobRenderOnlySender;
+      receiptStoreName: string;
+      approvalStoreName: string;
+    }>;
   } = {},
 ): BuiltApp {
   if (
@@ -577,6 +603,17 @@ export function buildApp(
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
   const auditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : createAuditLog();
+  const backgroundJobBacking = artifactMap<BackgroundJobDurableRecord>("background_job_records");
+  const backgroundJobStore = createDurableBackgroundJobStore(backgroundJobBacking, pgArtifactMap !== null);
+  const backgroundJobOutbox = createDurableBackgroundJobDeliveryOutbox(
+    artifactMap<BackgroundJobDeliveryRecord>("background_job_delivery_outbox"),
+    pgArtifactMap !== null,
+  );
+  const backgroundJobApprovals = createDurableBackgroundJobApprovalLedger({
+    backing: artifactMap<BackgroundJobApprovalLedgerRecord>("background_job_approval_ledger"),
+    durable: pgArtifactMap !== null,
+    terminalAndExpired: (profile, now) => backgroundJobTerminalAndExpired(backgroundJobBacking, profile, now),
+  });
   const deploymentLayerStore = createDeploymentLayerStore({
     backing: artifactMap<StoredDeploymentLayer>("deployment_layer"),
     runtime: deploymentLayer,
@@ -593,6 +630,7 @@ export function buildApp(
         resource: record.contentHash,
         scopeLabel: orgScope,
       }),
+    backgroundJobRetirement: backgroundJobApprovals,
     ...(config.seedSkills && layerSkillsDir
       ? {
           seedFallback: () =>
@@ -606,9 +644,47 @@ export function buildApp(
       : {}),
   });
   const deploymentLayerReady = deploymentLayerStore.hydrate();
-  const deploymentLayerRefresh = createSweeper(() => deploymentLayerStore.hydrate(), 30_000, {
-    label: "deployment layer refresh",
+  let backgroundJobRuntime: ProductionBackgroundJobRuntime | undefined;
+  const backgroundJobRuntimeReady = deploymentLayerReady
+    .then(async () => {
+      if (!overrides.backgroundJobs) return undefined;
+      const runtime = createProductionBackgroundJobRuntime({
+        profiles: () => deploymentLayer.backgroundJobs,
+        receiptStoreName: overrides.backgroundJobs!.receiptStoreName,
+        approvalStoreName: overrides.backgroundJobs!.approvalStoreName,
+        receipts: backgroundJobStore,
+        approvals: backgroundJobApprovals,
+        outbox: backgroundJobOutbox,
+        sender: overrides.backgroundJobs!.sender,
+        authorityStages: artifactMap<BackgroundJobAuthorityStageRecord>("background_job_authority_stages"),
+        durable: pgArtifactMap !== null,
+        registry: overrides.backgroundJobs!.registry,
+      });
+      await runtime.ready();
+      backgroundJobRuntime = runtime;
+      return runtime;
+    })
+    .catch(() => {
+      console.error("[background-jobs] runtime unavailable");
+      return undefined;
+    });
+  const backgroundJobService: BackgroundJobService = Object.freeze({
+    readiness: () =>
+      backgroundJobRuntime?.service.readiness() ??
+      Object.freeze({ ready: false as const, reason: "background_job_profiles_unavailable" }),
+    bind: (turn: Parameters<BackgroundJobService["bind"]>[0]) =>
+      backgroundJobRuntime?.service.bind(turn) ?? Object.freeze([]),
   });
+  const visibleBackgroundJobProfiles = () => backgroundJobRuntime?.visibleProfiles() ?? Object.freeze([]);
+  const jobAuthorityJwks = () => backgroundJobRuntime?.jwks() ?? Object.freeze({ keys: Object.freeze([]) });
+  const deploymentLayerRefresh = createSweeper(
+    async () => {
+      await deploymentLayerStore.hydrate();
+      await backgroundJobRuntime?.ready();
+    },
+    30_000,
+    { label: "deployment layer refresh" },
+  );
   let skillsReady: Promise<void>;
   if (config.seedSkills) {
     const installCatalogs = async (): Promise<void> => {
@@ -923,6 +999,7 @@ export function buildApp(
         ...(config.devGeminiProvider ? { devGeminiProviderId: config.devGeminiProvider.spec.id } : {}),
         signals: runSignals,
         mcpTools,
+        backgroundJobProfiles: visibleBackgroundJobProfiles,
       }),
     ],
     [
@@ -932,6 +1009,7 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
+        backgroundJobProfiles: visibleBackgroundJobProfiles,
         resolveCustomProviders: async () => {
           const enabled = await customProviders.enabled();
           return Promise.all(
@@ -965,6 +1043,7 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
+        backgroundJobProfiles: visibleBackgroundJobProfiles,
       }),
     ],
     [
@@ -982,6 +1061,7 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
+        backgroundJobProfiles: visibleBackgroundJobProfiles,
       }),
     ],
     ["mock", createMockHarness()],
@@ -1274,6 +1354,7 @@ export function buildApp(
     layerBrokerFor,
     brokeredTools,
     deploymentLayer,
+    backgroundJobs: backgroundJobService,
   };
   const orchestrator = createOrchestrator(orchestratorDeps);
 
@@ -1687,6 +1768,7 @@ export function buildApp(
   const runtime: Runtime = {
     start() {
       if (!config.backgroundWorkEnabled) return;
+      void backgroundJobRuntimeReady.then((backgroundJobs) => backgroundJobs?.start());
       for (const w of workers) w.start();
       reaper.start();
       processReaper?.start();
@@ -1705,6 +1787,7 @@ export function buildApp(
       await Promise.all(workers.map((w) => w.releaseInFlight()));
     },
     async stop() {
+      backgroundJobRuntime?.stop();
       reaper.stop();
       processReaper?.stop();
       monitorPoller?.stop();
@@ -1804,6 +1887,8 @@ export function buildApp(
     slackCore,
     ...(privateTurnObservationOutbox ? { privateTurnObservationOutbox } : {}),
     ...(scheduleAuthority ? { scheduleAuthority } : {}),
+    backgroundJobRuntimeReady,
+    jobAuthorityJwks,
   };
 }
 
@@ -1907,6 +1992,7 @@ export function serverDeps(
     channelPolicy: built.channelPolicy,
     uiState: built.uiState,
     environments: built.environments,
+    jobAuthorityJwks: built.jobAuthorityJwks,
     sandboxMigration: built.sandboxMigration,
   };
 }

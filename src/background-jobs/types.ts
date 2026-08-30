@@ -8,6 +8,7 @@ export interface VerifiedSlackTurn {
   threadTs: string;
   threaded: boolean;
   liveHuman: true;
+  actionTs?: string;
 }
 
 export interface BackgroundJobAudienceProfile {
@@ -99,12 +100,14 @@ export interface BackgroundJobAuthoritySigner {
     bodyBytes: Uint8Array,
     grant: Readonly<BackgroundJobApprovalGrant>,
     idempotencyKey: string,
+    authorizedAt: number,
   ): Promise<string>;
   signStatus(bodyBytes: Uint8Array, receipt: Readonly<BackgroundJobReceipt>): Promise<string>;
   signCancel(
     bodyBytes: Uint8Array,
     receipt: Readonly<BackgroundJobReceipt>,
     grant: Readonly<BackgroundJobApprovalGrant>,
+    authorizedAt: number,
   ): Promise<string>;
   jwks(): Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
 }
@@ -115,16 +118,20 @@ export interface BackgroundJobAdmission {
 }
 
 export interface BackgroundJobReceipt extends BackgroundJobAudienceProfile, BackgroundJobContractBinding {
+  intentId: string;
   jobId: string;
   authorityId: string;
   runId: string;
   threadTs: string;
+  conversationThreadRef: string;
   messageTs: string;
   idempotencyKey: string;
   payloadSha256: string;
   approvalId: string;
   approvalDigest: string;
   approvalEffect: "background_job_start";
+  approvalKey: string;
+  approvalActionTs: string;
   approvalMessageTs: string;
   approvalThreadTs: string;
   createdAt: number;
@@ -132,34 +139,44 @@ export interface BackgroundJobReceipt extends BackgroundJobAudienceProfile, Back
 
 export interface BackgroundJobOwner extends BackgroundJobAudienceProfile {
   threadTs: string;
+  conversationThreadRef: string;
 }
 
 export interface BackgroundJobAdmissionIntent extends BackgroundJobOwner, BackgroundJobContractBinding {
+  intentId: string;
   jobId: string;
   messageTs: string;
-  bodyBytes: Uint8Array;
+  bodyBase64: string;
   payloadSha256: string;
-  approvalId: string;
-  approvalDigest: string;
-  approvalEffect: "background_job_start";
-  approvalMessageTs: string;
-  approvalThreadTs: string;
+  approvalGrant: Readonly<BackgroundJobApprovalGrant>;
   idempotencyKey: string;
   createdAt: number;
 }
 
 export interface BackgroundJobControlIntent extends BackgroundJobOwner, BackgroundJobContractBinding {
+  intentId: string;
   effect: "background_job_cancel";
   jobId: string;
   authorityId: string;
   runId: string;
-  approvalId: string;
-  approvalDigest: string;
-  approvalMessageTs: string;
-  approvalThreadTs: string;
+  approvalGrant: Readonly<BackgroundJobApprovalGrant>;
   payloadSha256: string;
   idempotencyKey: string;
   createdAt: number;
+}
+
+export interface BackgroundJobAdmissionLease {
+  intent: Readonly<BackgroundJobAdmissionIntent>;
+  leaseId: string;
+  leaseExpiresAt: number;
+  attempt: number;
+}
+
+export interface BackgroundJobControlLease {
+  intent: Readonly<BackgroundJobControlIntent>;
+  leaseId: string;
+  leaseExpiresAt: number;
+  attempt: number;
 }
 
 export interface BackgroundJobReceiptStore {
@@ -168,21 +185,69 @@ export interface BackgroundJobReceiptStore {
   reconciliation: "automatic_idempotent";
   controls: "durable_intent_outbox";
   readiness(): Readonly<{ ready: true }> | Readonly<{ ready: false }>;
-  admit(
-    intent: Readonly<BackgroundJobAdmissionIntent>,
-    start: (intent: Readonly<BackgroundJobAdmissionIntent>) => Promise<Readonly<BackgroundJobAdmission>>,
+  enqueueAdmission(intent: Readonly<BackgroundJobAdmissionIntent>): Promise<"persisted" | "already_persisted">;
+  leaseAdmissions(
+    jobId: string,
+    now: number,
+    limit: number,
+    leaseId: string,
+    leaseExpiresAt: number,
+  ): Promise<readonly Readonly<BackgroundJobAdmissionLease>[]>;
+  completeAdmission(
+    intentId: string,
+    leaseId: string,
+    admission: Readonly<BackgroundJobAdmission>,
+    completedAt: number,
   ): Promise<Readonly<BackgroundJobReceipt>>;
+  retryAdmission(intentId: string, leaseId: string, nextAttemptAt: number, terminal: boolean): Promise<void>;
   latestOwned(jobId: string, owner: Readonly<BackgroundJobOwner>): Promise<Readonly<BackgroundJobReceipt> | null>;
-  control<T>(intent: Readonly<BackgroundJobControlIntent>, execute: () => Promise<T>): Promise<T>;
+  ownedRun(
+    jobId: string,
+    owner: Readonly<BackgroundJobOwner>,
+    authorityId: string,
+    runId: string,
+  ): Promise<Readonly<BackgroundJobReceipt> | null>;
+  enqueueControl(intent: Readonly<BackgroundJobControlIntent>): Promise<"persisted" | "already_persisted">;
+  leaseControls(
+    jobId: string,
+    now: number,
+    limit: number,
+    leaseId: string,
+    leaseExpiresAt: number,
+  ): Promise<readonly Readonly<BackgroundJobControlLease>[]>;
+  completeControl(intentId: string, leaseId: string, completedAt: number): Promise<void>;
+  retryControl(intentId: string, leaseId: string, nextAttemptAt: number, terminal: boolean): Promise<void>;
+}
+
+export interface BackgroundJobCompletionLease {
+  receipt: Readonly<BackgroundJobReceipt>;
+  leaseId: string;
+  leaseExpiresAt: number;
+  attempt: number;
+  failureAttempt: number;
 }
 
 export interface BackgroundJobCompletionReceiptStore {
   durability: "durable";
   polling: "bounded_active_only";
   terminalTransition: "after_delivery_outbox";
-  active(jobId: string, limit: number): Promise<readonly Readonly<BackgroundJobReceipt>[]>;
+  leaseActive(
+    jobId: string,
+    now: number,
+    limit: number,
+    leaseId: string,
+    leaseExpiresAt: number,
+  ): Promise<readonly Readonly<BackgroundJobCompletionLease>[]>;
+  retry(
+    receipt: Readonly<BackgroundJobReceipt>,
+    leaseId: string,
+    nextAttemptAt: number,
+    terminal: boolean,
+    failed: boolean,
+  ): Promise<void>;
   terminal(
     receipt: Readonly<BackgroundJobReceipt>,
+    leaseId: string,
     state: "complete" | "failed" | "cancelled",
     deliveryKey: string,
   ): Promise<void>;
@@ -195,6 +260,7 @@ export interface BackgroundJobDeliveryIntent extends BackgroundJobAudienceProfil
   runId: string;
   messageTs: string;
   threadTs: string;
+  conversationThreadRef: string;
   state: "complete" | "failed" | "cancelled";
   text: string;
   card?: Readonly<WorkflowCardEnvelope>;
@@ -207,7 +273,24 @@ export interface BackgroundJobDeliveryOutbox {
   reconciliation: "automatic_idempotent_delivery";
   transport: "slack_first_party_render_only";
   rawFallback: "forbidden";
+  readiness(): Readonly<{ ready: true }> | Readonly<{ ready: false }>;
   enqueue(intent: Readonly<BackgroundJobDeliveryIntent>): Promise<"persisted" | "already_persisted">;
+  lease(
+    now: number,
+    limit: number,
+    leaseId: string,
+    leaseExpiresAt: number,
+  ): Promise<readonly Readonly<{ intent: BackgroundJobDeliveryIntent; leaseId: string; attempt: number }>[]>;
+  sent(deliveryKey: string, leaseId: string, sentAt: number): Promise<void>;
+  retry(deliveryKey: string, leaseId: string, nextAttemptAt: number, terminal: boolean): Promise<void>;
+}
+
+export interface BackgroundJobRenderOnlySender {
+  transport: "slack_first_party_render_only";
+  rawFallback: "forbidden";
+  idempotency: "durable_delivery_key";
+  readiness(): Readonly<{ ready: true }> | Readonly<{ ready: false }>;
+  send(intent: Readonly<BackgroundJobDeliveryIntent>, deliveryKey: string): Promise<void>;
 }
 
 export interface BackgroundJobCompletionRuntime<TStatus = unknown> {
@@ -216,8 +299,16 @@ export interface BackgroundJobCompletionRuntime<TStatus = unknown> {
   adapter: Readonly<Pick<BackgroundJobAdapter<unknown, TStatus, unknown>, "statusView">>;
 }
 
+export interface BackgroundJobEffectRuntime<TStatus = unknown, TCancellation = unknown> {
+  receipts: BackgroundJobReceiptStore;
+  client: BackgroundJobClient<TStatus, TCancellation>;
+  adapter: Readonly<Pick<BackgroundJobAdapter<unknown, TStatus, TCancellation>, "cancellationState">>;
+}
+
 export interface BackgroundJobInvocationAuthority {
   receiptId: string;
+  approvalKey: string;
+  actionTs: string;
   slack: Readonly<VerifiedSlackTurn>;
 }
 
@@ -225,6 +316,8 @@ export interface BackgroundJobApprovalExpectation extends BackgroundJobOwner, Ba
   effect: "background_job_start" | "background_job_cancel";
   jobId: string;
   messageTs: string;
+  approvalKey: string;
+  actionTs: string;
   payloadSha256: string;
   idempotencyKey: string;
   now: number;
@@ -235,6 +328,8 @@ export interface BackgroundJobApprovalGrant extends BackgroundJobOwner, Backgrou
   approvalId: string;
   digest: string;
   effect: "background_job_start" | "background_job_cancel";
+  approvalKey: string;
+  actionTs: string;
   jobId: string;
   messageTs: string;
   payloadSha256: string;
@@ -274,6 +369,7 @@ export type BackgroundJobOutcome =
       ok: false;
       state: "denied" | "unavailable" | "invalid" | "not_found";
       message: string;
+      approvalKey?: string;
     }>;
 
 export interface CompiledBackgroundJob {
@@ -309,11 +405,13 @@ export interface BackgroundJobClient<TStatus = unknown, TCancellation = unknown>
     bodyBytes: Uint8Array,
     grant: Readonly<BackgroundJobApprovalGrant>,
     idempotencyKey: string,
+    authorizedAt: number,
   ): Promise<Readonly<BackgroundJobAdmission>>;
   status(receipt: Readonly<BackgroundJobReceipt>): Promise<Readonly<TStatus>>;
   cancel(
     receipt: Readonly<BackgroundJobReceipt>,
     grant: Readonly<BackgroundJobApprovalGrant>,
+    authorizedAt: number,
   ): Promise<Readonly<TCancellation>>;
 }
 

@@ -63,7 +63,12 @@ import type { ShareArtifactRequest, ShareArtifactResult } from "../api/artifact-
 import type { Cron, Webhook } from "../types.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
-import type { BackgroundJobOutcome, BoundBackgroundJobTools, WorkflowCardEnvelope } from "../background-jobs/types.ts";
+import type {
+  BackgroundJobInvocationAuthority,
+  BackgroundJobOutcome,
+  BoundBackgroundJobTools,
+  WorkflowCardEnvelope,
+} from "../background-jobs/types.ts";
 
 function invalidBackgroundJobProfile(): Promise<BackgroundJobOutcome> {
   return Promise.resolve(
@@ -130,14 +135,14 @@ function deploymentEntrypoint(d: Deployment | null): string | undefined {
 export class NeedsApproval extends Error {
   command: string;
   approvalReason: string;
-  kind: "approval";
+  kind: "approval" | "background_job";
   matched?: string;
   approvalKey?: string;
   grantModes?: { session: boolean; always: boolean };
   constructor(
     command: string,
     reason: string,
-    kind: "approval" = "approval",
+    kind: "approval" | "background_job" = "approval",
     matched?: string,
     approvalKey?: string,
     grantModes?: { session: boolean; always: boolean },
@@ -464,6 +469,7 @@ export interface ToolContextDeps {
   webhookPublicUrl?: string;
   surface?: SurfaceToolDeps;
   backgroundJobs?: readonly Readonly<BoundBackgroundJobTools>[];
+  backgroundJobInvocationAuthority?: Readonly<BackgroundJobInvocationAuthority>;
 }
 
 const EFFECT_AUTHORIZATION_EXEMPT = new Set<PropertyKey>(["mcpToolDefs", "soulRead", "staySilent"]);
@@ -580,7 +586,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       ? {
           backgroundJobStart: (profileId: string, input: unknown) => {
             const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
-            return profile ? profile.start(input, undefined) : invalidBackgroundJobProfile();
+            return profile
+              ? profile.start(input, deps.backgroundJobInvocationAuthority)
+              : invalidBackgroundJobProfile();
           },
           backgroundJobStatus: async (profileId: string) => {
             const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
@@ -603,7 +611,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           },
           backgroundJobCancel: (profileId: string) => {
             const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
-            return profile ? profile.cancel(undefined) : invalidBackgroundJobProfile();
+            return profile ? profile.cancel(deps.backgroundJobInvocationAuthority) : invalidBackgroundJobProfile();
           },
         }
       : {}),

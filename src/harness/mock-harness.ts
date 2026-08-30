@@ -180,7 +180,7 @@ export function createMockHarness(): Harness {
         const collected: Array<{
           command: string;
           reason: string;
-          kind?: "approval";
+          kind?: "approval" | "background_job";
           matched?: string;
           approvalKey?: string;
           grantModes?: { session: boolean; always: boolean };

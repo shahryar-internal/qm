@@ -510,7 +510,7 @@ export interface PendingApproval {
   approvalKey?: string;
   grantModes?: ApprovalGrantModes;
   blocksInput?: boolean;
-  kind?: "approval" | "input";
+  kind?: "approval" | "background_job" | "input";
 }
 
 export interface PendingApprovalRecord {
@@ -526,7 +526,7 @@ export interface PendingApprovalRecord {
   grantModes?: ApprovalGrantModes;
   request?: TurnRequest;
   blocksInput?: boolean;
-  kind?: "approval" | "input";
+  kind?: "approval" | "background_job" | "input";
 }
 
 type ApprovalScope = "once" | "session" | "always";

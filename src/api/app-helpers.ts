@@ -156,7 +156,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
       ...(r.summaryDetail ? { summaryDetail: r.summaryDetail } : {}),
       ...(r.grantModes ? { grantModes: r.grantModes } : {}),
       blocksInput: r.blocksInput !== false,
-      ...(r.kind === "approval" ? { kind: r.kind } : {}),
+      ...(r.kind === "approval" || r.kind === "background_job" ? { kind: r.kind } : {}),
     }));
   }
 

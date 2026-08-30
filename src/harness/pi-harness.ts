@@ -109,6 +109,7 @@ export interface PiHarnessOptions {
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
   signals?: RunSignalStore;
+  backgroundJobProfiles?: () => readonly Readonly<{ profileId: string; label: string }>[];
 }
 
 export function piHarnessConfigOptions(config: Config): PiHarnessOptions {
@@ -1352,6 +1353,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           ...(opts?.execTimeoutCeilingMs !== undefined ? { execTimeoutCeilingMs: opts.execTimeoutCeilingMs } : {}),
           ...(opts?.backgroundJobTtlMs !== undefined ? { backgroundJobTtlMs: opts.backgroundJobTtlMs } : {}),
           ...(opts?.backgroundJobTtlMaxMs !== undefined ? { backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs } : {}),
+          ...(opts?.backgroundJobProfiles ? { backgroundJobProfiles: opts.backgroundJobProfiles } : {}),
         }),
         noTools: "builtin",
         sessionManager: SessionManager.inMemory(undefined, { id: sessionId }),
