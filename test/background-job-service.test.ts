@@ -522,10 +522,26 @@ test("owner control survives disable while start disappears and completion cards
   assert.equal(disabledProfile.binding.descriptorSha256, built.deployment.binding.descriptorSha256);
   const restarted = service({ active: () => false, receipts: built.receipts, deployment: disabledProfile });
   const registry = createBackgroundJobRegistry({ profiles: () => [disabledProfile], resolve: () => restarted.value });
-  const controls = registry.bind(TURN);
+  const controls = await registry.bind(TURN);
   assert.equal(controls.length, 1);
   assert.equal(controls[0]!.canStart(), false);
+  assert.deepEqual(controls[0]!.actions, ["status", "cancel"]);
   assert.equal((await controls[0]!.status()).state, "complete");
+  assert.equal(
+    (
+      await registry.bind({
+        ...TURN,
+        conversationThreadRef: "dm:D123:1788030002.000000",
+        originMessageTs: "1788030002.000000",
+        verifiedSlack: {
+          ...TURN.verifiedSlack!,
+          messageTs: "1788030002.000000",
+          threadTs: "1788030002.000000",
+        },
+      })
+    ).length,
+    0,
+  );
 });
 
 test("the automatic completion poller durably reconciles one-time owner-thread delivery across restart", async () => {
@@ -632,14 +648,14 @@ test("the multi-profile registry re-resolves current profiles and never treats a
   const built = service();
   let profiles = [built.deployment];
   const registry = createBackgroundJobRegistry({ profiles: () => profiles, resolve: () => built.value });
-  const bound = registry.bind(TURN);
+  const bound = await registry.bind(TURN);
   assert.equal(bound.length, 1);
   assert.equal(
     (await bound[0]!.start({ recordId: "record-1", receiptIds: ["decision-1"] }, undefined)).state,
     "denied",
   );
   profiles = [];
-  assert.equal(registry.bind(TURN).length, 0);
+  assert.equal((await registry.bind(TURN)).length, 0);
 });
 
 test("dependency readiness exposes only fixed public reason codes", () => {
@@ -856,6 +872,13 @@ test("the deployment store durably tombstones removals and restores owner contro
   assert.equal(record!.bundle.backgroundJobs!.length, 1);
   assert.equal(record!.retiredBackgroundJobs!.length, 1);
   assert.equal(record!.contentHash, createHash("sha256").update(JSON.stringify(record!.bundle)).digest("hex"));
+  assert.equal(
+    record!.requestedContentHash,
+    createHash("sha256")
+      .update(JSON.stringify({ contract: 1, tools: [], skills: [], backgroundJobs: [] }))
+      .digest("hex"),
+  );
+  assert.notEqual(record!.requestedContentHash, record!.contentHash);
   fenceDigest = "0".repeat(64);
   await assert.rejects(
     deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin"),
@@ -891,10 +914,35 @@ test("the deployment store durably tombstones removals and restores owner contro
   const cleaned = (await deployment.get())!;
   assert.equal(cleaned.retiredBackgroundJobs!.length, 1);
   assert.equal(cleaned.contentHash, createHash("sha256").update(JSON.stringify(cleaned.bundle)).digest("hex"));
+  const rollback = await deployment.put(
+    {
+      contract: 1,
+      tools: [],
+      skills: [],
+      backgroundJobs: [{ ...job, enabled: false }],
+    },
+    "signed-admin",
+  );
+  assert.equal(rollback.bundle.backgroundJobs![0]!.enabled, false);
+  assert.equal(runtime.backgroundJobs[0]!.enabled, false);
   await assert.rejects(
     deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin"),
-    /permanently retired/,
+    /retired/,
   );
+  await assert.rejects(
+    deployment.put(
+      {
+        contract: 1,
+        tools: [],
+        skills: [],
+        backgroundJobs: [{ path: PROFILE_PATH, content: JSON.stringify(changed), enabled: false }],
+      },
+      "signed-admin",
+    ),
+    /immutable|permanently retired/,
+  );
+  const converged = await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin");
+  assert.equal(converged.bundle.backgroundJobs!.length, 0);
 });
 
 test("retirement cannot disable or remove a profile without the durable atomic approval fence", async () => {

@@ -440,6 +440,9 @@ export interface BackgroundJobTurnBinding {
 
 export interface BoundBackgroundJobTools {
   profileId: string;
+  label: string;
+  actions: readonly ("start" | "status" | "cancel")[];
+  visible?(): Promise<boolean>;
   canStart(): boolean;
   start(
     input: unknown,
@@ -450,7 +453,7 @@ export interface BoundBackgroundJobTools {
 }
 
 export interface BackgroundJobService {
-  bind(turn: Readonly<BackgroundJobTurnBinding>): readonly Readonly<BoundBackgroundJobTools>[];
+  bind(turn: Readonly<BackgroundJobTurnBinding>): Promise<readonly Readonly<BoundBackgroundJobTools>[]>;
   readiness(): Readonly<{ ready: true }> | Readonly<{ ready: false; reason: string }>;
 }
 

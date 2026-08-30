@@ -49,7 +49,6 @@ export interface CodexHarnessOptions {
   authStore?: CodexAuthStore;
   signals?: RunSignalStore;
   tasks?: TaskStore;
-  backgroundJobProfiles?: () => readonly Readonly<{ profileId: string; label: string }>[];
 }
 
 export function codexHarnessConfigOptions(config: Config): CodexHarnessOptions {
@@ -328,7 +327,6 @@ function toolOptions(opts: CodexHarnessOptions, turn?: HarnessTurnInput): PiTool
     execTimeoutCeilingMs: opts.execTimeoutCeilingMs,
     backgroundJobTtlMs: opts.backgroundJobTtlMs,
     backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs,
-    ...(opts.backgroundJobProfiles ? { backgroundJobProfiles: opts.backgroundJobProfiles } : {}),
     ...(turn
       ? {
           readOnly: turn.readOnly,

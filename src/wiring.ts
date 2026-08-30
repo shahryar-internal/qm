@@ -684,10 +684,9 @@ export function buildApp(
     readiness: () =>
       backgroundJobRuntime?.service.readiness() ??
       Object.freeze({ ready: false as const, reason: "background_job_profiles_unavailable" }),
-    bind: (turn: Parameters<BackgroundJobService["bind"]>[0]) =>
+    bind: async (turn: Parameters<BackgroundJobService["bind"]>[0]) =>
       backgroundJobRuntime?.service.bind(turn) ?? Object.freeze([]),
   });
-  const toolBackgroundJobProfiles = () => backgroundJobRuntime?.controlProfiles() ?? Object.freeze([]);
   const jobAuthorityJwks = () => backgroundJobRuntime?.jwks() ?? Object.freeze({ keys: Object.freeze([]) });
   const deploymentLayerRefresh = createSweeper(
     async () => {
@@ -1011,7 +1010,6 @@ export function buildApp(
         ...(config.devGeminiProvider ? { devGeminiProviderId: config.devGeminiProvider.spec.id } : {}),
         signals: runSignals,
         mcpTools,
-        backgroundJobProfiles: toolBackgroundJobProfiles,
       }),
     ],
     [
@@ -1021,7 +1019,6 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
-        backgroundJobProfiles: toolBackgroundJobProfiles,
         resolveCustomProviders: async () => {
           const enabled = await customProviders.enabled();
           return Promise.all(
@@ -1073,7 +1070,6 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
-        backgroundJobProfiles: toolBackgroundJobProfiles,
       }),
     ],
     [
@@ -1083,7 +1079,6 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
-        backgroundJobProfiles: toolBackgroundJobProfiles,
       }),
     ],
     ["mock", createMockHarness()],
@@ -2019,6 +2014,7 @@ export function serverDeps(
     environments: built.environments,
     jobAuthorityJwks: built.jobAuthorityJwks,
     backgroundJobAttention: built.backgroundJobAttention,
+    runtimeOrgScope: scopeId("org", config.orgId),
     sandboxMigration: built.sandboxMigration,
   };
 }

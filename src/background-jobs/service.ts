@@ -503,8 +503,14 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
         const receipt = await dependencies.receipts.latestOwned(profile.definition.id, expectedOwner);
         return receipt && backgroundJobReceiptOwned(receipt, expectedOwner, profile) ? receipt : null;
       };
+      const startAllowed = canStart();
       return Object.freeze({
         profileId: profile.definition.id,
+        label: startAllowed ? profile.tools.start.label : profile.tools.status.label,
+        actions: Object.freeze(
+          startAllowed ? (["start", "status", "cancel"] as const) : (["status", "cancel"] as const),
+        ),
+        visible: async () => startAllowed || Boolean(await owned()),
         canStart,
         async start(
           raw: unknown,
@@ -720,7 +726,18 @@ export function createBackgroundJobRegistry(
       activeServices().length > 0
         ? Object.freeze({ ready: true as const })
         : Object.freeze({ ready: false as const, reason: "background_job_profiles_unavailable" }),
-    bind: (turn: Readonly<BackgroundJobTurnBinding>) =>
-      Object.freeze(activeServices().flatMap((service) => service.bind(turn) ?? [])),
+    bind: async (turn: Readonly<BackgroundJobTurnBinding>) => {
+      const candidates = activeServices().flatMap((service) => service.bind(turn) ?? []);
+      const visible = await Promise.all(
+        candidates.map(async (bound) => {
+          try {
+            return (await bound.visible?.()) ?? bound.canStart();
+          } catch {
+            return false;
+          }
+        }),
+      );
+      return Object.freeze(candidates.filter((_, index) => visible[index]));
+    },
   });
 }

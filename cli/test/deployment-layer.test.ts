@@ -5,7 +5,13 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_FILENAME, loadConfigInDir, type QmConfig } from "../src/config.ts";
-import { currentDeploymentLayerState, deploymentLayerBundle, syncDeploymentLayer } from "../src/deployment-layer.ts";
+import {
+  currentDeploymentLayerState,
+  deploymentLayerBundle,
+  deploymentLayerCanonicalBody,
+  syncDeploymentLayer,
+  syncDeploymentLayerBody,
+} from "../src/deployment-layer.ts";
 import { dockerDeploymentLayerTransport } from "../src/backends/docker.ts";
 import { flyDeploymentLayerTransport } from "../src/backends/fly.ts";
 import { awsDeploymentLayerTransport } from "../src/backends/aws.ts";
@@ -185,6 +191,25 @@ function startCoreStub(
   });
 }
 
+function syncResponse(
+  body: string,
+  options: { durable?: boolean; status?: "applied" | "degraded"; message?: string } = {},
+): string {
+  const canonicalBody = deploymentLayerCanonicalBody(JSON.parse(body) as unknown);
+  const contentHash = createHash("sha256").update(canonicalBody).digest("hex");
+  return JSON.stringify({
+    version: 3,
+    contentHash,
+    requestedContentHash: contentHash,
+    transformed: false,
+    durable: options.durable ?? true,
+    status: options.status ?? "applied",
+    runtimeContentHash: options.status === "degraded" ? null : contentHash,
+    bundle: JSON.parse(canonicalBody),
+    ...(options.message ? { message: options.message } : {}),
+  });
+}
+
 function makeConfig(publicUrl: string): QmConfig {
   return {
     contract: 1,
@@ -225,10 +250,7 @@ async function freeUnboundPort(): Promise<number> {
 test("the docker sync PUTs the bundle to the base port with verifiable v0 HMAC signing headers", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-layer-sync-"));
   const captured: CapturedRequest[] = [];
-  const { server, port } = await startCoreStub(
-    () => ({ body: JSON.stringify({ version: 3, contentHash: "abc123" }) }),
-    captured,
-  );
+  const { server, port } = await startCoreStub(() => ({ body: syncResponse(captured.at(-1)!.body) }), captured);
   try {
     writeLayer(dir);
     writeFileSync(join(dir, ".env"), `CORE_SIGNING_SECRET=${SECRET}\n`);
@@ -255,6 +277,64 @@ test("the docker sync PUTs the bundle to the base port with verifiable v0 HMAC s
   }
 });
 
+test("sync accepts only an exact disabled-control retention transform and returns its canonical body", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-layer-retained-sync-"));
+  const requested = JSON.stringify({ contract: 1, tools: [], skills: [], backgroundJobs: [] });
+  const retained = {
+    contract: 1,
+    tools: [],
+    skills: [],
+    backgroundJobs: [
+      {
+        path: "background-jobs/report/job.json",
+        content: JSON.stringify({ contract: 1, definition: { id: "report" } }),
+        enabled: false,
+      },
+    ],
+  };
+  const requestedContentHash = createHash("sha256").update(requested).digest("hex");
+  const contentHash = createHash("sha256").update(JSON.stringify(retained)).digest("hex");
+  let enabled = false;
+  const { server } = await startCoreStub(
+    () => ({
+      body: JSON.stringify({
+        version: 2,
+        contentHash,
+        requestedContentHash,
+        transformed: true,
+        runtimeContentHash: contentHash,
+        bundle: enabled
+          ? { ...retained, backgroundJobs: [{ ...retained.backgroundJobs[0]!, enabled: true }] }
+          : retained,
+        durable: true,
+        status: "applied",
+      }),
+    }),
+    [],
+  );
+  try {
+    await withEnv({ CORE_SIGNING_SECRET: SECRET }, async () => {
+      const result = await syncDeploymentLayerBody(
+        { config: makeConfig("http://localhost:8080"), transport: dockerDeploymentLayerTransport, configDir: dir },
+        requested,
+      );
+      assert.equal(result!.body, JSON.stringify(retained));
+      assert.equal(result!.contentHash, contentHash);
+      enabled = true;
+      await assert.rejects(
+        syncDeploymentLayerBody(
+          { config: makeConfig("http://localhost:8080"), transport: dockerDeploymentLayerTransport, configDir: dir },
+          requested,
+        ),
+        /added an enabled background job|inconsistent requested or canonical content hashes/,
+      );
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("conformance passes against a live core: base-port override, signed request, canonical hash + descriptors", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-conf-"));
   const captured: CapturedRequest[] = [];
@@ -272,8 +352,11 @@ test("conformance passes against a live core: base-port override, signed request
     () => ({
       body: JSON.stringify({
         contentHash,
+        requestedContentHash: contentHash,
+        transformed: false,
         status: "applied",
         runtimeContentHash: contentHash,
+        bundle,
         resolved: {
           tools: [{ install: { binary: "t" }, advertise: "runs t", id: "t" }],
           backgroundJobs: [{ id: "proposal" }],
@@ -322,6 +405,68 @@ test("conformance passes against a live core: base-port override, signed request
   }
 });
 
+test("conformance accepts a canonical retained disabled control linked to the exact directory hash", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-conf-retained-"));
+  const sandboxDir = join(dir, "sandbox");
+  mkdirSync(sandboxDir, { recursive: true });
+  const requested = deploymentLayerBundle(sandboxDir);
+  const requestedContentHash = createHash("sha256").update(JSON.stringify(requested)).digest("hex");
+  const retained = {
+    ...requested,
+    backgroundJobs: [
+      {
+        path: "background-jobs/report/job.json",
+        content: JSON.stringify({ contract: 1, definition: { id: "report" } }),
+        enabled: false,
+      },
+    ],
+  };
+  const contentHash = createHash("sha256").update(JSON.stringify(retained)).digest("hex");
+  const { server, port } = await startCoreStub(
+    () => ({
+      body: JSON.stringify({
+        contentHash,
+        requestedContentHash,
+        transformed: true,
+        status: "applied",
+        runtimeContentHash: contentHash,
+        bundle: retained,
+        resolved: { tools: [], backgroundJobs: [{ id: "report", enabled: false }] },
+      }),
+    }),
+    [],
+  );
+  try {
+    writeFileSync(
+      join(dir, CONFIG_FILENAME),
+      JSON.stringify({
+        contract: 1,
+        orgId: "acme",
+        publicUrl: "http://localhost:8080",
+        target: "docker",
+        services: ["core"],
+        basePort: 1,
+        sandbox: { app: "acme-sandboxes", image: PINNED_SANDBOX_IMAGE },
+      }),
+    );
+    await withEnv({ CORE_SIGNING_SECRET: SECRET, QM_BASE_PORT: String(port) }, async () => {
+      const log = console.log;
+      console.log = (): void => {};
+      try {
+        await runConformance(
+          { config: loadConfigInDir(dir).config, configDir: dir, sandboxDir, target: "docker" },
+          { runtime: true },
+        );
+      } finally {
+        console.log = log;
+      }
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("conformance fails when the stored layer matches but the core still serves a previous resolved layer", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-conf-"));
   const bundle = (() => {
@@ -333,9 +478,12 @@ test("conformance fails when the stored layer matches but the core still serves 
     () => ({
       body: JSON.stringify({
         contentHash,
+        requestedContentHash: contentHash,
+        transformed: false,
         status: "degraded",
         runtimeContentHash: "0000000000000000000000000000000000000000000000000000000000000000",
         resolved: { tools: [{ install: { binary: "t" }, advertise: "runs t", id: "t" }] },
+        bundle,
       }),
     }),
     [],
@@ -429,9 +577,7 @@ test("a successful memory-backed sync warns that the layer will not survive rest
   const warnings: string[] = [];
   t.mock.method(console, "warn", (...parts: unknown[]) => warnings.push(parts.join(" ")));
   const { server, port } = await startCoreStub(
-    () => ({
-      body: JSON.stringify({ version: 3, contentHash: "abc123", durable: false }),
-    }),
+    () => ({ body: syncResponse(JSON.stringify(deploymentLayerBundle(join(dir, "sandbox"))), { durable: false }) }),
     [],
   );
   try {
@@ -454,7 +600,7 @@ test("a successful memory-backed sync warns that the layer will not survive rest
 test("a publicUrl with a base path keeps it in the request path and the signed canonical string", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-layer-sync-"));
   const captured: CapturedRequest[] = [];
-  const { server, port } = await startCoreStub(() => ({ body: "{}" }), captured);
+  const { server, port } = await startCoreStub(() => ({ body: syncResponse(captured.at(-1)!.body) }), captured);
   try {
     writeLayer(dir);
     await withEnv({ CORE_SIGNING_SECRET: SECRET }, () =>
@@ -632,7 +778,7 @@ test("fly sync succeeds on the response marker, piping the exact bundle over std
       [
         `fs.writeFileSync(${JSON.stringify(argsLog)}, JSON.stringify(process.argv.slice(2)));`,
         `fs.writeFileSync(${JSON.stringify(stdinLog)}, fs.readFileSync(0, "utf8"));`,
-        `console.log('QM_LAYER_RESPONSE=' + JSON.stringify({ status: 200, body: JSON.stringify({ version: 7, contentHash: "abcdef123456" }) }));`,
+        `console.log('QM_LAYER_RESPONSE=' + JSON.stringify({ status: 200, body: ${JSON.stringify(syncResponse(JSON.stringify(deploymentLayerBundle(join(dir, "sandbox")))))} }));`,
       ].join("\n"),
     );
     await withEnv({ FLY_BIN: bin }, () => syncDeploymentLayer(flySyncOpts(dir)));
@@ -654,9 +800,13 @@ test("a 202 degraded response is accepted and warns with the core's persisted-bu
   t.mock.method(console, "warn", (...parts: unknown[]) => void warnings.push(parts.join(" ")));
   try {
     writeLayer(dir);
+    const response = syncResponse(JSON.stringify(deploymentLayerBundle(join(dir, "sandbox"))), {
+      status: "degraded",
+      message: "skill collision",
+    });
     const bin = fakeFly(
       dir,
-      `console.log('QM_LAYER_RESPONSE=' + JSON.stringify({ status: 202, body: JSON.stringify({ status: "degraded", version: 8, contentHash: "abc", durable: true, message: "skill collision" }) }));`,
+      `console.log('QM_LAYER_RESPONSE=' + JSON.stringify({ status: 202, body: ${JSON.stringify(response)} }));`,
     );
     await withEnv({ FLY_BIN: bin }, () => syncDeploymentLayer(flySyncOpts(dir)));
     assert.ok(warnings.some((line) => /persisted but only partially applied: skill collision/.test(line)));

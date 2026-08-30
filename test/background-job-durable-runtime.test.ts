@@ -714,9 +714,6 @@ test("production composition exposes only fully healthy named durable profiles a
   assert.deepEqual(runtime.visibleProfiles(), []);
   await runtime.ready();
   assert.deepEqual(runtime.visibleProfiles(), [{ profileId: profile.definition.id, label: profile.tools.start.label }]);
-  assert.deepEqual(runtime.controlProfiles(), [
-    { profileId: profile.definition.id, label: profile.tools.status.label },
-  ]);
   assert.equal(runtime.service.readiness().ready, true);
   assert.deepEqual(
     runtime.jwks().keys.map((key) => key.kid),
@@ -724,14 +721,10 @@ test("production composition exposes only fully healthy named durable profiles a
   );
   registryReady = false;
   assert.deepEqual(runtime.visibleProfiles(), []);
-  assert.deepEqual(runtime.controlProfiles(), []);
   assert.equal(runtime.service.readiness().ready, false);
   registryReady = true;
   profiles = [{ ...profile, enabled: false }];
   assert.deepEqual(runtime.visibleProfiles(), []);
-  assert.deepEqual(runtime.controlProfiles(), [
-    { profileId: profile.definition.id, label: profile.tools.status.label },
-  ]);
   const restartedTurn: BackgroundJobTurnBinding = {
     surface: "slack",
     actorId: profile.profile.actorPrincipalId,
@@ -751,14 +744,11 @@ test("production composition exposes only fully healthy named durable profiles a
       liveHuman: true,
     },
   };
-  const disabledControls = runtime.service.bind(restartedTurn);
-  assert.equal(disabledControls.length, 1);
-  assert.equal(disabledControls[0]!.canStart(), false);
-  assert.equal((await disabledControls[0]!.start({ decisionId: "blocked" }, undefined)).state, "denied");
+  const disabledControls = await runtime.service.bind(restartedTurn);
+  assert.equal(disabledControls.length, 0);
   profiles = [];
   assert.deepEqual(runtime.visibleProfiles(), []);
-  assert.deepEqual(runtime.controlProfiles(), []);
-  assert.equal(runtime.service.bind(restartedTurn).length, 0);
+  assert.equal((await runtime.service.bind(restartedTurn)).length, 0);
   profiles = [profile];
   const unavailable = createProductionBackgroundJobRuntime({
     profiles: () => [profile],

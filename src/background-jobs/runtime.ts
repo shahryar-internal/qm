@@ -53,7 +53,6 @@ export interface ProductionBackgroundJobRuntime {
   start(): void;
   stop(): void;
   visibleProfiles(): readonly Readonly<{ profileId: string; label: string }>[];
-  controlProfiles(): readonly Readonly<{ profileId: string; label: string }>[];
   blockedProfiles(): Readonly<Record<string, string>>;
   jwks(): Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
   effectReconciler: BackgroundJobEffectReconciler;
@@ -280,16 +279,6 @@ export function createProductionBackgroundJobRuntime(options: {
           .flatMap((profile) =>
             publicJwksReady && profile.enabled && services.get(profile.definition.id)?.readiness().ready
               ? [{ profileId: profile.definition.id, label: profile.tools.start.label }]
-              : [],
-          ),
-      ),
-    controlProfiles: () =>
-      Object.freeze(
-        options
-          .profiles()
-          .flatMap((profile) =>
-            publicJwksReady && services.get(profile.definition.id)?.readiness().ready
-              ? [{ profileId: profile.definition.id, label: profile.tools.status.label }]
               : [],
           ),
       ),

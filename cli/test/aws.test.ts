@@ -37,7 +37,7 @@ process.env.QM_AWS_LIVE_PROBE_POLL_MS = "5";
 process.env.QM_AWS_LIVE_PROBE_DEADLINE_MS = "20";
 process.env.QM_AWS_DB_SNAPSHOT_POLL_MS = "5";
 
-const EMPTY_LAYER_BODY = JSON.stringify({ contract: 1, tools: [], skills: [] });
+const EMPTY_LAYER_BODY = JSON.stringify({ contract: 1, tools: [], skills: [], backgroundJobs: [] });
 const EMPTY_LAYER = {
   key: "deployment/layers/empty.json",
   sha256: createHash("sha256").update(EMPTY_LAYER_BODY).digest("hex"),
@@ -372,10 +372,25 @@ else console.log("");`,
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     if (init?.method === "PUT") {
       const body = String(init.body ?? "");
-      const contentHash = createHash("sha256").update(body).digest("hex");
-      return new Response(JSON.stringify({ version: 1, contentHash, durable: true, status: "applied" }), {
-        status: 200,
-      });
+      const bundle = JSON.parse(body);
+      if (!bundle.backgroundJobs) bundle.backgroundJobs = [];
+      const canonicalBody = JSON.stringify(bundle);
+      const contentHash = createHash("sha256").update(canonicalBody).digest("hex");
+      return new Response(
+        JSON.stringify({
+          version: 1,
+          contentHash,
+          requestedContentHash: contentHash,
+          transformed: false,
+          runtimeContentHash: contentHash,
+          bundle,
+          durable: true,
+          status: "applied",
+        }),
+        {
+          status: 200,
+        },
+      );
     }
     if (!String(input).includes("/v1/deployment-layer"))
       return new Response("", { status: Number(process.env.AWS_FAKE_HTTP_STATUS ?? 200) });
@@ -383,6 +398,8 @@ else console.log("");`,
       JSON.stringify({
         bundle: JSON.parse(EMPTY_LAYER_BODY),
         contentHash: EMPTY_LAYER.sha256,
+        requestedContentHash: EMPTY_LAYER.sha256,
+        transformed: false,
         runtimeContentHash: EMPTY_LAYER.sha256,
         status: "applied",
       }),
@@ -2626,6 +2643,10 @@ test("AWS rollback restores the recorded layer without reading the broken curren
       JSON.stringify({
         version: 3,
         contentHash: createHash("sha256").update(body).digest("hex"),
+        requestedContentHash: createHash("sha256").update(body).digest("hex"),
+        transformed: false,
+        runtimeContentHash: createHash("sha256").update(body).digest("hex"),
+        bundle: JSON.parse(body),
         durable: true,
         status: "applied",
       }),
@@ -2636,6 +2657,83 @@ test("AWS rollback restores the recorded layer without reading the broken curren
     await awsRollback(single, undefined, { configDir: dir });
     assert.deepEqual(bodies, [oldBody]);
     assert.equal(JSON.parse(readFileSync(fake.state, "utf8")).dynamo["deployment/current"].manifestId.S, "old");
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorSecret === undefined) delete process.env.CORE_SIGNING_SECRET;
+    else process.env.CORE_SIGNING_SECRET = priorSecret;
+    fake.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("AWS rollback persists the server-retained canonical layer instead of the requested empty artifact", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-aws-rollback-retained-layer-"));
+  const single = oneServiceConfig();
+  const task = "arn:aws:ecs:us-west-2:123456789012:task-definition/acme-core:2";
+  const job = {
+    path: "background-jobs/proposal/job.json",
+    content: JSON.stringify({ contract: 1, definition: { id: "proposal" } }),
+  };
+  const oldBody = JSON.stringify({ contract: 1, tools: [], skills: [], backgroundJobs: [] });
+  const currentBody = JSON.stringify({ contract: 1, tools: [], skills: [], backgroundJobs: [job] });
+  const retainedBody = JSON.stringify({
+    contract: 1,
+    tools: [],
+    skills: [],
+    backgroundJobs: [{ ...job, enabled: false }],
+  });
+  const artifact = (id: string, body: string) => ({
+    key: `deployment/layers/${id}.json`,
+    sha256: createHash("sha256").update(body).digest("hex"),
+  });
+  const oldLayer = artifact("old", oldBody);
+  const currentLayer = artifact("current", currentBody);
+  const fake = statefulAws(
+    dir,
+    single,
+    manifestItems(
+      [
+        { id: "old", tasks: { core: task }, layer: oldLayer },
+        { id: "current", previous: "old", tasks: { core: task }, layer: currentLayer },
+      ],
+      "current",
+    ),
+  );
+  const initial = JSON.parse(readFileSync(fake.state, "utf8"));
+  initial.objects[oldLayer.key] = oldBody;
+  initial.objects[currentLayer.key] = currentBody;
+  writeFileSync(fake.state, JSON.stringify(initial));
+  const priorFetch = globalThis.fetch;
+  const priorSecret = process.env.CORE_SIGNING_SECRET;
+  process.env.CORE_SIGNING_SECRET = "test-signing-secret";
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const requestedBody = String(init?.body ?? "");
+    const requestedContentHash = createHash("sha256").update(requestedBody).digest("hex");
+    const contentHash = createHash("sha256").update(retainedBody).digest("hex");
+    return new Response(
+      JSON.stringify({
+        version: 3,
+        contentHash,
+        requestedContentHash,
+        transformed: true,
+        runtimeContentHash: contentHash,
+        bundle: JSON.parse(retainedBody),
+        durable: true,
+        status: "applied",
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  try {
+    await awsRollback(single, undefined, { configDir: dir });
+    const after = JSON.parse(readFileSync(fake.state, "utf8"));
+    const currentId = after.dynamo["deployment/current"].manifestId.S;
+    assert.notEqual(currentId, "old");
+    assert.notEqual(currentId, "current");
+    const manifest = JSON.parse(after.dynamo[`deployment/manifest/${currentId}`].manifest.S);
+    const retainedHash = createHash("sha256").update(retainedBody).digest("hex");
+    assert.equal(manifest.layer.sha256, retainedHash);
+    assert.equal(after.objects[manifest.layer.key], retainedBody);
   } finally {
     globalThis.fetch = priorFetch;
     if (priorSecret === undefined) delete process.env.CORE_SIGNING_SECRET;

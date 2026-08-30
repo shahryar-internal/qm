@@ -41,6 +41,7 @@ export interface DeploymentLayerBundle {
 
 export interface StoredDeploymentLayer {
   contentHash: string;
+  requestedContentHash?: string;
   version: number;
   updatedAt: number;
   updatedBy: string;
@@ -346,12 +347,14 @@ async function retainBackgroundJobControls(
   for (const file of requested) {
     const candidate = parseBackgroundJobDeploymentProfile(file.content, file.path, file.enabled !== false);
     const prior = currentByPath.get(file.path);
+    const retiredEntry = retiredById.get(candidate.definition.id);
     const retainedControl =
-      prior?.enabled === false &&
       file.enabled === false &&
-      parseBackgroundJobDeploymentProfile(prior.content, prior.path, false).binding.descriptorSha256 ===
-        candidate.binding.descriptorSha256;
-    if (retiredById.has(candidate.definition.id) && !retainedControl) {
+      ((prior?.enabled === false &&
+        parseBackgroundJobDeploymentProfile(prior.content, prior.path, false).binding.descriptorSha256 ===
+          candidate.binding.descriptorSha256) ||
+        retiredEntry?.descriptorSha256 === candidate.binding.descriptorSha256);
+    if (retiredEntry && !retainedControl) {
       throw new Error(`background job ${candidate.definition.id} is permanently retired; register a new id`);
     }
   }
@@ -734,8 +737,10 @@ export function createDeploymentLayerStore(opts: {
           throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
         }
         let hash = contentHash(bundle);
+        const requestedHash = hash;
         let candidate: StoredDeploymentLayer = {
           contentHash: hash,
+          requestedContentHash: requestedHash,
           version: 1,
           updatedAt: now(),
           updatedBy,
@@ -801,12 +806,14 @@ export function createDeploymentLayerStore(opts: {
           let record = await opts.backing.putIfAbsent(CURRENT, candidate);
           if (
             record.contentHash !== hash ||
+            record.requestedContentHash !== requestedHash ||
             !sameRetirementLedger(record.retiredBackgroundJobs, candidate.retiredBackgroundJobs)
           ) {
             if (!opts.backing.update) throw new Error("deployment layer backing store must support atomic updates");
             const updated = await opts.backing.update(CURRENT, (current) => {
               if (
                 current.contentHash === hash &&
+                current.requestedContentHash === requestedHash &&
                 sameRetirementLedger(current.retiredBackgroundJobs, candidate.retiredBackgroundJobs)
               )
                 return current;

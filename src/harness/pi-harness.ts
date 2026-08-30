@@ -63,6 +63,7 @@ import {
   type GapWork,
 } from "./harness.ts";
 import { coreToolOptions, createPiTools, pauseStampAfterToolCall, type ToolContextRef } from "./pi-tools.ts";
+import type { ToolContext } from "../tools/primitives.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
 import {
@@ -109,7 +110,6 @@ export interface PiHarnessOptions {
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
   signals?: RunSignalStore;
-  backgroundJobProfiles?: () => readonly Readonly<{ profileId: string; label: string }>[];
 }
 
 export function piHarnessConfigOptions(config: Config): PiHarnessOptions {
@@ -1289,6 +1289,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     tapeFold?: unknown[],
     tape?: HarnessTurnInput["tape"],
     turnProviderKeys?: ProviderKeys,
+    turnTools?: ToolContext,
   ): Promise<{ entry: TurnSession; compileMs: number; tapeWriteFailed: boolean }> {
     const compileStart = Date.now();
     const cacheBoundary =
@@ -1329,7 +1330,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
     const model = getRequiredModel(resolveModelId(turnScope));
     const modelRuntime = await buildModelRuntime(turnProviderKeys ?? (await resolveProviderKeys()));
-    const ref: ToolContextRef = { current: null };
+    const ref: ToolContextRef = { current: turnTools ?? null };
     const { resourceLoader, cwd, agentDir } = await createIsolatedResources(tempDirPrefix, composedPrompt);
     const compileMs = Date.now() - compileStart;
 
@@ -1353,7 +1354,6 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           ...(opts?.execTimeoutCeilingMs !== undefined ? { execTimeoutCeilingMs: opts.execTimeoutCeilingMs } : {}),
           ...(opts?.backgroundJobTtlMs !== undefined ? { backgroundJobTtlMs: opts.backgroundJobTtlMs } : {}),
           ...(opts?.backgroundJobTtlMaxMs !== undefined ? { backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs } : {}),
-          ...(opts?.backgroundJobProfiles ? { backgroundJobProfiles: opts.backgroundJobProfiles } : {}),
         }),
         noTools: "builtin",
         sessionManager: SessionManager.inMemory(undefined, { id: sessionId }),
@@ -1511,6 +1511,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeFold,
           turn.tape,
           turn.providerKeys,
+          turn.providerKeys,
+          turn.tools,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;

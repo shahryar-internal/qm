@@ -49,6 +49,7 @@ function start() {
     runs: built.runs,
     errors: built.errors,
     backgroundJobAttention: built.backgroundJobAttention,
+    runtimeOrgScope: ORG,
     keychain,
     signingSecret: SECRET,
   });
@@ -224,6 +225,20 @@ test("an unattended admin-read grant opens only the bounded read-only routes and
       ).status,
       403,
     );
+    assert.equal(
+      (
+        await fetch(
+          `${s.base}/v1/admin/background-jobs/attention?scope=${encodeURIComponent(scopeId("org", "forged"))}`,
+          { headers: { "x-agent-capability": granted } },
+        )
+      ).status,
+      403,
+    );
+    const attentionAudits = (await s.built.auditLog.events()).filter(
+      (event) => event.action === "background_jobs.attention.read",
+    );
+    assert.equal(attentionAudits.length, 1);
+    assert.equal(attentionAudits[0]!.scopeLabel, ORG);
 
     const denied = [
       ["GET", "/v1/admin/sessions/missing-session/llm"],

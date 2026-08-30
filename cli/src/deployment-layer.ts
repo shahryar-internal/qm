@@ -22,6 +22,8 @@ export interface DeploymentLayerBundle {
 export interface DeploymentLayerState {
   body: string;
   contentHash: string;
+  requestedContentHash: string;
+  transformed: boolean;
   status: "applied" | "degraded";
   runtimeContentHash: string | null;
   bootstrapped: boolean;
@@ -30,6 +32,10 @@ export interface DeploymentLayerState {
 export interface DeploymentLayerSyncResult {
   version?: number;
   contentHash?: string;
+  requestedContentHash?: string;
+  transformed?: boolean;
+  runtimeContentHash?: string | null;
+  body?: string;
   durable?: boolean;
   status?: "applied" | "degraded";
   message?: string;
@@ -114,7 +120,7 @@ export function deploymentLayerBundle(sandboxDir: string): DeploymentLayerBundle
   return { contract: 1, tools, skills: walkText(join(sandboxDir, "skills"), "skills"), backgroundJobs };
 }
 
-function normalizedLayerBody(value: unknown): string {
+export function deploymentLayerCanonicalBody(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new CliError("deployment layer bundle must be an object");
   const bundle = value as Record<string, unknown>;
@@ -157,7 +163,7 @@ export function deploymentLayerBody(sandboxDir: string): string {
   const bundle = existsSync(sandboxDir)
     ? deploymentLayerBundle(sandboxDir)
     : { contract: 1 as const, tools: [], skills: [], backgroundJobs: [] };
-  const body = normalizedLayerBody(bundle);
+  const body = deploymentLayerCanonicalBody(bundle);
   if (Buffer.byteLength(body) > 1_000_000)
     throw new CliError("deployment layer exceeds the core API's 1 MB request limit");
   return body;
@@ -307,7 +313,7 @@ export async function currentDeploymentLayerState(opts: {
   }
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle))
     throw new CliError("deployment layer read did not return a restorable bundle");
-  const body = normalizedLayerBody(bundle);
+  const body = deploymentLayerCanonicalBody(bundle);
   if (Buffer.byteLength(body) > 1_000_000)
     throw new CliError("deployment layer exceeds the core API's 1 MB request limit");
   const contentHash = createHash("sha256").update(body).digest("hex");
@@ -315,10 +321,16 @@ export async function currentDeploymentLayerState(opts: {
     throw new CliError("deployment layer read returned a bundle that does not match its contentHash");
   }
   const status = result.status === "degraded" ? "degraded" : "applied";
+  const requestedContentHash =
+    typeof result.requestedContentHash === "string" ? result.requestedContentHash : contentHash;
+  const transformed = result.transformed === true;
+  if (transformed !== (requestedContentHash !== contentHash)) {
+    throw new CliError("deployment layer read returned inconsistent transformation metadata");
+  }
   let runtimeContentHash = null;
   if (typeof result.runtimeContentHash === "string") runtimeContentHash = result.runtimeContentHash;
   else if (result.source === "none") runtimeContentHash = contentHash;
-  return { body, contentHash, status, runtimeContentHash, bootstrapped };
+  return { body, contentHash, requestedContentHash, transformed, status, runtimeContentHash, bootstrapped };
 }
 
 export async function syncDeploymentLayerBody(
@@ -377,6 +389,32 @@ export async function syncDeploymentLayerBody(
   if (result.message !== undefined && typeof result.message !== "string") {
     throw new CliError(`deployment layer sync returned invalid JSON: message must be a string`);
   }
+  if (typeof result.requestedContentHash !== "string" || typeof result.transformed !== "boolean") {
+    throw new CliError(
+      `deployment layer sync returned invalid JSON: requestedContentHash and transformed are required`,
+    );
+  }
+  if (result.runtimeContentHash !== null && typeof result.runtimeContentHash !== "string") {
+    throw new CliError(`deployment layer sync returned invalid JSON: runtimeContentHash must be a string or null`);
+  }
+  if (!result.bundle || typeof result.bundle !== "object" || Array.isArray(result.bundle)) {
+    throw new CliError(`deployment layer sync returned invalid JSON: bundle is required`);
+  }
+  const requestedBody = deploymentLayerCanonicalBody(JSON.parse(body) as unknown);
+  const requestedContentHash = createHash("sha256").update(requestedBody).digest("hex");
+  const canonicalBody = deploymentLayerCanonicalBody(result.bundle);
+  assertDeploymentLayerTransformation(requestedBody, canonicalBody);
+  const canonicalContentHash = createHash("sha256").update(canonicalBody).digest("hex");
+  if (
+    result.requestedContentHash !== requestedContentHash ||
+    result.contentHash !== canonicalContentHash ||
+    result.transformed !== (requestedContentHash !== canonicalContentHash)
+  ) {
+    throw new CliError(`deployment layer sync returned inconsistent requested or canonical content hashes`);
+  }
+  if (result.status === "applied" && result.runtimeContentHash !== canonicalContentHash) {
+    throw new CliError(`deployment layer sync returned an applied bundle that is not live`);
+  }
   step(`deployment layer: v${result.version ?? "?"} ${result.contentHash?.slice(0, 12) ?? "empty"}`);
   if (result.status === "degraded") {
     warn(
@@ -388,5 +426,26 @@ export async function syncDeploymentLayerBody(
       "deployment layer is memory-backed and will not survive a core restart; configure DATABASE_URL for durable storage",
     );
   }
-  return result as DeploymentLayerSyncResult;
+  return { ...(result as DeploymentLayerSyncResult), body: canonicalBody };
+}
+
+export function assertDeploymentLayerTransformation(requestedBody: string, canonicalBody: string): void {
+  const requested = JSON.parse(requestedBody) as DeploymentLayerBundle;
+  const canonical = JSON.parse(canonicalBody) as DeploymentLayerBundle;
+  if (
+    JSON.stringify(requested.tools) !== JSON.stringify(canonical.tools) ||
+    JSON.stringify(requested.skills) !== JSON.stringify(canonical.skills)
+  ) {
+    throw new CliError("deployment layer sync transformed tools or skills outside the retention contract");
+  }
+  const canonicalJobs = new Map(canonical.backgroundJobs.map((file) => [file.path, file]));
+  for (const file of requested.backgroundJobs) {
+    if (JSON.stringify(canonicalJobs.get(file.path)) !== JSON.stringify(file)) {
+      throw new CliError("deployment layer sync transformed a requested background job");
+    }
+    canonicalJobs.delete(file.path);
+  }
+  if ([...canonicalJobs.values()].some((file) => file.enabled !== false)) {
+    throw new CliError("deployment layer sync added an enabled background job outside the retention contract");
+  }
 }

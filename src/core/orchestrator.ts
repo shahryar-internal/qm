@@ -1921,6 +1921,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             `[orchestrator] trigger delivery has no surface tools (missing deliveries store?) — reply would be lost session=${session.id}`,
           );
 
+        const backgroundJobs =
+          surfaceToolDeps && deps.backgroundJobs
+            ? await deps.backgroundJobs.bind({
+                surface: input.surface,
+                actorId: actor.id,
+                actorType: actor.type,
+                conversationKind: conversation.kind,
+                conversationThreadRef: conversation.threadRef,
+                conversationAudienceIds: conversation.audience.map((principal) => principal.id),
+                originKind: input.origin.kind,
+                originMessageTs: messageTs,
+                verifiedSlack: input.verifiedSlack,
+              })
+            : undefined;
         const tools = createToolContext({
           sandbox: deps.sandbox,
           ...(assertScheduleEffectCurrent ? { assertEffectCurrent: assertScheduleEffectCurrent } : {}),
@@ -2091,22 +2105,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(deps.webhookPublicUrl ? { webhookPublicUrl: deps.webhookPublicUrl } : {}),
           ...(surfaceToolDeps ? { surface: surfaceToolDeps } : {}),
           ...(backgroundJobInvocationAuthority ? { backgroundJobInvocationAuthority } : {}),
-          ...(() => {
-            const backgroundJobs =
-              surfaceToolDeps &&
-              deps.backgroundJobs?.bind({
-                surface: input.surface,
-                actorId: actor.id,
-                actorType: actor.type,
-                conversationKind: conversation.kind,
-                conversationThreadRef: conversation.threadRef,
-                conversationAudienceIds: conversation.audience.map((principal) => principal.id),
-                originKind: input.origin.kind,
-                originMessageTs: messageTs,
-                verifiedSlack: input.verifiedSlack,
-              });
-            return backgroundJobs ? { backgroundJobs } : {};
-          })(),
+          ...(backgroundJobs?.length ? { backgroundJobs } : {}),
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),

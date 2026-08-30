@@ -185,6 +185,11 @@ interface ReachedProvenance {
 }
 
 export interface ToolContext extends SurfaceToolDeps {
+  backgroundJobProfiles?: readonly Readonly<{
+    profileId: string;
+    label: string;
+    actions: readonly ("start" | "status" | "cancel")[];
+  }>[];
   credentialExecServices?: readonly { service: string; binary: string }[];
   credentialExec?(
     service: string,
@@ -584,6 +589,11 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   const context: ToolContext = {
     ...(deps.backgroundJobs?.length
       ? {
+          backgroundJobProfiles: deps.backgroundJobs.map(({ profileId, label, actions }) => ({
+            profileId,
+            label,
+            actions,
+          })),
           backgroundJobStart: (profileId: string, input: unknown) => {
             const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
             return profile

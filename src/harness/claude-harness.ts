@@ -65,7 +65,6 @@ export interface ClaudeHarnessOptions {
    * never lives in process env or on the core host's disk.
    */
   authEnv?: () => Promise<NodeJS.ProcessEnv>;
-  backgroundJobProfiles?: () => readonly Readonly<{ profileId: string; label: string }>[];
   signals?: RunSignalStore;
   tasks?: TaskStore;
 }
@@ -218,7 +217,6 @@ function toolOptions(opts: ClaudeHarnessOptions, turn?: HarnessTurnInput): PiToo
     execTimeoutCeilingMs: opts.execTimeoutCeilingMs,
     backgroundJobTtlMs: opts.backgroundJobTtlMs,
     backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs,
-    ...(opts.backgroundJobProfiles ? { backgroundJobProfiles: opts.backgroundJobProfiles } : {}),
     ...(turn
       ? {
           readOnly: turn.readOnly,

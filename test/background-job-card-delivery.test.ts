@@ -88,6 +88,8 @@ test("generic job cards travel through first-party delivery and render as Slack 
   })!;
   const jobs: BoundBackgroundJobTools = {
     profileId: "report-preview",
+    label: "Report preview",
+    actions: ["start", "status", "cancel"],
     canStart: () => true,
     start: async () => ({ ok: false, state: "invalid", message: "unused" }),
     cancel: async () => ({ ok: false, state: "not_found", message: "unused" }),
@@ -159,6 +161,8 @@ test("generic job cards travel through first-party delivery and render as Slack 
 test("card delivery rejects arbitrary idempotency keys and missing transport fails closed", async () => {
   const jobs: BoundBackgroundJobTools = {
     profileId: "report-preview",
+    label: "Report preview",
+    actions: ["start", "status", "cancel"],
     canStart: () => true,
     start: async () => ({ ok: false, state: "invalid", message: "unused" }),
     cancel: async () => ({ ok: false, state: "not_found", message: "unused" }),
@@ -230,6 +234,8 @@ test("direct tool-context input cannot synthesize invocation authority", async (
   let receivedAuthority: unknown = "not-called";
   const jobs: BoundBackgroundJobTools = {
     profileId: "report-preview",
+    label: "Report preview",
+    actions: ["start", "status", "cancel"],
     canStart: () => true,
     start: async (_input, authority) => {
       receivedAuthority = authority;

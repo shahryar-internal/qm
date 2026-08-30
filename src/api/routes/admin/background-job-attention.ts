@@ -1,14 +1,10 @@
 import { sendJson } from "../../http.ts";
-import { audit, requireScopedAdmin } from "../shared.ts";
+import { audit, requireRuntimeOrgAdmin } from "../shared.ts";
 import type { ApiCtx } from "../route.ts";
-import { parseScopeId } from "../../../types.ts";
 
 export async function listBackgroundJobAttention(ctx: ApiCtx): Promise<void> {
-  const authz = await requireScopedAdmin(ctx);
+  const authz = await requireRuntimeOrgAdmin(ctx);
   if (!authz) return;
-  if (parseScopeId(authz.scope).kind !== "org") {
-    return sendJson(ctx.res, 403, { error: "forbidden", message: "background job attention requires org scope" });
-  }
   const requested = ctx.url.searchParams.get("limit");
   const limit = requested === null ? 50 : Number(requested);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {

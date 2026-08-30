@@ -298,7 +298,6 @@ export interface PiToolsOptions {
   readOnly?: boolean;
   surfaceTools?: boolean;
   surfaceName?: string;
-  backgroundJobProfiles?: () => readonly Readonly<{ profileId: string; label: string }>[];
 }
 
 export type CoreToolOptions = Omit<PiToolsOptions, "readOnly" | "surfaceTools" | "surfaceName">;
@@ -339,7 +338,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   const controlTools = !!opts?.controlTools;
   const credentialExecServices = opts?.credentialExecServices ?? ref.current?.credentialExecServices ?? [];
   const surfaceTools = !!opts?.surfaceTools;
-  const backgroundJobProfiles = opts?.backgroundJobProfiles?.() ?? [];
+  const backgroundJobProfiles = ref.current?.backgroundJobProfiles ?? [];
   const execTimeoutSec = Math.round((opts?.execTimeoutMs ?? CONFIG_DEFAULTS.execTimeoutDefaultSec * 1000) / 1000);
   const execCeilingSec = Math.round((opts?.execTimeoutCeilingMs ?? CONFIG_DEFAULTS.execTimeoutMaxSec * 1000) / 1000);
   const bgTtlSec = Math.round((opts?.backgroundJobTtlMs ?? CONFIG_DEFAULTS.backgroundJobTtlSec * 1000) / 1000);
@@ -2659,11 +2658,15 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     label: "Workflow job",
     description:
       "Start, inspect, or cancel a configured durable workflow job. Start and cancel require a fresh Slack approval click bound to this exact action.",
-    parameters: Type.Object({
-      profile_id: Type.String({ enum: backgroundJobProfiles.map((profile) => profile.profileId) }),
-      action: Type.String({ enum: ["start", "status", "cancel"] }),
-      input: Type.Optional(Type.Unknown()),
-    }),
+    parameters: Type.Union(
+      backgroundJobProfiles.map((profile) =>
+        Type.Object({
+          profile_id: Type.Literal(profile.profileId),
+          action: Type.String({ enum: [...profile.actions] }),
+          input: Type.Optional(Type.Unknown()),
+        }),
+      ),
+    ),
     async execute(callId, params: { profile_id: string; action: string; input?: unknown }) {
       const tc = ref.current;
       await recordCall(callId, { tool: "workflow_job", profileId: params.profile_id, action: params.action });

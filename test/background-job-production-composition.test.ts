@@ -13,7 +13,6 @@ test("canonical buildApp constructs the core registry and remains hidden without
   const runtime = await built.backgroundJobRuntimeReady;
   assert.ok(runtime);
   assert.deepEqual(runtime.visibleProfiles(), []);
-  assert.deepEqual(runtime.controlProfiles(), []);
   assert.equal(runtime.service.readiness().ready, false);
   assert.deepEqual(built.jobAuthorityJwks().keys, []);
 });
