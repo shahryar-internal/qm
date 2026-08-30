@@ -216,6 +216,7 @@ function receiptStore(
     leaseControls: async () => [],
     completeControl: async () => undefined,
     retryControl: async () => undefined,
+    manualAttention: async () => [],
   };
   return {
     value,
@@ -548,6 +549,7 @@ test("the automatic completion poller durably reconciles one-time owner-thread d
         : [{ receipt: built.receipts.get()!, leaseId, leaseExpiresAt, attempt: 1, failureAttempt: 0 }];
     },
     retry: async () => undefined,
+    manualAttention: async () => [],
     terminal: async (
       receipt: BackgroundJobReceipt,
       _leaseId: string,
@@ -582,6 +584,7 @@ test("the automatic completion poller durably reconciles one-time owner-thread d
     lease: async () => [],
     sent: async () => undefined,
     retry: async () => undefined,
+    manualAttention: async () => [],
   };
   const dependencies = {
     profiles: () => [disabled],
@@ -813,7 +816,8 @@ test("the deployment store durably tombstones removals and restores owner contro
     ),
     /entries require/,
   );
-  await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin");
+  const installed = await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin");
+  assert.equal(installed.contentHash, createHash("sha256").update(JSON.stringify(installed.bundle)).digest("hex"));
   assert.equal(runtime.backgroundJobs[0]!.enabled, true);
   const originalDescriptorSha256 = runtime.backgroundJobs[0]!.binding.descriptorSha256;
   const changed = manifest();
@@ -851,6 +855,7 @@ test("the deployment store durably tombstones removals and restores owner contro
   const record = await deployment.get();
   assert.equal(record!.bundle.backgroundJobs!.length, 1);
   assert.equal(record!.retiredBackgroundJobs!.length, 1);
+  assert.equal(record!.contentHash, createHash("sha256").update(JSON.stringify(record!.bundle)).digest("hex"));
   fenceDigest = "0".repeat(64);
   await assert.rejects(
     deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin"),
@@ -883,7 +888,9 @@ test("the deployment store durably tombstones removals and restores owner contro
   terminalAndExpired = true;
   await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [] }, "signed-admin");
   assert.equal(runtime.backgroundJobs.length, 0);
-  assert.equal((await deployment.get())!.retiredBackgroundJobs!.length, 1);
+  const cleaned = (await deployment.get())!;
+  assert.equal(cleaned.retiredBackgroundJobs!.length, 1);
+  assert.equal(cleaned.contentHash, createHash("sha256").update(JSON.stringify(cleaned.bundle)).digest("hex"));
   await assert.rejects(
     deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin"),
     /permanently retired/,

@@ -184,6 +184,7 @@ export interface OrchestratorDeps {
   channelPolicy?: ChannelPolicyStore;
   surfaceDebugFooter?: boolean;
   backgroundJobs?: BackgroundJobService;
+  backgroundJobsEnabled?: boolean;
 }
 
 export interface SurfaceContextPuller {

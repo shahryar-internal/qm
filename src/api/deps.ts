@@ -56,6 +56,7 @@ import type { SlackInstallationStore, SlackSocketAppIdReader } from "../surfaces
 import type { NotionAuthorityPublicState } from "../mcp/notion-authority.ts";
 import type { MiniappStore } from "../miniapps/miniapp.ts";
 import type { JsonWebKey } from "node:crypto";
+import type { BackgroundJobAttentionReader } from "../background-jobs/attention.ts";
 
 export interface ServerDeps {
   production?: boolean;
@@ -148,4 +149,5 @@ export interface ServerDeps {
   blobTransfer?: BlobTransferStore;
   miniapps?: MiniappStore;
   jobAuthorityJwks?: () => Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
+  backgroundJobAttention?: BackgroundJobAttentionReader;
 }

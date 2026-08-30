@@ -1,4 +1,5 @@
 import type { JsonWebKey } from "node:crypto";
+import { canonicalJson } from "../cron/schedule-authority.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { createBackgroundJobCompletionPoller, type BackgroundJobCompletionPoller } from "./completion-poller.ts";
 import { createBackgroundJobDeliveryScheduler, type BackgroundJobDeliveryScheduler } from "./delivery-sender.ts";
@@ -52,6 +53,7 @@ export interface ProductionBackgroundJobRuntime {
   start(): void;
   stop(): void;
   visibleProfiles(): readonly Readonly<{ profileId: string; label: string }>[];
+  controlProfiles(): readonly Readonly<{ profileId: string; label: string }>[];
   blockedProfiles(): Readonly<Record<string, string>>;
   jwks(): Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
   effectReconciler: BackgroundJobEffectReconciler;
@@ -96,6 +98,9 @@ export function createProductionBackgroundJobRuntime(options: {
   const authorities = new Map<string, ReturnType<typeof createStagedBackgroundJobAuthority>>();
   const authorityReady = new Set<string>();
   const blocked = new Map<string, string>();
+  let sharedAuthorityFingerprint: string | undefined;
+  let sharedAuthorityMismatch = false;
+  let publicJwksReady = false;
   const runningProfiles = (): readonly Readonly<BackgroundJobDeploymentProfile>[] =>
     options.profiles().filter((profile) => services.has(profile.definition.id));
   if (
@@ -134,6 +139,9 @@ export function createProductionBackgroundJobRuntime(options: {
         continue;
       }
       try {
+        const fingerprint = canonicalJson({ active: authorityConfig.active, next: authorityConfig.next ?? null });
+        if (sharedAuthorityFingerprint === undefined) sharedAuthorityFingerprint = fingerprint;
+        else if (sharedAuthorityFingerprint !== fingerprint) sharedAuthorityMismatch = true;
         const active = createBackgroundJobAuthoritySigner(
           signerConfig(profile, authorityConfig.active),
           authorityConfig.kms,
@@ -183,6 +191,15 @@ export function createProductionBackgroundJobRuntime(options: {
         blocked.set(id, "background_job_construction_failed");
       }
     }
+    if (sharedAuthorityMismatch) {
+      services.clear();
+      effectRuntimes.clear();
+      completionRuntimes.clear();
+      authorities.clear();
+      for (const profile of options.profiles()) {
+        blocked.set(profile.definition.id, "background_job_shared_authority_mismatch");
+      }
+    }
   }
   const service = createBackgroundJobRegistry({
     profiles: runningProfiles,
@@ -205,6 +222,22 @@ export function createProductionBackgroundJobRuntime(options: {
     ...(options.now ? { now: options.now } : {}),
   });
   let started = false;
+  const publicJwks = (): Readonly<{ keys: readonly Readonly<JsonWebKey>[] }> => {
+    const keys = new Map<string, Readonly<JsonWebKey>>();
+    for (const [id, authority] of authorities) {
+      if (!authorityReady.has(id)) continue;
+      for (const key of authority.jwks().keys) {
+        if (typeof key.kid !== "string" || !key.kid) return Object.freeze({ keys: Object.freeze([]) });
+        const prior = keys.get(key.kid);
+        if (prior && (prior.n !== key.n || prior.e !== key.e)) {
+          return Object.freeze({ keys: Object.freeze([]) });
+        }
+        keys.set(key.kid, key);
+      }
+    }
+    const result = [...keys.values()];
+    return Object.freeze({ keys: Object.freeze(result.length <= 2 ? result : []) });
+  };
   return Object.freeze({
     service,
     effectReconciler,
@@ -220,6 +253,11 @@ export function createProductionBackgroundJobRuntime(options: {
           authorityReady.delete(id);
           blocked.set(id, "background_job_authority_unavailable");
         }
+      }
+      publicJwksReady = publicJwks().keys.length > 0;
+      if (!publicJwksReady) {
+        authorityReady.clear();
+        for (const id of services.keys()) blocked.set(id, "background_job_public_jwks_unavailable");
       }
     },
     start() {
@@ -240,27 +278,22 @@ export function createProductionBackgroundJobRuntime(options: {
         options
           .profiles()
           .flatMap((profile) =>
-            profile.enabled && services.get(profile.definition.id)?.readiness().ready
+            publicJwksReady && profile.enabled && services.get(profile.definition.id)?.readiness().ready
               ? [{ profileId: profile.definition.id, label: profile.tools.start.label }]
               : [],
           ),
       ),
+    controlProfiles: () =>
+      Object.freeze(
+        options
+          .profiles()
+          .flatMap((profile) =>
+            publicJwksReady && services.get(profile.definition.id)?.readiness().ready
+              ? [{ profileId: profile.definition.id, label: profile.tools.status.label }]
+              : [],
+          ),
+      ),
     blockedProfiles: () => Object.freeze(Object.fromEntries(blocked)),
-    jwks: () => {
-      const keys = new Map<string, Readonly<JsonWebKey>>();
-      for (const [id, authority] of authorities) {
-        if (!authorityReady.has(id)) continue;
-        for (const key of authority.jwks().keys) {
-          if (typeof key.kid !== "string" || !key.kid) return Object.freeze({ keys: Object.freeze([]) });
-          const prior = keys.get(key.kid);
-          if (prior && (prior.n !== key.n || prior.e !== key.e)) {
-            return Object.freeze({ keys: Object.freeze([]) });
-          }
-          keys.set(key.kid, key);
-        }
-      }
-      const result = [...keys.values()];
-      return Object.freeze({ keys: Object.freeze(result.length <= 2 ? result : []) });
-    },
+    jwks: publicJwks,
   });
 }

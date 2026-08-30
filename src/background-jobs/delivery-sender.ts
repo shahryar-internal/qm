@@ -17,7 +17,7 @@ export interface BackgroundJobDeliveryScheduler extends Sweeper {
 }
 
 const LEASE_MS = 30_000;
-const MAX_ATTEMPTS = 8;
+const ATTENTION_THRESHOLD = 8;
 
 function retryAt(now: number, attempt: number): number {
   return now + Math.min(5 * 60_000, 1_000 * 2 ** Math.min(attempt - 1, 12));
@@ -62,7 +62,12 @@ export function createBackgroundJobDeliveryScheduler(
         sent += 1;
       } catch {
         await dependencies.outbox
-          .retry(lease.intent.deliveryKey, lease.leaseId, retryAt(now(), lease.attempt), lease.attempt >= MAX_ATTEMPTS)
+          .retry(
+            lease.intent.deliveryKey,
+            lease.leaseId,
+            retryAt(now(), lease.attempt),
+            lease.attempt >= ATTENTION_THRESHOLD,
+          )
           .catch(() => undefined);
       }
     }

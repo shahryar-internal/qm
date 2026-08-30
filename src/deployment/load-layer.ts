@@ -11,6 +11,7 @@ import { credentialServiceForPath } from "../credentials/resident-paths.ts";
 import type { ResidentAuthConnector } from "../credentials/resident-auth.ts";
 import type { CommandRule } from "../types.ts";
 import type { BackgroundJobDeploymentProfile } from "../background-jobs/types.ts";
+import { parseBackgroundJobDeploymentProfile } from "../background-jobs/deployment-profile.ts";
 
 export interface DeploymentLayerRuntime {
   dir: string;
@@ -203,5 +204,34 @@ export function loadDeploymentLayer(dir: string): DeploymentLayerRuntime {
       tools.push(desc);
     }
   }
-  return resolvedDeploymentLayer(dir, tools);
+  const backgroundJobsDir = join(dir, "background-jobs");
+  const backgroundJobs: BackgroundJobDeploymentProfile[] = [];
+  if (existsSync(backgroundJobsDir)) {
+    const entries = readdirSync(backgroundJobsDir, { withFileTypes: true })
+      .filter((entry) => !JUNK_FILE.test(entry.name))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        throw new Error(
+          `${join(backgroundJobsDir, entry.name)} is not a background job directory; the layer only accepts background-jobs/<id>/job.json`,
+        );
+      }
+      const files = readdirSync(join(backgroundJobsDir, entry.name), { withFileTypes: true }).filter(
+        (file) => !JUNK_FILE.test(file.name),
+      );
+      if (files.length !== 1 || files[0]?.name !== "job.json" || !files[0].isFile()) {
+        throw new Error(`${join(backgroundJobsDir, entry.name)} must contain only job.json`);
+      }
+      const path = join(backgroundJobsDir, entry.name, "job.json");
+      if (!existsSync(path)) throw new Error(`${join(backgroundJobsDir, entry.name)} has no job.json`);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${path} must be a regular file`);
+      const profile = parseBackgroundJobDeploymentProfile(readFileSync(path, "utf8"), path);
+      if (backgroundJobs.some((candidate) => candidate.definition.id === profile.definition.id)) {
+        throw new Error(`${path}: duplicate background job id "${profile.definition.id}"`);
+      }
+      backgroundJobs.push(profile);
+    }
+  }
+  return resolvedDeploymentLayer(dir, tools, backgroundJobs);
 }

@@ -9,12 +9,14 @@ interface DeploymentLayerFile {
   path: string;
   content: string;
   executable?: boolean;
+  enabled?: boolean;
 }
 
 export interface DeploymentLayerBundle {
   contract: 1;
   tools: DeploymentLayerFile[];
   skills: DeploymentLayerFile[];
+  backgroundJobs: DeploymentLayerFile[];
 }
 
 export interface DeploymentLayerState {
@@ -88,17 +90,45 @@ export function deploymentLayerBundle(sandboxDir: string): DeploymentLayerBundle
         })
         .sort(pathOrder)
     : [];
-  return { contract: 1, tools, skills: walkText(join(sandboxDir, "skills"), "skills") };
+  const backgroundJobsDir = join(sandboxDir, "background-jobs");
+  const backgroundJobs = existsSync(backgroundJobsDir)
+    ? readdirSync(backgroundJobsDir, { withFileTypes: true })
+        .filter((entry) => !JUNK_FILE.test(entry.name))
+        .map((entry) => {
+          const path = join(backgroundJobsDir, entry.name);
+          if (!entry.isDirectory())
+            throw new CliError(
+              `deployment layer background-jobs entry must be a directory containing job.json: ${path}`,
+            );
+          const files = readdirSync(path, { withFileTypes: true }).filter((file) => !JUNK_FILE.test(file.name));
+          if (files.length !== 1 || files[0]?.name !== "job.json" || !files[0].isFile()) {
+            throw new CliError(`deployment layer background job directory must contain only job.json: ${path}`);
+          }
+          const descriptor = join(path, "job.json");
+          if (!existsSync(descriptor))
+            throw new CliError(`deployment layer background job directory is missing job.json: ${path}`);
+          return textFile(backgroundJobsDir, descriptor, "background-jobs");
+        })
+        .sort(pathOrder)
+    : [];
+  return { contract: 1, tools, skills: walkText(join(sandboxDir, "skills"), "skills"), backgroundJobs };
 }
 
 function normalizedLayerBody(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new CliError("deployment layer bundle must be an object");
   const bundle = value as Record<string, unknown>;
-  if (bundle.contract !== 1 || !Array.isArray(bundle.tools) || !Array.isArray(bundle.skills)) {
-    throw new CliError("deployment layer bundle requires contract: 1, tools[], and skills[]");
+  if (
+    bundle.contract !== 1 ||
+    !Array.isArray(bundle.tools) ||
+    !Array.isArray(bundle.skills) ||
+    (bundle.backgroundJobs !== undefined && !Array.isArray(bundle.backgroundJobs))
+  ) {
+    throw new CliError(
+      "deployment layer bundle requires contract: 1, tools[], skills[], and optional backgroundJobs[]",
+    );
   }
-  const files = (kind: "tools" | "skills", entries: unknown[]): DeploymentLayerFile[] =>
+  const files = (kind: "tools" | "skills" | "background-jobs", entries: unknown[]): DeploymentLayerFile[] =>
     entries
       .map((entry) => {
         if (!entry || typeof entry !== "object" || Array.isArray(entry))
@@ -107,16 +137,26 @@ function normalizedLayerBody(value: unknown): string {
         if (typeof file.path !== "string" || typeof file.content !== "string") {
           throw new CliError(`deployment layer ${kind} entries require string path and content`);
         }
-        return { path: file.path, content: file.content, ...(file.executable === true ? { executable: true } : {}) };
+        return {
+          path: file.path,
+          content: file.content,
+          ...(kind !== "background-jobs" && file.executable === true ? { executable: true } : {}),
+          ...(kind === "background-jobs" && file.enabled === false ? { enabled: false } : {}),
+        };
       })
       .sort(pathOrder);
-  return JSON.stringify({ contract: 1, tools: files("tools", bundle.tools), skills: files("skills", bundle.skills) });
+  return JSON.stringify({
+    contract: 1,
+    tools: files("tools", bundle.tools),
+    skills: files("skills", bundle.skills),
+    backgroundJobs: files("background-jobs", bundle.backgroundJobs ?? []),
+  });
 }
 
 export function deploymentLayerBody(sandboxDir: string): string {
   const bundle = existsSync(sandboxDir)
     ? deploymentLayerBundle(sandboxDir)
-    : { contract: 1 as const, tools: [], skills: [] };
+    : { contract: 1 as const, tools: [], skills: [], backgroundJobs: [] };
   const body = normalizedLayerBody(bundle);
   if (Buffer.byteLength(body) > 1_000_000)
     throw new CliError("deployment layer exceeds the core API's 1 MB request limit");
@@ -262,7 +302,7 @@ export async function currentDeploymentLayerState(opts: {
   const noDurableRecord = result.source === "none" || (result.contentHash === null && result.version === 0);
   let bootstrapped = false;
   if ((!bundle || typeof bundle !== "object" || Array.isArray(bundle)) && noDurableRecord) {
-    bundle = { contract: 1, tools: [], skills: [] };
+    bundle = { contract: 1, tools: [], skills: [], backgroundJobs: [] };
     bootstrapped = true;
   }
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle))

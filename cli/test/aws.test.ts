@@ -2574,7 +2574,18 @@ test("AWS rollback restores the recorded layer without reading the broken curren
   const dir = mkdtempSync(join(tmpdir(), "qm-aws-rollback-layer-"));
   const single = oneServiceConfig();
   const task = "arn:aws:ecs:us-west-2:123456789012:task-definition/acme-core:2";
-  const oldBody = JSON.stringify({ contract: 1, tools: [], skills: [{ path: "skills/old/SKILL.md", content: "old" }] });
+  const oldBody = JSON.stringify({
+    contract: 1,
+    tools: [],
+    skills: [{ path: "skills/old/SKILL.md", content: "old" }],
+    backgroundJobs: [
+      {
+        path: "background-jobs/proposal/job.json",
+        content: JSON.stringify({ contract: 1, definition: { id: "proposal" } }),
+        enabled: false,
+      },
+    ],
+  });
   const currentBody = JSON.stringify({
     contract: 1,
     tools: [],

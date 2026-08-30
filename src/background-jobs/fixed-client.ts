@@ -113,7 +113,7 @@ async function responseBytes(response: BackgroundJobHttpResponse, signal: AbortS
   return bytes;
 }
 
-export function createPinnedBackgroundJobLookup(address: string, expectedHostname: string): LookupFunction {
+function createPinnedBackgroundJobLookup(address: string, expectedHostname: string): LookupFunction {
   const family = isIP(address);
   if (family === 0 || !isPublicNetworkIp(address)) throw new Error("background job request requires a public address");
   return (hostname, options, callback) => {

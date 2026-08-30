@@ -9,9 +9,23 @@ import { testConfig } from "./support/test-config.ts";
 import { parseToolDescriptor } from "../src/deployment/deployment-layer.ts";
 import { BASE_EPHEMERAL_CRED_LINKS, BASE_RESIDENT_AUTH_PATHS } from "../src/credentials/resident-paths.ts";
 import { evaluateCommandWithLayer } from "../src/policy/command-policy.ts";
+import { backgroundJobProfileJson } from "./support/background-job-profile.ts";
 
 const credentialFile = (path: string) => ({ path, kind: "file" as const });
 const credentialDirectory = (path: string) => ({ path, kind: "directory" as const });
+
+test("loadDeploymentLayer scans exact background-jobs descriptors from the filesystem", () => {
+  const dir = mkdtempSync(join(tmpdir(), "layer-background-jobs-"));
+  const jobDir = join(dir, "background-jobs", "proposal-job");
+  mkdirSync(jobDir, { recursive: true });
+  writeFileSync(join(jobDir, "job.json"), backgroundJobProfileJson("proposal-job"));
+  const loaded = loadDeploymentLayer(dir);
+  assert.deepEqual(
+    loaded.backgroundJobs.map((profile) => profile.definition.id),
+    ["proposal-job"],
+  );
+  assert.equal(loaded.backgroundJobs[0]?.enabled, true);
+});
 
 test("tool self-check opt-in is a closed executable digest contract", () => {
   assert.deepEqual(

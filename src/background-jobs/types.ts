@@ -179,6 +179,14 @@ export interface BackgroundJobControlLease {
   attempt: number;
 }
 
+export interface BackgroundJobManualAttention {
+  kind: "admission" | "control" | "completion" | "delivery";
+  key: string;
+  jobId: string;
+  attempt: number;
+  requiredAt: number;
+}
+
 export interface BackgroundJobReceiptStore {
   durability: "durable";
   admission: "durable_intent_outbox";
@@ -199,7 +207,7 @@ export interface BackgroundJobReceiptStore {
     admission: Readonly<BackgroundJobAdmission>,
     completedAt: number,
   ): Promise<Readonly<BackgroundJobReceipt>>;
-  retryAdmission(intentId: string, leaseId: string, nextAttemptAt: number, terminal: boolean): Promise<void>;
+  retryAdmission(intentId: string, leaseId: string, nextAttemptAt: number, requiresAttention: boolean): Promise<void>;
   latestOwned(jobId: string, owner: Readonly<BackgroundJobOwner>): Promise<Readonly<BackgroundJobReceipt> | null>;
   ownedRun(
     jobId: string,
@@ -216,7 +224,8 @@ export interface BackgroundJobReceiptStore {
     leaseExpiresAt: number,
   ): Promise<readonly Readonly<BackgroundJobControlLease>[]>;
   completeControl(intentId: string, leaseId: string, completedAt: number): Promise<void>;
-  retryControl(intentId: string, leaseId: string, nextAttemptAt: number, terminal: boolean): Promise<void>;
+  retryControl(intentId: string, leaseId: string, nextAttemptAt: number, requiresAttention: boolean): Promise<void>;
+  manualAttention(): Promise<readonly Readonly<BackgroundJobManualAttention>[]>;
 }
 
 export interface BackgroundJobCompletionLease {
@@ -242,9 +251,10 @@ export interface BackgroundJobCompletionReceiptStore {
     receipt: Readonly<BackgroundJobReceipt>,
     leaseId: string,
     nextAttemptAt: number,
-    terminal: boolean,
+    requiresAttention: boolean,
     failed: boolean,
   ): Promise<void>;
+  manualAttention(): Promise<readonly Readonly<BackgroundJobManualAttention>[]>;
   terminal(
     receipt: Readonly<BackgroundJobReceipt>,
     leaseId: string,
@@ -282,7 +292,8 @@ export interface BackgroundJobDeliveryOutbox {
     leaseExpiresAt: number,
   ): Promise<readonly Readonly<{ intent: BackgroundJobDeliveryIntent; leaseId: string; attempt: number }>[]>;
   sent(deliveryKey: string, leaseId: string, sentAt: number): Promise<void>;
-  retry(deliveryKey: string, leaseId: string, nextAttemptAt: number, terminal: boolean): Promise<void>;
+  retry(deliveryKey: string, leaseId: string, nextAttemptAt: number, requiresAttention: boolean): Promise<void>;
+  manualAttention(): Promise<readonly Readonly<BackgroundJobManualAttention>[]>;
 }
 
 export interface BackgroundJobRenderOnlySender {

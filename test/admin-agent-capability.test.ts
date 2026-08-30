@@ -48,6 +48,7 @@ function start() {
     sessions: built.sessions,
     runs: built.runs,
     errors: built.errors,
+    backgroundJobAttention: built.backgroundJobAttention,
     keychain,
     signingSecret: SECRET,
   });
@@ -189,7 +190,7 @@ test("an autonomous turn's token cannot act as an admin, even when its actor hol
   }
 });
 
-test("an unattended admin-read grant opens only the five read-only routes and keeps the DM gate", async () => {
+test("an unattended admin-read grant opens only the bounded read-only routes and keeps the DM gate", async () => {
   const s = start();
   try {
     const granted = await capFor("admin-alice", { live: false, grants: ["admin.sessions.read"] });
@@ -199,12 +200,30 @@ test("an unattended admin-read grant opens only the five read-only routes and ke
       [`/v1/admin/sessions/missing-session?${scopeQ}`, 404],
       ["/v1/admin/scopes", 200],
       [`/v1/admin/errors?${scopeQ}`, 200],
+      [`/v1/admin/background-jobs/attention?${scopeQ}`, 200],
       [`/v1/admin/runs?${scopeQ}`, 200],
     ];
     for (const [path, expected] of allowed) {
       const response = await fetch(`${s.base}${path}`, { headers: { "x-agent-capability": granted } });
       assert.equal(response.status, expected, `${path} is usable under the grant (got ${response.status})`);
     }
+    assert.equal(
+      (
+        await fetch(`${s.base}/v1/admin/background-jobs/attention?${scopeQ}&limit=101`, {
+          headers: { "x-agent-capability": granted },
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await fetch(
+          `${s.base}/v1/admin/background-jobs/attention?scope=${encodeURIComponent(scopeId("personal", "admin-alice"))}`,
+          { headers: { "x-agent-capability": granted } },
+        )
+      ).status,
+      403,
+    );
 
     const denied = [
       ["GET", "/v1/admin/sessions/missing-session/llm"],

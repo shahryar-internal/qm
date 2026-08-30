@@ -6,7 +6,7 @@ import type { BackgroundJobDeploymentProfile, BackgroundJobEffectRuntime, Backgr
 const DEFAULT_BATCH = 25;
 const DEFAULT_INTERVAL_MS = 2_000;
 const LEASE_MS = 30_000;
-const MAX_ATTEMPTS = 8;
+const ATTENTION_THRESHOLD = 8;
 const MAX_BACKOFF_MS = 5 * 60_000;
 
 export interface BackgroundJobEffectReconcilerDependencies {
@@ -116,7 +116,7 @@ export function createBackgroundJobEffectReconciler(
               lease.intent.intentId,
               lease.leaseId,
               retryAt(now(), lease.attempt),
-              lease.attempt >= MAX_ATTEMPTS,
+              lease.attempt >= ATTENTION_THRESHOLD,
             )
             .catch(() => undefined);
         }
@@ -174,7 +174,7 @@ export function createBackgroundJobEffectReconciler(
               lease.intent.intentId,
               lease.leaseId,
               retryAt(now(), lease.attempt),
-              lease.attempt >= MAX_ATTEMPTS,
+              lease.attempt >= ATTENTION_THRESHOLD,
             )
             .catch(() => undefined);
         }

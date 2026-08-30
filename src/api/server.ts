@@ -79,6 +79,7 @@ function unattendedAdminReadAllowed(method: string, pathname: string, claims: Ca
     /^\/v1\/admin\/sessions\/[^/]+$/.test(pathname) ||
     pathname === "/v1/admin/scopes" ||
     pathname === "/v1/admin/errors" ||
+    pathname === "/v1/admin/background-jobs/attention" ||
     pathname === "/v1/admin/runs"
   );
 }
@@ -95,6 +96,7 @@ function isAdminContentRead(pathname: string): boolean {
     pathname === "/v1/admin/audit" ||
     pathname === "/v1/admin/security/flags" ||
     pathname === "/v1/admin/errors" ||
+    pathname === "/v1/admin/background-jobs/attention" ||
     pathname === "/v1/admin/egress"
   )
     return true;

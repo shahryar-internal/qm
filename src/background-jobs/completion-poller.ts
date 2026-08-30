@@ -26,7 +26,7 @@ export interface BackgroundJobCompletionPoller extends Sweeper {
 }
 
 const LEASE_MS = 30_000;
-const MAX_FAILURES = 8;
+const ATTENTION_THRESHOLD = 8;
 const MAX_BACKOFF_MS = 5 * 60_000;
 
 function nextAttempt(now: number, attempt: number): number {
@@ -150,7 +150,7 @@ export function createBackgroundJobCompletionPoller(
         } catch {
           const failures = lease.failureAttempt + 1;
           await runtime.receipts
-            .retry(receipt, lease.leaseId, nextAttempt(now(), failures), failures >= MAX_FAILURES, true)
+            .retry(receipt, lease.leaseId, nextAttempt(now(), failures), failures >= ATTENTION_THRESHOLD, true)
             .catch(() => undefined);
         }
       }

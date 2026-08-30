@@ -14,6 +14,7 @@ import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../src/auth/capability-t
 import { scopeId } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 import { DeploymentLayerPersistedError } from "../src/deployment/deployment-layer-store.ts";
+import { createHash } from "node:crypto";
 
 const SECRET = "layer-routes-secret".repeat(3);
 const PATH = "/v1/deployment-layer";
@@ -133,12 +134,14 @@ test("a correctly signed PUT replaces the layer and a signed GET reads it back",
       status: string;
       runtimeContentHash: string | null;
       source: string;
+      bundle: unknown;
     };
     assert.equal(getBody.version, 1);
     assert.equal(getBody.status, "applied");
     assert.equal(getBody.runtimeContentHash, getBody.contentHash);
     assert.equal(getBody.source, "durable");
     assert.ok(getBody.contentHash);
+    assert.equal(getBody.contentHash, createHash("sha256").update(JSON.stringify(getBody.bundle)).digest("hex"));
   } finally {
     await srv.close();
   }

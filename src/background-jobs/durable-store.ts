@@ -11,6 +11,7 @@ import type {
   BackgroundJobControlLease,
   BackgroundJobDeliveryIntent,
   BackgroundJobDeliveryOutbox,
+  BackgroundJobManualAttention,
   BackgroundJobOwner,
   BackgroundJobReceipt,
   BackgroundJobReceiptStore,
@@ -38,6 +39,8 @@ interface AdmissionRecord {
   completionLeaseExpiresAt?: number;
   completionTerminalState?: "complete" | "failed" | "cancelled";
   completionDeliveryKey?: string;
+  attentionRequiredAt?: number;
+  completionAttentionRequiredAt?: number;
 }
 
 interface ControlRecord {
@@ -49,6 +52,7 @@ interface ControlRecord {
   leaseId?: string;
   leaseExpiresAt?: number;
   completedAt?: number;
+  attentionRequiredAt?: number;
 }
 
 export type BackgroundJobDurableRecord = AdmissionRecord | ControlRecord;
@@ -61,6 +65,7 @@ interface DeliveryRecord {
   leaseId?: string;
   leaseExpiresAt?: number;
   sentAt?: number;
+  attentionRequiredAt?: number;
 }
 
 export type BackgroundJobDeliveryRecord = DeliveryRecord;
@@ -75,13 +80,17 @@ export async function backgroundJobTerminalAndExpired(
     if (record.intent.jobId !== profile.definition.id) continue;
     if (record.intent.descriptorSha256 !== profile.binding.descriptorSha256) return false;
     if (record.kind === "control") {
-      if (record.state !== "succeeded" && record.state !== "terminal") return false;
+      if (record.state !== "succeeded") return false;
       if (record.intent.approvalGrant.expiresAt > now) return false;
       continue;
     }
-    if (record.state !== "succeeded" && record.state !== "terminal") return false;
+    if (record.state !== "succeeded") return false;
     if (record.intent.approvalGrant.expiresAt > now) return false;
-    if (record.receipt && record.completionState !== "terminal") return false;
+    if (
+      record.receipt &&
+      (record.completionState !== "terminal" || !record.completionTerminalState || !record.completionDeliveryKey)
+    )
+      return false;
   }
   return true;
 }
@@ -113,6 +122,7 @@ function owned(receipt: Readonly<BackgroundJobReceipt>, jobId: string, owner: Re
     receipt.audienceScopeId === owner.audienceScopeId &&
     receipt.slackTeamId === owner.slackTeamId &&
     receipt.channelId === owner.channelId &&
+    receipt.threadTs === owner.threadTs &&
     receipt.conversationThreadRef === owner.conversationThreadRef
   );
 }
@@ -176,7 +186,6 @@ export function createDurableBackgroundJobStore(
       if (leased.length >= limit || candidate.kind !== "admission" || candidate.intent.jobId !== jobId) continue;
       if (
         candidate.state === "succeeded" ||
-        candidate.state === "terminal" ||
         candidate.nextAttemptAt > now ||
         (candidate.state === "leased" && (candidate.leaseExpiresAt ?? 0) > now)
       ) {
@@ -187,7 +196,6 @@ export function createDurableBackgroundJobStore(
           current.kind !== "admission" ||
           current.intent.jobId !== jobId ||
           current.state === "succeeded" ||
-          current.state === "terminal" ||
           current.nextAttemptAt > now ||
           (current.state === "leased" && (current.leaseExpiresAt ?? 0) > now)
         ) {
@@ -229,7 +237,6 @@ export function createDurableBackgroundJobStore(
       if (leased.length >= limit || candidate.kind !== "control" || candidate.intent.jobId !== jobId) continue;
       if (
         candidate.state === "succeeded" ||
-        candidate.state === "terminal" ||
         candidate.nextAttemptAt > now ||
         (candidate.state === "leased" && (candidate.leaseExpiresAt ?? 0) > now)
       ) {
@@ -240,7 +247,6 @@ export function createDurableBackgroundJobStore(
           current.kind !== "control" ||
           current.intent.jobId !== jobId ||
           current.state === "succeeded" ||
-          current.state === "terminal" ||
           current.nextAttemptAt > now ||
           (current.state === "leased" && (current.leaseExpiresAt ?? 0) > now)
         ) {
@@ -311,6 +317,7 @@ export function createDurableBackgroundJobStore(
           completionNextAttemptAt: completedAt,
           leaseId: undefined,
           leaseExpiresAt: undefined,
+          attentionRequiredAt: undefined,
         };
       });
       if (updated?.kind !== "admission" || !updated.receipt) {
@@ -318,7 +325,7 @@ export function createDurableBackgroundJobStore(
       }
       return Object.freeze(clone(updated.receipt));
     },
-    async retryAdmission(intentId, leaseId, nextAttemptAt, terminal) {
+    async retryAdmission(intentId, leaseId, nextAttemptAt, requiresAttention) {
       exactTime(nextAttemptAt, "next attempt time");
       const updated = await backing.update!(`admission:${intentId}`, (current) => {
         if (current.kind === "admission" && current.state === "succeeded") return current;
@@ -327,8 +334,9 @@ export function createDurableBackgroundJobStore(
         }
         return {
           ...current,
-          state: terminal ? "terminal" : "pending",
+          state: "pending",
           nextAttemptAt,
+          ...(requiresAttention && !current.attentionRequiredAt ? { attentionRequiredAt: nextAttemptAt } : {}),
           leaseId: undefined,
           leaseExpiresAt: undefined,
         };
@@ -387,11 +395,12 @@ export function createDurableBackgroundJobStore(
           completedAt,
           leaseId: undefined,
           leaseExpiresAt: undefined,
+          attentionRequiredAt: undefined,
         };
       });
       if (!updated) throw new Error("background job control record disappeared");
     },
-    async retryControl(intentId, leaseId, nextAttemptAt, terminal) {
+    async retryControl(intentId, leaseId, nextAttemptAt, requiresAttention) {
       exactTime(nextAttemptAt, "next attempt time");
       const updated = await backing.update!(`control:${intentId}`, (current) => {
         if (current.kind === "control" && current.state === "succeeded") return current;
@@ -400,8 +409,9 @@ export function createDurableBackgroundJobStore(
         }
         return {
           ...current,
-          state: terminal ? "terminal" : "pending",
+          state: "pending",
           nextAttemptAt,
+          ...(requiresAttention && !current.attentionRequiredAt ? { attentionRequiredAt: nextAttemptAt } : {}),
           leaseId: undefined,
           leaseExpiresAt: undefined,
         };
@@ -422,7 +432,9 @@ export function createDurableBackgroundJobStore(
           candidate.intent.jobId !== jobId ||
           !candidate.receipt ||
           candidate.state !== "succeeded" ||
-          candidate.completionState === "terminal" ||
+          (candidate.completionState === "terminal" &&
+            !!candidate.completionTerminalState &&
+            !!candidate.completionDeliveryKey) ||
           (candidate.completionNextAttemptAt ?? 0) > now ||
           (candidate.completionState === "leased" && (candidate.completionLeaseExpiresAt ?? 0) > now)
         ) {
@@ -433,7 +445,9 @@ export function createDurableBackgroundJobStore(
             current.kind !== "admission" ||
             !current.receipt ||
             current.state !== "succeeded" ||
-            current.completionState === "terminal" ||
+            (current.completionState === "terminal" &&
+              !!current.completionTerminalState &&
+              !!current.completionDeliveryKey) ||
             (current.completionNextAttemptAt ?? 0) > now ||
             (current.completionState === "leased" && (current.completionLeaseExpiresAt ?? 0) > now)
           ) {
@@ -464,10 +478,16 @@ export function createDurableBackgroundJobStore(
       }
       return leased;
     },
-    async retry(receipt, leaseId, nextAttemptAt, terminal, failed) {
+    async retry(receipt, leaseId, nextAttemptAt, requiresAttention, failed) {
       exactTime(nextAttemptAt, "next attempt time");
       const updated = await backing.update!(`admission:${receipt.intentId}`, (current) => {
-        if (current.kind === "admission" && current.completionState === "terminal") return current;
+        if (
+          current.kind === "admission" &&
+          current.completionState === "terminal" &&
+          current.completionTerminalState &&
+          current.completionDeliveryKey
+        )
+          return current;
         if (
           current.kind !== "admission" ||
           current.completionState !== "leased" ||
@@ -475,16 +495,47 @@ export function createDurableBackgroundJobStore(
         ) {
           throw new Error("background job completion lease was lost");
         }
+        let attention: Pick<AdmissionRecord, "completionAttentionRequiredAt"> | Record<string, never> = {};
+        if (requiresAttention && !current.completionAttentionRequiredAt) {
+          attention = { completionAttentionRequiredAt: nextAttemptAt };
+        } else if (!failed) {
+          attention = { completionAttentionRequiredAt: undefined };
+        }
         return {
           ...current,
-          completionState: terminal ? "terminal" : "pending",
+          completionState: "pending",
           completionFailureAttempt: failed ? (current.completionFailureAttempt ?? 0) + 1 : 0,
           completionNextAttemptAt: nextAttemptAt,
+          ...attention,
           completionLeaseId: undefined,
           completionLeaseExpiresAt: undefined,
         };
       });
       if (!updated) throw new Error("background job completion record disappeared");
+    },
+    async manualAttention() {
+      const result: BackgroundJobManualAttention[] = [];
+      for (const [key, record] of await backing.entries()) {
+        if (record.attentionRequiredAt) {
+          result.push({
+            kind: record.kind,
+            key,
+            jobId: record.intent.jobId,
+            attempt: record.attempt,
+            requiredAt: record.attentionRequiredAt,
+          });
+        }
+        if (record.kind === "admission" && record.completionAttentionRequiredAt) {
+          result.push({
+            kind: "completion",
+            key,
+            jobId: record.intent.jobId,
+            attempt: record.completionFailureAttempt ?? 0,
+            requiredAt: record.completionAttentionRequiredAt,
+          });
+        }
+      }
+      return Object.freeze(result.map((entry) => Object.freeze(entry)));
     },
     async terminal(receipt, leaseId, state, deliveryKey) {
       const updated = await backing.update!(`admission:${receipt.intentId}`, (current) => {
@@ -506,6 +557,7 @@ export function createDurableBackgroundJobStore(
           completionDeliveryKey: deliveryKey,
           completionLeaseId: undefined,
           completionLeaseExpiresAt: undefined,
+          completionAttentionRequiredAt: undefined,
         };
       });
       if (!updated) throw new Error("background job completion record disappeared");
@@ -551,7 +603,6 @@ export function createDurableBackgroundJobDeliveryOutbox(
         if (
           leased.length >= limit ||
           candidate.state === "sent" ||
-          candidate.state === "terminal" ||
           candidate.nextAttemptAt > now ||
           (candidate.state === "leased" && (candidate.leaseExpiresAt ?? 0) > now)
         ) {
@@ -560,7 +611,6 @@ export function createDurableBackgroundJobDeliveryOutbox(
         const updated = await backing.update!(key, (current) => {
           if (
             current.state === "sent" ||
-            current.state === "terminal" ||
             current.nextAttemptAt > now ||
             (current.state === "leased" && (current.leaseExpiresAt ?? 0) > now)
           ) {
@@ -587,26 +637,48 @@ export function createDurableBackgroundJobDeliveryOutbox(
         if (current.state !== "leased" || current.leaseId !== leaseId) {
           throw new Error("background job delivery lease was lost");
         }
-        return { ...current, state: "sent", sentAt, leaseId: undefined, leaseExpiresAt: undefined };
+        return {
+          ...current,
+          state: "sent",
+          sentAt,
+          leaseId: undefined,
+          leaseExpiresAt: undefined,
+          attentionRequiredAt: undefined,
+        };
       });
       if (!updated) throw new Error("background job delivery record disappeared");
     },
-    async retry(deliveryKey, leaseId, nextAttemptAt, terminal) {
+    async retry(deliveryKey, leaseId, nextAttemptAt, requiresAttention) {
       exactTime(nextAttemptAt, "next attempt time");
       const updated = await backing.update!(deliveryKey, (current) => {
-        if (current.state === "sent" || current.state === "terminal") return current;
+        if (current.state === "sent") return current;
         if (current.state !== "leased" || current.leaseId !== leaseId) {
           throw new Error("background job delivery lease was lost");
         }
         return {
           ...current,
-          state: terminal ? "terminal" : "pending",
+          state: "pending",
           nextAttemptAt,
+          ...(requiresAttention && !current.attentionRequiredAt ? { attentionRequiredAt: nextAttemptAt } : {}),
           leaseId: undefined,
           leaseExpiresAt: undefined,
         };
       });
       if (!updated) throw new Error("background job delivery record disappeared");
+    },
+    async manualAttention() {
+      const result: BackgroundJobManualAttention[] = [];
+      for (const [key, record] of await backing.entries()) {
+        if (!record.attentionRequiredAt) continue;
+        result.push({
+          kind: "delivery",
+          key,
+          jobId: record.intent.jobId,
+          attempt: record.attempt,
+          requiredAt: record.attentionRequiredAt,
+        });
+      }
+      return Object.freeze(result.map((entry) => Object.freeze(entry)));
     },
   };
   return Object.freeze(outbox);

@@ -41,7 +41,7 @@ function coreNormalizedHash(dir: string): string {
     { path: "tools/t/tool.json", content: readFileSync(join(dir, "sandbox", "tools", "t", "tool.json"), "utf8") },
   ];
   const order = (a: { path: string }, b: { path: string }): number => a.path.localeCompare(b.path);
-  const bundle = { contract: 1, tools: tools.sort(order), skills: skillFiles.sort(order) };
+  const bundle = { contract: 1, tools: tools.sort(order), skills: skillFiles.sort(order), backgroundJobs: [] };
   return createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
 }
 
@@ -57,6 +57,20 @@ test("the CLI bundle hashes byte-identically to the core's full-path normalizati
     );
     const cliHash = createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
     assert.equal(cliHash, coreNormalizedHash(dir));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the CLI preserves exact background-jobs descriptors in the signed deployment bundle", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-layer-background-job-"));
+  try {
+    mkdirSync(join(dir, "sandbox", "background-jobs", "proposal"), { recursive: true });
+    const content = JSON.stringify({ contract: 1, definition: { id: "proposal" } });
+    writeFileSync(join(dir, "sandbox", "background-jobs", "proposal", "job.json"), content);
+    assert.deepEqual(deploymentLayerBundle(join(dir, "sandbox")).backgroundJobs, [
+      { path: "background-jobs/proposal/job.json", content },
+    ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -246,6 +260,11 @@ test("conformance passes against a live core: base-port override, signed request
   const captured: CapturedRequest[] = [];
   const bundle = (() => {
     writeLayer(dir);
+    mkdirSync(join(dir, "sandbox", "background-jobs", "proposal"), { recursive: true });
+    writeFileSync(
+      join(dir, "sandbox", "background-jobs", "proposal", "job.json"),
+      JSON.stringify({ contract: 1, definition: { id: "proposal" } }),
+    );
     return deploymentLayerBundle(join(dir, "sandbox"));
   })();
   const contentHash = createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
@@ -255,7 +274,10 @@ test("conformance passes against a live core: base-port override, signed request
         contentHash,
         status: "applied",
         runtimeContentHash: contentHash,
-        resolved: { tools: [{ install: { binary: "t" }, advertise: "runs t", id: "t" }] },
+        resolved: {
+          tools: [{ install: { binary: "t" }, advertise: "runs t", id: "t" }],
+          backgroundJobs: [{ id: "proposal" }],
+        },
       }),
     }),
     captured,
@@ -755,7 +777,7 @@ test("a core with no durable layer record bootstraps as empty regardless of its 
         transport: dockerDeploymentLayerTransport,
         configDir: dir,
       });
-      assert.equal(state.body, JSON.stringify({ contract: 1, tools: [], skills: [] }));
+      assert.equal(state.body, JSON.stringify({ contract: 1, tools: [], skills: [], backgroundJobs: [] }));
       assert.equal(createHash("sha256").update(state.body).digest("hex"), state.contentHash);
       assert.equal(state.status, "applied");
       assert.equal(
@@ -795,6 +817,53 @@ test("a durable record whose bundle is missing still fails the read", async () =
         }),
         /did not return a restorable bundle/,
       );
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a retained disabled background job round-trips through current state by its public bundle hash", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-layer-retired-control-"));
+  const captured: CapturedRequest[] = [];
+  const bundle = {
+    contract: 1,
+    tools: [],
+    skills: [],
+    backgroundJobs: [
+      {
+        path: "background-jobs/proposal/job.json",
+        content: JSON.stringify({ contract: 1, definition: { id: "proposal" } }),
+        enabled: false,
+      },
+    ],
+  };
+  const contentHash = createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
+  const { server } = await startCoreStub(
+    () => ({
+      body: JSON.stringify({
+        contract: 1,
+        version: 2,
+        contentHash,
+        runtimeContentHash: contentHash,
+        source: "durable",
+        status: "applied",
+        bundle,
+      }),
+    }),
+    captured,
+  );
+  try {
+    await withEnv({ CORE_SIGNING_SECRET: SECRET }, async () => {
+      const state = await currentDeploymentLayerState({
+        config: makeConfig("http://localhost:8080"),
+        transport: dockerDeploymentLayerTransport,
+        configDir: dir,
+      });
+      assert.equal(state.body, JSON.stringify(bundle));
+      assert.equal(state.contentHash, contentHash);
+      assert.equal(state.runtimeContentHash, contentHash);
     });
   } finally {
     await new Promise<void>((resolve) => server.close(resolve));

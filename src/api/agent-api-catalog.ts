@@ -607,6 +607,11 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/admin/audit|errors|metrics|egress?scope=",
         summary: "observability: audit log, error telemetry, turn metrics, outbound-destination log (logs: DM only)",
       },
+      {
+        method: "GET",
+        path: "/v1/admin/background-jobs/attention",
+        summary: "bounded sanitized background-job retry attention status",
+      },
       { method: "GET", path: "/v1/admin/retention", summary: "org-wide usage and retention report" },
       {
         method: "GET",
@@ -636,6 +641,11 @@ const FAMILIES: AgentApiFamily[] = [
       { method: "GET", path: "/v1/admin/sessions/:id", summary: "read a conversation transcript" },
       { method: "GET", path: "/v1/admin/scopes", summary: "list the scope directory" },
       { method: "GET", path: "/v1/admin/errors", summary: "read error telemetry" },
+      {
+        method: "GET",
+        path: "/v1/admin/background-jobs/attention",
+        summary: "read bounded sanitized background-job retry attention status",
+      },
       { method: "GET", path: "/v1/admin/runs", summary: "read queued, in-flight, and recent runs" },
     ],
   },

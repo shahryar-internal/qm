@@ -215,6 +215,7 @@ export function backgroundJobReceiptOwned(
     receipt.audienceScopeId === expected.audienceScopeId &&
     receipt.slackTeamId === expected.slackTeamId &&
     receipt.channelId === expected.channelId &&
+    receipt.threadTs === expected.threadTs &&
     receipt.conversationThreadRef === expected.conversationThreadRef &&
     receipt.approvalThreadTs === receipt.threadTs &&
     receipt.approvalMessageTs === receipt.messageTs &&
@@ -492,7 +493,11 @@ export function createBackgroundJobProfileService<TInput, TStatus, TCancellation
     bind(turn: Readonly<BackgroundJobTurnBinding>): BoundBackgroundJobTools | undefined {
       if (!ready() || !bindable(profile, turn)) return undefined;
       const audienceSlack = turn.verifiedSlack!;
-      const expectedOwner = owner(profile, audienceSlack.threadTs, turn.conversationThreadRef);
+      const expectedOwner = owner(
+        profile,
+        audienceSlack.threadTs,
+        `dm:${audienceSlack.channelId}:${audienceSlack.threadTs}`,
+      );
       const owned = async () => {
         if (!ready()) return null;
         const receipt = await dependencies.receipts.latestOwned(profile.definition.id, expectedOwner);

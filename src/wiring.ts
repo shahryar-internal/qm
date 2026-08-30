@@ -329,11 +329,16 @@ import {
 } from "./background-jobs/approval-ledger.ts";
 import {
   createProductionBackgroundJobRuntime,
-  type BackgroundJobNativeDependencyRegistry,
   type ProductionBackgroundJobRuntime,
 } from "./background-jobs/runtime.ts";
-import type { BackgroundJobRenderOnlySender, BackgroundJobService } from "./background-jobs/types.ts";
+import type { BackgroundJobService } from "./background-jobs/types.ts";
 import type { BackgroundJobAuthorityStageRecord } from "./background-jobs/staged-authority.ts";
+import {
+  createBackgroundJobProductionComposition,
+  type BackgroundJobProductionComposition,
+} from "./background-jobs/composition.ts";
+import { createBackgroundJobAttentionReader, type BackgroundJobAttentionReader } from "./background-jobs/attention.ts";
+import { invalidatePendingBackgroundJobApprovals } from "./background-jobs/pending-approvals.ts";
 
 export interface Runtime {
   start(): void;
@@ -440,6 +445,7 @@ export interface BuiltApp {
   scheduleAuthority?: PostgresScheduleAuthority;
   backgroundJobRuntimeReady: Promise<ProductionBackgroundJobRuntime | undefined>;
   jobAuthorityJwks: () => Readonly<{ keys: readonly Readonly<import("node:crypto").JsonWebKey>[] }>;
+  backgroundJobAttention: BackgroundJobAttentionReader;
 }
 
 export function buildApp(
@@ -450,12 +456,7 @@ export function buildApp(
     modelCredentialFetch?: typeof fetch;
     privateTurnObserver?: import("./api/private-turn-observer.ts").PrivateTurnObservationSink;
     privateTurnObserverTimeoutMs?: number;
-    backgroundJobs?: Readonly<{
-      registry: BackgroundJobNativeDependencyRegistry;
-      sender: BackgroundJobRenderOnlySender;
-      receiptStoreName: string;
-      approvalStoreName: string;
-    }>;
+    backgroundJobs?: Readonly<BackgroundJobProductionComposition>;
   } = {},
 ): BuiltApp {
   if (
@@ -603,6 +604,7 @@ export function buildApp(
   const brokeredTools = deploymentLayer.brokeredTools;
   const orgScope = scopeId("org", config.orgId);
   const auditLog = config.databaseUrl ? createPostgresAuditLog(config.databaseUrl) : createAuditLog();
+  const approvals = artifactMap<PendingApprovalRecord>("approvals");
   const backgroundJobBacking = artifactMap<BackgroundJobDurableRecord>("background_job_records");
   const backgroundJobStore = createDurableBackgroundJobStore(backgroundJobBacking, pgArtifactMap !== null);
   const backgroundJobOutbox = createDurableBackgroundJobDeliveryOutbox(
@@ -614,6 +616,7 @@ export function buildApp(
     durable: pgArtifactMap !== null,
     terminalAndExpired: (profile, now) => backgroundJobTerminalAndExpired(backgroundJobBacking, profile, now),
   });
+  const backgroundJobAttention = createBackgroundJobAttentionReader(backgroundJobStore, backgroundJobOutbox);
   const deploymentLayerStore = createDeploymentLayerStore({
     backing: artifactMap<StoredDeploymentLayer>("deployment_layer"),
     runtime: deploymentLayer,
@@ -643,31 +646,40 @@ export function buildApp(
         }
       : {}),
   });
-  const deploymentLayerReady = deploymentLayerStore.hydrate();
+  const deploymentLayerReady = deploymentLayerStore.hydrate().then(async (record) => {
+    if (!config.backgroundWorkEnabled) {
+      await invalidatePendingBackgroundJobApprovals(approvals);
+    }
+    return record;
+  });
+  const backgroundJobComposition = overrides.backgroundJobs ?? createBackgroundJobProductionComposition();
   let backgroundJobRuntime: ProductionBackgroundJobRuntime | undefined;
-  const backgroundJobRuntimeReady = deploymentLayerReady
-    .then(async () => {
-      if (!overrides.backgroundJobs) return undefined;
-      const runtime = createProductionBackgroundJobRuntime({
-        profiles: () => deploymentLayer.backgroundJobs,
-        receiptStoreName: overrides.backgroundJobs!.receiptStoreName,
-        approvalStoreName: overrides.backgroundJobs!.approvalStoreName,
-        receipts: backgroundJobStore,
-        approvals: backgroundJobApprovals,
-        outbox: backgroundJobOutbox,
-        sender: overrides.backgroundJobs!.sender,
-        authorityStages: artifactMap<BackgroundJobAuthorityStageRecord>("background_job_authority_stages"),
-        durable: pgArtifactMap !== null,
-        registry: overrides.backgroundJobs!.registry,
-      });
-      await runtime.ready();
-      backgroundJobRuntime = runtime;
-      return runtime;
-    })
-    .catch(() => {
-      console.error("[background-jobs] runtime unavailable");
-      return undefined;
+  let backgroundJobsStarted = false;
+  const rebuildBackgroundJobRuntime = async (): Promise<ProductionBackgroundJobRuntime | undefined> => {
+    backgroundJobRuntime?.stop();
+    backgroundJobRuntime = undefined;
+    if (!backgroundJobComposition || !config.backgroundWorkEnabled) return undefined;
+    const runtime = createProductionBackgroundJobRuntime({
+      profiles: () => deploymentLayer.backgroundJobs,
+      receiptStoreName: backgroundJobComposition.receiptStoreName,
+      approvalStoreName: backgroundJobComposition.approvalStoreName,
+      receipts: backgroundJobStore,
+      approvals: backgroundJobApprovals,
+      outbox: backgroundJobOutbox,
+      sender: backgroundJobComposition.sender,
+      authorityStages: artifactMap<BackgroundJobAuthorityStageRecord>("background_job_authority_stages"),
+      durable: pgArtifactMap !== null,
+      registry: backgroundJobComposition.registry,
     });
+    await runtime.ready();
+    backgroundJobRuntime = runtime;
+    if (backgroundJobsStarted) runtime.start();
+    return runtime;
+  };
+  const backgroundJobRuntimeReady = deploymentLayerReady.then(rebuildBackgroundJobRuntime).catch(() => {
+    console.error("[background-jobs] runtime unavailable");
+    return undefined;
+  });
   const backgroundJobService: BackgroundJobService = Object.freeze({
     readiness: () =>
       backgroundJobRuntime?.service.readiness() ??
@@ -675,12 +687,12 @@ export function buildApp(
     bind: (turn: Parameters<BackgroundJobService["bind"]>[0]) =>
       backgroundJobRuntime?.service.bind(turn) ?? Object.freeze([]),
   });
-  const visibleBackgroundJobProfiles = () => backgroundJobRuntime?.visibleProfiles() ?? Object.freeze([]);
+  const toolBackgroundJobProfiles = () => backgroundJobRuntime?.controlProfiles() ?? Object.freeze([]);
   const jobAuthorityJwks = () => backgroundJobRuntime?.jwks() ?? Object.freeze({ keys: Object.freeze([]) });
   const deploymentLayerRefresh = createSweeper(
     async () => {
       await deploymentLayerStore.hydrate();
-      await backgroundJobRuntime?.ready();
+      await rebuildBackgroundJobRuntime();
     },
     30_000,
     { label: "deployment layer refresh" },
@@ -999,7 +1011,7 @@ export function buildApp(
         ...(config.devGeminiProvider ? { devGeminiProviderId: config.devGeminiProvider.spec.id } : {}),
         signals: runSignals,
         mcpTools,
-        backgroundJobProfiles: visibleBackgroundJobProfiles,
+        backgroundJobProfiles: toolBackgroundJobProfiles,
       }),
     ],
     [
@@ -1009,7 +1021,7 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
-        backgroundJobProfiles: visibleBackgroundJobProfiles,
+        backgroundJobProfiles: toolBackgroundJobProfiles,
         resolveCustomProviders: async () => {
           const enabled = await customProviders.enabled();
           return Promise.all(
@@ -1061,7 +1073,17 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
-        backgroundJobProfiles: visibleBackgroundJobProfiles,
+        backgroundJobProfiles: toolBackgroundJobProfiles,
+      }),
+    ],
+    [
+      "claude",
+      createClaudeHarness({
+        ...claudeHarnessConfigOptions(config),
+        signals: runSignals,
+        tasks,
+        mcpTools,
+        backgroundJobProfiles: toolBackgroundJobProfiles,
       }),
     ],
     ["mock", createMockHarness()],
@@ -1176,7 +1198,6 @@ export function buildApp(
       "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",
     );
   }
-  const approvals = artifactMap<PendingApprovalRecord>("approvals");
   const adminGrantPersist = config.databaseUrl
     ? createPostgresAdminGrantStore(config.databaseUrl)
     : createMapAdminGrantPersistence(createMemoryMap<AdminGrant>());
@@ -1355,6 +1376,7 @@ export function buildApp(
     brokeredTools,
     deploymentLayer,
     backgroundJobs: backgroundJobService,
+    backgroundJobsEnabled: config.backgroundWorkEnabled,
   };
   const orchestrator = createOrchestrator(orchestratorDeps);
 
@@ -1768,6 +1790,7 @@ export function buildApp(
   const runtime: Runtime = {
     start() {
       if (!config.backgroundWorkEnabled) return;
+      backgroundJobsStarted = true;
       void backgroundJobRuntimeReady.then((backgroundJobs) => backgroundJobs?.start());
       for (const w of workers) w.start();
       reaper.start();
@@ -1787,6 +1810,7 @@ export function buildApp(
       await Promise.all(workers.map((w) => w.releaseInFlight()));
     },
     async stop() {
+      backgroundJobsStarted = false;
       backgroundJobRuntime?.stop();
       reaper.stop();
       processReaper?.stop();
@@ -1889,6 +1913,7 @@ export function buildApp(
     ...(scheduleAuthority ? { scheduleAuthority } : {}),
     backgroundJobRuntimeReady,
     jobAuthorityJwks,
+    backgroundJobAttention,
   };
 }
 
@@ -1993,6 +2018,7 @@ export function serverDeps(
     uiState: built.uiState,
     environments: built.environments,
     jobAuthorityJwks: built.jobAuthorityJwks,
+    backgroundJobAttention: built.backgroundJobAttention,
     sandboxMigration: built.sandboxMigration,
   };
 }

@@ -27,7 +27,9 @@ export async function runConformance(
   header(`qm conformance — ${config.orgId}`);
   const checked = runChecks(config, configDir, sandboxDir, { report: false });
   step("config.v1: pass");
-  step(`sandbox.descriptors: pass (${checked.layer.tools.length} tools, ${checked.layer.skills.length} skills)`);
+  step(
+    `sandbox.descriptors: pass (${checked.layer.tools.length} tools, ${checked.layer.skills.length} skills, ${bundleBackgroundJobs(sandboxDir)} background jobs)`,
+  );
   step("secrets.computed-set: pass");
   if (opts.runtime === false) {
     ok("static conformance passed");
@@ -51,7 +53,7 @@ export async function runConformance(
     contentHash?: string | null;
     status?: string;
     runtimeContentHash?: string | null;
-    resolved?: { tools?: unknown[] } | null;
+    resolved?: { tools?: unknown[]; backgroundJobs?: unknown[] } | null;
   };
   try {
     live = JSON.parse(response.body) as typeof live;
@@ -76,6 +78,13 @@ export async function runConformance(
   if (canonicalJson(live.resolved?.tools ?? []) !== canonicalJson(expectedDescriptors(bundle))) {
     throw new CliError("runtime.layer-resolved: live descriptors differ from sandbox/tools");
   }
+  if ((live.resolved?.backgroundJobs ?? []).length !== bundle.backgroundJobs.length) {
+    throw new CliError("runtime.layer-resolved: live background jobs differ from sandbox/background-jobs");
+  }
   step("runtime.layer-resolved: pass");
   ok("deployment directory conforms to contract v1");
+}
+
+function bundleBackgroundJobs(sandboxDir: string): number {
+  return deploymentLayerBundle(sandboxDir).backgroundJobs.length;
 }

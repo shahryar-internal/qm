@@ -42,6 +42,7 @@ import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./a
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { listSecurityFlags, releaseSecurityTaint } from "./admin/security.ts";
 import { runtimeToolSelfCheck } from "./admin/runtime-self-check.ts";
+import { listBackgroundJobAttention } from "./admin/background-job-attention.ts";
 
 const timed =
   (handle: (ctx: ApiCtx) => void | Promise<void>) =>
@@ -96,6 +97,7 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/admin/files/upload", auth: "either", handle: uploadAdminFile },
   { method: "GET", path: "/v1/admin/files", auth: "either", handle: listAdminFiles },
   { method: "GET", path: "/v1/admin/errors", auth: "either", handle: listAdminErrors },
+  { method: "GET", path: "/v1/admin/background-jobs/attention", auth: "either", handle: listBackgroundJobAttention },
   { method: "GET", path: "/v1/admin/audit", auth: "either", handle: listAdminAudit },
   { method: "GET", path: "/v1/admin/security/flags", auth: "either", handle: listSecurityFlags },
   { method: "POST", path: "/v1/admin/security/release", auth: "either", handle: releaseSecurityTaint },

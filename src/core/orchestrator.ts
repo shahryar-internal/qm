@@ -1486,6 +1486,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
         if (input.approval) {
           const p = await pending.get(input.approval.requestId);
+          if (p?.kind === "background_job" && deps.backgroundJobsEnabled === false) {
+            await pending.delete(input.approval.requestId);
+            return {
+              status: "refused",
+              sessionId: session.id,
+              reason: "background jobs are disabled",
+            };
+          }
           if (!input.approval.approved) {
             await pending.delete(input.approval.requestId);
             deps.auditLog.record({

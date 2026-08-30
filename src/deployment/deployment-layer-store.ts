@@ -302,11 +302,14 @@ function retiredBackgroundJobs(value: unknown): RetiredBackgroundJob[] {
     .sort((left, right) => left.jobId.localeCompare(right.jobId));
 }
 
-function contentHash(bundle: DeploymentLayerBundle, retired: readonly RetiredBackgroundJob[] = []): string {
-  return createHash("sha256")
-    .update(JSON.stringify(retired.length ? { bundle, retiredBackgroundJobs: retired } : bundle))
-    .digest("hex");
+function contentHash(bundle: DeploymentLayerBundle): string {
+  return createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
 }
+
+const sameRetirementLedger = (
+  left: readonly RetiredBackgroundJob[] | undefined,
+  right: readonly RetiredBackgroundJob[] | undefined,
+): boolean => JSON.stringify(retiredBackgroundJobs(left)) === JSON.stringify(retiredBackgroundJobs(right));
 
 function validRetirementStore(
   retirement: BackgroundJobRetirementStore | undefined,
@@ -547,8 +550,8 @@ export function createDeploymentLayerStore(opts: {
   };
 
   const apply = async (record: StoredDeploymentLayer): Promise<void> => {
-    const retired = retiredBackgroundJobs(record.retiredBackgroundJobs);
-    if (/^[a-f0-9]{64}$/.test(record.contentHash) && contentHash(record.bundle, retired) !== record.contentHash) {
+    retiredBackgroundJobs(record.retiredBackgroundJobs);
+    if (/^[a-f0-9]{64}$/.test(record.contentHash) && contentHash(record.bundle) !== record.contentHash) {
       throw new Error("deployment layer durable record hash is invalid");
     }
     const { manifests, runtime: nextRuntime } = validateBundle(record.bundle, `durable:${record.contentHash}`);
@@ -753,7 +756,7 @@ export function createDeploymentLayerStore(opts: {
             bundle = validated.bundle;
             manifests = validated.manifests;
             runtime = validated.runtime;
-            hash = contentHash(bundle, retained.retired);
+            hash = contentHash(bundle);
             candidate = {
               ...candidate,
               contentHash: hash,
@@ -796,10 +799,17 @@ export function createDeploymentLayerStore(opts: {
             },
           ];
           let record = await opts.backing.putIfAbsent(CURRENT, candidate);
-          if (record.contentHash !== hash) {
+          if (
+            record.contentHash !== hash ||
+            !sameRetirementLedger(record.retiredBackgroundJobs, candidate.retiredBackgroundJobs)
+          ) {
             if (!opts.backing.update) throw new Error("deployment layer backing store must support atomic updates");
             const updated = await opts.backing.update(CURRENT, (current) => {
-              if (current.contentHash === hash) return current;
+              if (
+                current.contentHash === hash &&
+                sameRetirementLedger(current.retiredBackgroundJobs, candidate.retiredBackgroundJobs)
+              )
+                return current;
               const version = current.version + 1;
               return {
                 ...candidate,
