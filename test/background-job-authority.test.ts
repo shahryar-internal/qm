@@ -11,6 +11,7 @@ import {
 } from "@aws-sdk/client-kms";
 import { createBackgroundJobAuthoritySigner } from "../src/background-jobs/kms-signer.ts";
 import { createFixedBackgroundJobClient } from "../src/background-jobs/fixed-client.ts";
+import { exactPublicRsaJwks, validateDefinition } from "../src/background-jobs/validation.ts";
 import type { BackgroundJobDefinition, BackgroundJobReceipt } from "../src/background-jobs/types.ts";
 
 const DEFINITION: Readonly<BackgroundJobDefinition> = Object.freeze({
@@ -33,6 +34,26 @@ const PROFILE = Object.freeze({
   audienceScopeId: "personal:principal_owner",
   slackTeamId: "TTEAM01",
   channelId: "DOWNER1",
+});
+
+const BINDING = Object.freeze({
+  descriptorSha256: "a".repeat(64),
+  profileSha256: "b".repeat(64),
+  schemaSha256: "c".repeat(64),
+});
+
+const SLACK = Object.freeze({ messageTs: "1788030001.123456", threadTs: "1788030000.123456" });
+
+const RECEIPT: Readonly<BackgroundJobReceipt> = Object.freeze({
+  jobId: DEFINITION.id,
+  authorityId: "authority-1",
+  runId: "run-0000001",
+  ...PROFILE,
+  ...BINDING,
+  ...SLACK,
+  payloadSha256: "d".repeat(64),
+  idempotencyKey: "decision-123",
+  createdAt: 1,
 });
 
 function material() {
@@ -70,17 +91,22 @@ function fakeKms(value: ReturnType<typeof material>, mode: "ok" | "get-fail" | "
   } as unknown as KMSClient;
 }
 
-function makeSigner(value = material(), mode: "ok" | "get-fail" | "sign-fail" | "bad-sign" = "ok") {
+function makeSigner(
+  value = material(),
+  mode: "ok" | "get-fail" | "sign-fail" | "bad-sign" = "ok",
+  definition: Readonly<BackgroundJobDefinition> = DEFINITION,
+) {
   let nonce = 0;
   return createBackgroundJobAuthoritySigner(
     {
-      issuer: "https://gateway.example/authority",
-      audience: "https://jobs.example/authority",
+      issuer: "https://gateway.example.com/authority",
+      audience: "https://jobs.example.com/authority",
       keyId: "kms-key-1",
       tokenKid: "key-1",
       publicJwk: value.jwk,
       profile: PROFILE,
-      definition: DEFINITION,
+      definition,
+      binding: BINDING,
       lifetimeSeconds: 300,
     },
     { kms: fakeKms(value, mode), now: () => 1_788_030_000_000, randomId: () => `nonce_${++nonce}` },
@@ -100,12 +126,12 @@ function decode(token: string) {
 test("generic KMS authority signs exact configured claims and exposes only the configured public JWK", async () => {
   const signer = makeSigner();
   const body = Buffer.from('{"report":"weekly"}');
-  const { header, claims } = decode(await signer.signStart(body, "1788030000.123456", "decision-123"));
+  const { header, claims } = decode(await signer.signStart(body, SLACK, "decision-123"));
   assert.deepEqual(header, { alg: "RS256", kid: "key-1", typ: DEFINITION.tokenType });
   assert.deepEqual(claims, {
     actorPrincipalId: PROFILE.actorPrincipalId,
     actorSlackId: PROFILE.actorSlackId,
-    aud: "https://jobs.example/authority",
+    aud: "https://jobs.example.com/authority",
     audienceScopeId: PROFILE.audienceScopeId,
     capability: DEFINITION.capability,
     channelId: PROFILE.channelId,
@@ -114,12 +140,16 @@ test("generic KMS authority signs exact configured claims and exposes only the c
     httpPath: DEFINITION.start.path,
     iat: 1_788_030_000,
     idempotencyKey: "decision-123",
-    iss: "https://gateway.example/authority",
+    iss: "https://gateway.example.com/authority",
     jti: "nonce_1",
+    descriptorSha256: BINDING.descriptorSha256,
+    messageTs: SLACK.messageTs,
     operation: DEFINITION.operation,
     organizationId: PROFILE.organizationId,
     payloadSha256: createHash("sha256").update(body).digest("hex"),
+    profileSha256: BINDING.profileSha256,
     requestId: "nonce_2",
+    schemaSha256: BINDING.schemaSha256,
     scope: DEFINITION.scope,
     slackTeamId: PROFILE.slackTeamId,
     sub: PROFILE.actorPrincipalId,
@@ -127,17 +157,24 @@ test("generic KMS authority signs exact configured claims and exposes only the c
   });
   assert.equal(typeof claims.aud, "string");
   assert.deepEqual(Object.keys(signer.jwks().keys[0]!).sort(), ["alg", "e", "kid", "kty", "n", "use"]);
+  const mutableDefinition = structuredClone(DEFINITION);
+  const snapshotted = makeSigner(material(), "ok", mutableDefinition);
+  (mutableDefinition.start as { path: string }).path = "/api/jobs/report-preview/tampered";
+  assert.equal(decode(await snapshotted.signStart(body, SLACK, "decision-456")).claims.httpPath, DEFINITION.start.path);
 });
 
 test("status and cancel use fixed configured paths, stable control idempotency, and fresh request nonces", async () => {
   const signer = makeSigner();
   const body = Buffer.from('{"authorityId":"authority-1","runId":"run-0000001"}');
-  const prepare = decode(await signer.signPrepare(Buffer.from("{}"), "1788030000.123456", "decision-123")).claims;
-  const first = decode(await signer.signStatus(body, "1788030000.123456")).claims;
-  const second = decode(await signer.signStatus(body, "1788030000.123456")).claims;
-  const cancel = decode(await signer.signCancel(body, "1788030000.123456")).claims;
+  const prepare = decode(await signer.signPrepare(Buffer.from("{}"), SLACK, "decision-123")).claims;
+  const controlReceipt = { ...RECEIPT, descriptorSha256: "f".repeat(64) };
+  const first = decode(await signer.signStatus(body, controlReceipt)).claims;
+  const second = decode(await signer.signStatus(body, RECEIPT)).claims;
+  const cancel = decode(await signer.signCancel(body, RECEIPT)).claims;
   assert.equal(prepare.httpPath, DEFINITION.prepare!.path);
   assert.equal(first.httpPath, DEFINITION.status.path);
+  assert.equal(first.descriptorSha256, controlReceipt.descriptorSha256);
+  assert.equal(first.messageTs, RECEIPT.messageTs);
   assert.equal(second.idempotencyKey, first.idempotencyKey);
   assert.equal(cancel.httpPath, DEFINITION.cancel.path);
   assert.notEqual(cancel.idempotencyKey, first.idempotencyKey);
@@ -148,42 +185,63 @@ test("status and cancel use fixed configured paths, stable control idempotency, 
 test("generic signer fails closed on KMS outages, JWKS mismatch, bad signatures, caps, and lifetime", async () => {
   await assert.rejects(() => makeSigner(material(), "get-fail").ready(), /private-get-detail/);
   await assert.rejects(
-    () => makeSigner(material(), "sign-fail").signStatus(Buffer.from("{}"), "1788030000.123456"),
+    () => makeSigner(material(), "sign-fail").signStatus(Buffer.from("{}"), RECEIPT),
     /private-sign-detail/,
   );
-  await assert.rejects(
-    () => makeSigner(material(), "bad-sign").signStatus(Buffer.from("{}"), "1788030000.123456"),
-    /mismatched/,
-  );
+  await assert.rejects(() => makeSigner(material(), "bad-sign").signStatus(Buffer.from("{}"), RECEIPT), /mismatched/);
   const configured = material();
   const actual = material();
   const mismatch = createBackgroundJobAuthoritySigner(
     {
-      issuer: "https://gateway.example/authority",
-      audience: "https://jobs.example/authority",
+      issuer: "https://gateway.example.com/authority",
+      audience: "https://jobs.example.com/authority",
       keyId: "kms-key-1",
       tokenKid: "key-1",
       publicJwk: configured.jwk,
       profile: PROFILE,
       definition: DEFINITION,
+      binding: BINDING,
     },
     { kms: fakeKms(actual) },
   );
   await assert.rejects(() => mismatch.ready(), /does not match/);
-  await assert.rejects(
-    () => makeSigner().signStart(new Uint8Array(1025), "1788030000.123456", "decision-123"),
-    /payload/,
+  await assert.rejects(() => makeSigner().signStart(new Uint8Array(1025), SLACK, "decision-123"), /payload/);
+  assert.throws(() =>
+    createBackgroundJobAuthoritySigner(
+      {
+        issuer: "https://gateway.example.com/authority",
+        audience: "https://jobs.example.com/authority",
+        keyId: "kms-key-1",
+        tokenKid: "key-1",
+        publicJwk: { ...material().jwk, x: "extra" } as JsonWebKey,
+        profile: PROFILE,
+        definition: DEFINITION,
+        binding: BINDING,
+      },
+      { kms: fakeKms(material()) },
+    ),
   );
-});
-
-const RECEIPT: Readonly<BackgroundJobReceipt> = Object.freeze({
-  jobId: DEFINITION.id,
-  authorityId: "authority-1",
-  runId: "run-0000001",
-  ...PROFILE,
-  threadTs: "1788030000.123456",
-  idempotencyKey: "decision-123",
-  createdAt: 1,
+  assert.throws(() => exactPublicRsaJwks({ keys: [{ ...material().jwk, d: "private" }] }));
+  assert.throws(() => exactPublicRsaJwks({ keys: [material().jwk, material().jwk] }));
+  assert.throws(() =>
+    validateDefinition({ ...DEFINITION, start: { ...DEFINITION.start, path: "/api/jobs/../private" } }),
+  );
+  const local = material();
+  assert.throws(() =>
+    createBackgroundJobAuthoritySigner(
+      {
+        issuer: "https://localhost/authority",
+        audience: "https://jobs.example.com/authority",
+        keyId: "kms-key-1",
+        tokenKid: "key-1",
+        publicJwk: local.jwk,
+        profile: PROFILE,
+        definition: DEFINITION,
+        binding: BINDING,
+      },
+      { kms: fakeKms(local) },
+    ),
+  );
 });
 
 function json(value: unknown, url = "") {
@@ -229,7 +287,7 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
   };
   const client = createFixedBackgroundJobClient(
     {
-      origin: "https://jobs.example",
+      origin: "https://jobs.example.com",
       definition: DEFINITION,
       fetch: fetcher,
       parsers: {
@@ -245,7 +303,7 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     },
     signer,
   );
-  await client.start(Buffer.from("{}"), RECEIPT.threadTs, RECEIPT.idempotencyKey);
+  await client.start(Buffer.from("{}"), RECEIPT, RECEIPT.idempotencyKey);
   await client.status(RECEIPT);
   await client.status(RECEIPT);
   await client.cancel(RECEIPT);
@@ -253,10 +311,10 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
   assert.deepEqual(
     calls.map((call) => call.url),
     [
-      `https://jobs.example${DEFINITION.start.path}`,
-      `https://jobs.example${DEFINITION.status.path}`,
-      `https://jobs.example${DEFINITION.status.path}`,
-      `https://jobs.example${DEFINITION.cancel.path}`,
+      `https://jobs.example.com${DEFINITION.start.path}`,
+      `https://jobs.example.com${DEFINITION.status.path}`,
+      `https://jobs.example.com${DEFINITION.status.path}`,
+      `https://jobs.example.com${DEFINITION.cancel.path}`,
     ],
   );
   assert.equal(calls[1]!.body, '{"authorityId":"authority-1","runId":"run-0000001"}');
@@ -265,11 +323,34 @@ test("fixed client uses only configured HTTPS paths, exact canonical control byt
     assert.equal((call.init.headers as Record<string, string>)[DEFINITION.authorityHeader]?.startsWith("token-"), true);
     assert.equal((call.init.headers as Record<string, string>)["content-length"], String(Buffer.byteLength(call.body)));
   }
+  const mutableDefinition = structuredClone(DEFINITION);
+  const fixedCalls: string[] = [];
+  const snapshotted = createFixedBackgroundJobClient(
+    {
+      origin: "https://jobs.example.com",
+      definition: mutableDefinition,
+      fetch: (async (input) => {
+        fixedCalls.push(String(input));
+        return json({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }, String(input));
+      }) as typeof fetch,
+      parsers: {
+        admission: () => ({ authorityId: RECEIPT.authorityId, runId: RECEIPT.runId }),
+        status: strict,
+        cancellation: strict,
+        statusRunId: (value) => value.runId,
+        cancellationRunId: (value) => value.runId,
+      },
+    },
+    signer,
+  );
+  (mutableDefinition.start as { path: string }).path = "/api/jobs/report-preview/tampered";
+  await snapshotted.start(Buffer.from("{}"), RECEIPT, RECEIPT.idempotencyKey);
+  assert.deepEqual(fixedCalls, [`https://jobs.example.com${DEFINITION.start.path}`]);
 });
 
 test("fixed client sanitizes redirect, timeout, oversize, origin, and server body failures", async () => {
   const base = {
-    origin: "https://jobs.example",
+    origin: "https://jobs.example.com",
     definition: DEFINITION,
     parsers: {
       admission: () => ({ authorityId: "authority-1", runId: "run-0000001" }),
@@ -287,6 +368,7 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     signStatus: async () => "private-token",
     signCancel: async () => "private-token",
   };
+  assert.throws(() => createFixedBackgroundJobClient({ ...base, origin: "https://127.0.0.1" }, signer));
   const rejected = createFixedBackgroundJobClient(
     {
       ...base,
@@ -326,4 +408,21 @@ test("fixed client sanitizes redirect, timeout, oversize, origin, and server bod
     signer,
   );
   await assert.rejects(() => redirect.status(RECEIPT), /^Error: background job request failed$/);
+  const stalled = createFixedBackgroundJobClient(
+    {
+      ...base,
+      timeoutMs: 100,
+      fetch: (async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.from("{"));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        )) as typeof fetch,
+    },
+    signer,
+  );
+  await assert.rejects(() => stalled.status(RECEIPT), /^Error: background job request failed$/);
 });

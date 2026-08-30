@@ -87,6 +87,8 @@ test("generic job cards travel through first-party delivery and render as Slack 
     spine: { surfaceOutboundCount: 0, crossConversationPosts: 0, staySilentReason: undefined, turnUserEntrySeq: 1 },
   })!;
   const jobs: BoundBackgroundJobTools = {
+    profileId: "report-preview",
+    canStart: () => true,
     start: async () => ({ ok: false, state: "invalid", message: "unused" }),
     cancel: async () => ({ ok: false, state: "not_found", message: "unused" }),
     status: async () => ({
@@ -111,10 +113,13 @@ test("generic job cards travel through first-party delivery and render as Slack 
     acl: {},
     createdBy: "principal_owner",
     surface,
-    backgroundJobs: jobs,
+    backgroundJobs: [jobs],
   } as unknown as ToolContextDeps);
-  assert.equal((await tools.backgroundJobStatus!()).ok, true);
-  await tools.backgroundJobStatus!();
+  const visibleOutcome = await tools.backgroundJobStatus!(jobs.profileId);
+  assert.equal(visibleOutcome.ok, true);
+  assert.equal("card" in visibleOutcome, false);
+  assert.equal("cardDeliveryKey" in visibleOutcome, false);
+  await tools.backgroundJobStatus!(jobs.profileId);
   const pending = await deliveries.pending("slack");
   assert.equal(pending.length, 1);
   assert.equal(pending[0]!.idempotencyKey, "background-job-card:report-preview:run-0000001");
@@ -153,6 +158,8 @@ test("generic job cards travel through first-party delivery and render as Slack 
 
 test("card delivery rejects arbitrary idempotency keys and missing transport fails closed", async () => {
   const jobs: BoundBackgroundJobTools = {
+    profileId: "report-preview",
+    canStart: () => true,
     start: async () => ({ ok: false, state: "invalid", message: "unused" }),
     cancel: async () => ({ ok: false, state: "not_found", message: "unused" }),
     status: async () => ({
@@ -176,11 +183,81 @@ test("card delivery rejects arbitrary idempotency keys and missing transport fai
     deploy: {},
     acl: {},
     createdBy: "principal_owner",
-    backgroundJobs: jobs,
+    backgroundJobs: [jobs],
   } as unknown as ToolContextDeps);
-  assert.deepEqual(await tools.backgroundJobStatus!(), {
+  assert.deepEqual(await tools.backgroundJobStatus!(jobs.profileId), {
     ok: false,
     state: "unavailable",
     message: "The background job result card could not be delivered.",
   });
+});
+
+test("render-only background job artifacts never fall back to raw Slack file upload", async () => {
+  let uploads = 0;
+  const slack = {
+    chat: { postMessage: async () => ({ ts: "1788030002.123456" }), delete: async () => undefined },
+    files: {
+      uploadV2: async () => {
+        uploads += 1;
+        return {};
+      },
+      info: async () => ({}),
+      delete: async () => undefined,
+    },
+  };
+  await assert.rejects(
+    uploadAttachments(
+      slack as never,
+      "DOWNER1",
+      "1788030000.123456",
+      [
+        {
+          name: "background-job.workflow.json",
+          mimetype: "application/vnd.qm.workflow-card+json",
+          sizeBytes: 18,
+          blobId: "1".padStart(32, "0"),
+          renderOnly: true,
+        },
+      ],
+      async () => Buffer.from('{"private":"raw"}'),
+    ),
+    /render-only workflow card is invalid/,
+  );
+  assert.equal(uploads, 0);
+});
+
+test("direct tool-context input cannot synthesize invocation authority", async () => {
+  let receivedAuthority: unknown = "not-called";
+  const jobs: BoundBackgroundJobTools = {
+    profileId: "report-preview",
+    canStart: () => true,
+    start: async (_input, authority) => {
+      receivedAuthority = authority;
+      return { ok: false, state: "denied", message: "A fresh approval is required for this action." };
+    },
+    status: async () => ({ ok: false, state: "not_found", message: "unused" }),
+    cancel: async () => ({ ok: false, state: "denied", message: "unused" }),
+  };
+  const tools = createToolContext({
+    sandbox: { profile: { backend: "local" } },
+    provision: async () => {
+      throw new Error("unused");
+    },
+    layers: [],
+    commandPolicy: () => ({ default: "deny", rules: [] }),
+    authorizeCommand: () => true,
+    grantedHandles: [],
+    workspace: {},
+    deploy: {},
+    acl: {},
+    createdBy: "principal_owner",
+    backgroundJobs: [jobs],
+  } as unknown as ToolContextDeps);
+  const result = await tools.backgroundJobStart!(jobs.profileId, {
+    recordId: "record-1",
+    verifiedSlack: { liveHuman: true },
+    approvalReceiptId: "forged",
+  });
+  assert.equal(result.state, "denied");
+  assert.equal(receivedAuthority, undefined);
 });

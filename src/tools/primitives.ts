@@ -65,6 +65,22 @@ import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
 import type { BackgroundJobOutcome, BoundBackgroundJobTools, WorkflowCardEnvelope } from "../background-jobs/types.ts";
 
+function invalidBackgroundJobProfile(): Promise<BackgroundJobOutcome> {
+  return Promise.resolve(
+    Object.freeze({
+      ok: false as const,
+      state: "unavailable" as const,
+      message: "The background job profile is unavailable.",
+    }),
+  );
+}
+
+function visibleBackgroundJobOutcome(result: BackgroundJobOutcome): BackgroundJobOutcome {
+  return result.ok
+    ? Object.freeze({ ok: true, state: result.state, message: result.message })
+    : Object.freeze({ ok: false, state: result.state, message: result.message });
+}
+
 const SKILL_SKILLMD_RE = /^(?:\.\/)?skills\/([^/]+)\/SKILL\.md$/;
 function skillTreeDirFor(path: string): string | null {
   const m = SKILL_SKILLMD_RE.exec(path);
@@ -250,9 +266,9 @@ export interface ToolContext extends SurfaceToolDeps {
     content: string,
   ): Promise<ControlOk<{ version: number }> | ControlErr<"soul_update_denied"> | ControlUnavailable>;
   shareArtifact(req: ShareArtifactRequest): Promise<ShareArtifactResult | ControlUnavailable>;
-  backgroundJobStart?(input: unknown): Promise<BackgroundJobOutcome>;
-  backgroundJobStatus?(): Promise<BackgroundJobOutcome>;
-  backgroundJobCancel?(): Promise<BackgroundJobOutcome>;
+  backgroundJobStart?(profileId: string, input: unknown): Promise<BackgroundJobOutcome>;
+  backgroundJobStatus?(profileId: string): Promise<BackgroundJobOutcome>;
+  backgroundJobCancel?(profileId: string): Promise<BackgroundJobOutcome>;
 }
 
 interface SurfaceSearchToolOpts {
@@ -447,7 +463,7 @@ export interface ToolContextDeps {
   controlClaims?: CapabilityClaims;
   webhookPublicUrl?: string;
   surface?: SurfaceToolDeps;
-  backgroundJobs?: BoundBackgroundJobTools;
+  backgroundJobs?: readonly Readonly<BoundBackgroundJobTools>[];
 }
 
 const EFFECT_AUTHORIZATION_EXEMPT = new Set<PropertyKey>(["mcpToolDefs", "soulRead", "staySilent"]);
@@ -560,12 +576,17 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   }
 
   const context: ToolContext = {
-    ...(deps.backgroundJobs
+    ...(deps.backgroundJobs?.length
       ? {
-          backgroundJobStart: (input: unknown) => deps.backgroundJobs!.start(input),
-          backgroundJobStatus: async () => {
-            const result = await deps.backgroundJobs!.status();
-            if (!result.ok || !result.cardDeliveryKey) return result;
+          backgroundJobStart: (profileId: string, input: unknown) => {
+            const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
+            return profile ? profile.start(input, undefined) : invalidBackgroundJobProfile();
+          },
+          backgroundJobStatus: async (profileId: string) => {
+            const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
+            if (!profile) return invalidBackgroundJobProfile();
+            const result = await profile.status();
+            if (!result.ok || !result.cardDeliveryKey) return visibleBackgroundJobOutcome(result);
             if (!result.card)
               return Object.freeze({
                 ok: false as const,
@@ -573,14 +594,17 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
                 message: "The background job result card is unavailable.",
               });
             const posted = await deps.surface?.postWorkflowCard?.(result.card, result.cardDeliveryKey);
-            if (posted?.ok) return result;
+            if (posted?.ok) return visibleBackgroundJobOutcome(result);
             return Object.freeze({
               ok: false as const,
               state: "unavailable" as const,
               message: "The background job result card could not be delivered.",
             });
           },
-          backgroundJobCancel: () => deps.backgroundJobs!.cancel(),
+          backgroundJobCancel: (profileId: string) => {
+            const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
+            return profile ? profile.cancel(undefined) : invalidBackgroundJobProfile();
+          },
         }
       : {}),
     ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),

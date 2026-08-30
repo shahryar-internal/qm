@@ -1,4 +1,5 @@
 import type { JsonWebKey } from "node:crypto";
+import { exactPublicRsaJwks } from "../../background-jobs/validation.ts";
 import { sendJson } from "../http.ts";
 import type { BaseCtx, Route } from "./route.ts";
 
@@ -12,8 +13,14 @@ export const jobAuthorityJwksRoutes: ReadonlyArray<Route<BaseCtx>> = [
     path: "/.well-known/job-authority-jwks.json",
     auth: "public",
     handle: ({ res, deps }) => {
-      const jwks = (deps as JobAuthorityJwksDeps).jobAuthorityJwks?.();
-      if (!jwks) return sendJson(res, 404, { error: "not_found" });
+      const supplied = (deps as JobAuthorityJwksDeps).jobAuthorityJwks?.();
+      if (!supplied) return sendJson(res, 404, { error: "not_found" });
+      let jwks: Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
+      try {
+        jwks = exactPublicRsaJwks(supplied);
+      } catch {
+        return sendJson(res, 503, { error: "unavailable" });
+      }
       res.setHeader("cache-control", "public, max-age=300, stale-while-revalidate=300");
       return sendJson(res, 200, jwks);
     },

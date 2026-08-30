@@ -9,7 +9,14 @@ import { isObj } from "./shared.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
 function bundleFrom(body: unknown): DeploymentLayerBundle | null {
-  if (!isObj(body) || body.contract !== 1 || !Array.isArray(body.tools) || !Array.isArray(body.skills)) return null;
+  if (
+    !isObj(body) ||
+    body.contract !== 1 ||
+    !Array.isArray(body.tools) ||
+    !Array.isArray(body.skills) ||
+    (body.backgroundJobs !== undefined && !Array.isArray(body.backgroundJobs))
+  )
+    return null;
   return body as unknown as DeploymentLayerBundle;
 }
 

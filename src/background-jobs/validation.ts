@@ -1,4 +1,6 @@
-import type { BackgroundJobAudienceProfile, BackgroundJobDefinition } from "./types.ts";
+import { createPublicKey, type JsonWebKey } from "node:crypto";
+import { isIP } from "node:net";
+import type { BackgroundJobAudienceProfile, BackgroundJobContractBinding, BackgroundJobDefinition } from "./types.ts";
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}$/;
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/;
@@ -26,6 +28,18 @@ export function validateSlackTimestamp(value: unknown, name: string): string {
   return identifier(value, name, SLACK_TIMESTAMP);
 }
 
+export function validateContractBinding(binding: Readonly<BackgroundJobContractBinding>): void {
+  if (!binding || typeof binding !== "object" || Object.getPrototypeOf(binding) !== Object.prototype) {
+    throw new TypeError("background job contract binding is invalid");
+  }
+  for (const [name, value] of Object.entries(binding)) {
+    if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) throw new TypeError(`${name} is invalid`);
+  }
+  if (Object.keys(binding).sort().join(",") !== "descriptorSha256,profileSha256,schemaSha256") {
+    throw new TypeError("background job contract binding is invalid");
+  }
+}
+
 export function validateDefinition(definition: Readonly<BackgroundJobDefinition>): void {
   identifier(definition.id, "job id");
   identifier(definition.operation, "operation");
@@ -41,7 +55,12 @@ export function validateDefinition(definition: Readonly<BackgroundJobDefinition>
     cancel: definition.cancel,
   })) {
     if (!route) continue;
-    if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@/-]{1,500}$/.test(route.path) || route.path.includes("//")) {
+    if (
+      !/^\/[A-Za-z0-9._~!$&'()*+,;=:@/-]{1,500}$/.test(route.path) ||
+      route.path.includes("//") ||
+      route.path.split("/").some((segment) => segment === "." || segment === "..") ||
+      new URL(route.path, "https://background-job.invalid").pathname !== route.path
+    ) {
       throw new TypeError(`${name} path is invalid`);
     }
     if (
@@ -57,6 +76,15 @@ export function validateDefinition(definition: Readonly<BackgroundJobDefinition>
 }
 
 export function parseStrictHttpsUrl(value: string, name: string, rootOnly: boolean): URL {
+  const raw = typeof value === "string" ? value.match(/^https:\/\/([^/?#]+)(\/[^?#]*)?$/) : null;
+  if (
+    !raw ||
+    value.includes("\\") ||
+    /%/i.test(value) ||
+    /(?:^|\/)\.{1,2}(?:\/|$)/.test(value.replace(/^https:\/\/[^/]+/, ""))
+  ) {
+    throw new TypeError(`${name} is invalid`);
+  }
   let parsed: URL;
   try {
     parsed = new URL(value);
@@ -69,8 +97,79 @@ export function parseStrictHttpsUrl(value: string, name: string, rootOnly: boole
     parsed.password ||
     parsed.search ||
     parsed.hash ||
+    raw[1] !== parsed.host ||
+    (raw[2] ?? "/") !== parsed.pathname ||
     (rootOnly && parsed.pathname !== "/")
   )
     throw new TypeError(`${name} is invalid`);
   return parsed;
+}
+
+export function parsePublicHttpsUrl(value: string, name: string, rootOnly: boolean): URL {
+  const parsed = parseStrictHttpsUrl(value, name, rootOnly);
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    isIP(hostname) !== 0 ||
+    hostname.endsWith(".") ||
+    !hostname.includes(".") ||
+    [".example", ".internal", ".invalid", ".local", ".localhost", ".test"].some((suffix) => hostname.endsWith(suffix))
+  ) {
+    throw new TypeError(`${name} must use a public hostname`);
+  }
+  return parsed;
+}
+
+export function exactPublicRsaJwk(value: unknown, expectedKid?: string): Readonly<JsonWebKey> {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new TypeError("background job public JWK is invalid");
+  }
+  const item = value as Record<string, unknown>;
+  const keys = Object.keys(item).sort();
+  if (
+    keys.join(",") !== "alg,e,kid,kty,n,use" ||
+    item.kty !== "RSA" ||
+    item.alg !== "RS256" ||
+    item.use !== "sig" ||
+    typeof item.kid !== "string" ||
+    !IDENTIFIER.test(item.kid) ||
+    (expectedKid !== undefined && item.kid !== expectedKid) ||
+    typeof item.n !== "string" ||
+    !/^[A-Za-z0-9_-]{342,1366}$/.test(item.n) ||
+    typeof item.e !== "string" ||
+    !/^[A-Za-z0-9_-]{1,12}$/.test(item.e)
+  ) {
+    throw new TypeError("background job public JWK is invalid");
+  }
+  const jwk = { kty: "RSA", alg: "RS256", use: "sig", kid: item.kid, n: item.n, e: item.e };
+  let key;
+  try {
+    key = createPublicKey({ key: jwk, format: "jwk" });
+  } catch {
+    throw new TypeError("background job public JWK is invalid");
+  }
+  if (key.asymmetricKeyType !== "rsa" || (key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
+    throw new TypeError("background job public JWK is invalid");
+  }
+  return Object.freeze(jwk);
+}
+
+export function exactPublicRsaJwks(value: unknown): Readonly<{ keys: readonly Readonly<JsonWebKey>[] }> {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new TypeError("background job JWKS is invalid");
+  }
+  const item = value as Record<string, unknown>;
+  if (Object.keys(item).join(",") !== "keys" || !Array.isArray(item.keys) || item.keys.length !== 1) {
+    throw new TypeError("background job JWKS is invalid");
+  }
+  return Object.freeze({ keys: Object.freeze([exactPublicRsaJwk(item.keys[0])]) });
 }

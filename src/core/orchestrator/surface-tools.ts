@@ -252,6 +252,7 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
             mimetype: WORKFLOW_ARTIFACT_MIME,
             sizeBytes: stored.sizeBytes,
             blobId: stored.blobId,
+            renderOnly: true,
           },
         ],
         deliveryKey,

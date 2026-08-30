@@ -22,17 +22,21 @@ import { createKeyedQueue, sleep } from "../util/async.ts";
 import { errMessage } from "../util/errors.ts";
 import { parseToolDescriptor, type ToolDescriptor } from "./deployment-layer.ts";
 import { replaceDeploymentLayer, resolvedDeploymentLayer, type DeploymentLayerRuntime } from "./load-layer.ts";
+import { parseBackgroundJobDeploymentProfile } from "../background-jobs/deployment-profile.ts";
+import type { BackgroundJobDeploymentProfile } from "../background-jobs/types.ts";
 
 interface DeploymentLayerFile {
   path: string;
   content: string;
   executable?: boolean;
+  enabled?: boolean;
 }
 
 export interface DeploymentLayerBundle {
   contract: 1;
   tools: DeploymentLayerFile[];
   skills: DeploymentLayerFile[];
+  backgroundJobs?: DeploymentLayerFile[];
 }
 
 export interface StoredDeploymentLayer {
@@ -63,6 +67,14 @@ export interface DeploymentLayerStore {
     contentHash: string | null;
     resolved: Omit<DeploymentLayerRuntime, "dir"> | null;
   };
+}
+
+export interface BackgroundJobRetirementStore {
+  durability: "durable";
+  receiptCoverage: "all_owned";
+  approvalCoverage: "all_unused";
+  decision: "terminal_and_expired";
+  canPurge(profile: Readonly<BackgroundJobDeploymentProfile>): Promise<boolean>;
 }
 
 export class DeploymentLayerValidationError extends Error {}
@@ -100,14 +112,37 @@ function hasLoneSurrogate(value: string): boolean {
 }
 
 function normalizedBundle(input: DeploymentLayerBundle): DeploymentLayerBundle {
-  if (input.contract !== 1 || !Array.isArray(input.tools) || !Array.isArray(input.skills)) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some((key) => !["contract", "tools", "skills", "backgroundJobs"].includes(key)) ||
+    input.contract !== 1 ||
+    !Array.isArray(input.tools) ||
+    !Array.isArray(input.skills) ||
+    (input.backgroundJobs !== undefined && !Array.isArray(input.backgroundJobs))
+  ) {
     throw new Error("deployment layer requires contract: 1, tools[], and skills[]");
   }
-  const normalize = (kind: "tools" | "skills", files: DeploymentLayerFile[]): DeploymentLayerFile[] => {
+  const normalize = (
+    kind: "tools" | "skills" | "background-jobs",
+    files: DeploymentLayerFile[],
+  ): DeploymentLayerFile[] => {
     const seen = new Set<string>();
     return files
       .map((file) => {
-        if (!file || typeof file.path !== "string" || typeof file.content !== "string") {
+        if (
+          !file ||
+          typeof file !== "object" ||
+          Array.isArray(file) ||
+          Object.keys(file).some((key) =>
+            kind === "background-jobs"
+              ? !["path", "content", "enabled"].includes(key)
+              : !["path", "content", "executable"].includes(key),
+          ) ||
+          typeof file.path !== "string" ||
+          typeof file.content !== "string"
+        ) {
           throw new Error(`deployment layer ${kind} entries require string path and content`);
         }
         if (file.path.includes("\u0000") || file.content.includes("\u0000")) {
@@ -125,11 +160,24 @@ function normalizedBundle(input: DeploymentLayerBundle): DeploymentLayerBundle {
           throw new Error(`deployment layer ${kind} path must start with ${kind}/: ${path}`);
         if (seen.has(path)) throw new Error(`duplicate deployment layer path: ${path}`);
         seen.add(path);
-        return { path, content: file.content, ...(file.executable === true ? { executable: true } : {}) };
+        if (file.enabled !== undefined && (kind !== "background-jobs" || typeof file.enabled !== "boolean")) {
+          throw new Error(`deployment layer ${kind} entry has invalid enabled state: ${path}`);
+        }
+        return {
+          path,
+          content: file.content,
+          ...(file.executable === true ? { executable: true } : {}),
+          ...(kind === "background-jobs" && file.enabled !== undefined ? { enabled: file.enabled } : {}),
+        };
       })
       .sort(pathOrder);
   };
-  return { contract: 1, tools: normalize("tools", input.tools), skills: normalize("skills", input.skills) };
+  return {
+    contract: 1,
+    tools: normalize("tools", input.tools),
+    skills: normalize("skills", input.skills),
+    backgroundJobs: normalize("background-jobs", input.backgroundJobs ?? []),
+  };
 }
 
 function toolDescriptors(files: DeploymentLayerFile[]): ToolDescriptor[] {
@@ -145,6 +193,22 @@ function toolDescriptors(files: DeploymentLayerFile[]): ToolDescriptor[] {
     ids.add(tool.id);
   }
   return tools;
+}
+
+function backgroundJobProfiles(files: DeploymentLayerFile[]): BackgroundJobDeploymentProfile[] {
+  const profiles = files.map((file) => {
+    if (!/^background-jobs\/[^/]+\/job\.json$/.test(file.path)) {
+      throw new Error(`deployment layer background job path must be background-jobs/<id>/job.json: ${file.path}`);
+    }
+    return parseBackgroundJobDeploymentProfile(file.content, file.path, file.enabled !== false);
+  });
+  const ids = new Set<string>();
+  for (const profile of profiles) {
+    if (ids.has(profile.definition.id))
+      throw new Error(`duplicate deployment background job id: ${profile.definition.id}`);
+    ids.add(profile.definition.id);
+  }
+  return profiles;
 }
 
 function skillManifests(files: DeploymentLayerFile[]): SkillManifest[] {
@@ -197,6 +261,55 @@ function contentHash(bundle: DeploymentLayerBundle): string {
   return createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
 }
 
+async function retainBackgroundJobControls(
+  input: DeploymentLayerBundle,
+  current: StoredDeploymentLayer | null | undefined,
+  retirement: BackgroundJobRetirementStore | undefined,
+): Promise<DeploymentLayerBundle> {
+  const requested = input.backgroundJobs ?? [];
+  if (!current?.bundle.backgroundJobs?.length) return input;
+  const paths = new Set(requested.map((file) => file.path));
+  const retained: DeploymentLayerFile[] = [];
+  for (const file of current.bundle.backgroundJobs) {
+    if (paths.has(file.path)) continue;
+    if (
+      file.enabled === false &&
+      retirement?.durability === "durable" &&
+      retirement.receiptCoverage === "all_owned" &&
+      retirement.approvalCoverage === "all_unused" &&
+      retirement.decision === "terminal_and_expired"
+    ) {
+      const purge = await retirement
+        .canPurge(parseBackgroundJobDeploymentProfile(file.content, file.path, false))
+        .catch(() => false);
+      if (purge) continue;
+    }
+    retained.push({ ...file, enabled: false });
+  }
+  return retained.length ? { ...input, backgroundJobs: [...requested, ...retained] } : input;
+}
+
+function assertBackgroundJobRevisionCompatibility(
+  input: DeploymentLayerBundle,
+  current: StoredDeploymentLayer | null | undefined,
+): void {
+  if (!current?.bundle.backgroundJobs?.length) return;
+  const prior = new Map(current.bundle.backgroundJobs.map((file) => [file.path, file]));
+  for (const file of input.backgroundJobs ?? []) {
+    const existing = prior.get(file.path);
+    if (!existing) continue;
+    if (existing.enabled === false && file.enabled !== false) {
+      throw new Error(`background job at ${file.path} is retired; register a new id`);
+    }
+    if (existing.content === file.content) continue;
+    const before = parseBackgroundJobDeploymentProfile(existing.content, existing.path);
+    const after = parseBackgroundJobDeploymentProfile(file.content, file.path);
+    if (before.binding.descriptorSha256 !== after.binding.descriptorSha256) {
+      throw new Error(`background job ${after.definition.id} contract is immutable; register a new id`);
+    }
+  }
+}
+
 function publicResolved(runtime: DeploymentLayerRuntime): Omit<DeploymentLayerRuntime, "dir"> {
   const { dir: _dir, ...resolved } = runtime;
   return resolved;
@@ -225,8 +338,9 @@ function validateBundle(
 } {
   const bundle = normalizedBundle(input);
   const tools = toolDescriptors(bundle.tools);
+  const backgroundJobs = backgroundJobProfiles(bundle.backgroundJobs ?? []);
   const manifests = skillManifests(bundle.skills);
-  return { bundle, manifests, runtime: resolvedDeploymentLayer(dir, tools) };
+  return { bundle, manifests, runtime: resolvedDeploymentLayer(dir, tools, backgroundJobs) };
 }
 
 export function createDeploymentLayerStore(opts: {
@@ -241,6 +355,7 @@ export function createDeploymentLayerStore(opts: {
   retryDelaysMs?: readonly number[];
   advisoryLock?: AdvisoryLock;
   auditPersisted?: (record: StoredDeploymentLayer) => Promise<void>;
+  backgroundJobRetirement?: BackgroundJobRetirementStore;
 }): DeploymentLayerStore {
   const now = opts.now ?? Date.now;
   const retryDelaysMs = opts.retryDelaysMs ?? [250, 1000, 4000];
@@ -509,8 +624,8 @@ export function createDeploymentLayerStore(opts: {
         } catch (error) {
           throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
         }
-        const hash = contentHash(bundle);
-        const candidate: StoredDeploymentLayer = {
+        let hash = contentHash(bundle);
+        let candidate: StoredDeploymentLayer = {
           contentHash: hash,
           version: 1,
           updatedAt: now(),
@@ -520,6 +635,30 @@ export function createDeploymentLayerStore(opts: {
           pendingAudits: [],
         };
         return withFleetLock(async () => {
+          const current = await opts.backing.get(CURRENT);
+          try {
+            assertBackgroundJobRevisionCompatibility(input, current);
+          } catch (error) {
+            throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
+          }
+          const retainedInput = await retainBackgroundJobControls(input, current, opts.backgroundJobRetirement);
+          if (retainedInput !== input) {
+            try {
+              const validated = validateBundle(retainedInput, "durable:pending");
+              bundle = validated.bundle;
+              manifests = validated.manifests;
+              runtime = validated.runtime;
+              hash = contentHash(bundle);
+              candidate = {
+                ...candidate,
+                contentHash: hash,
+                bundle,
+                resolved: publicResolved(runtime),
+              };
+            } catch (error) {
+              throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
+            }
+          }
           const existing = await opts.skills.list();
           const claimed = new Map<string, string>();
           for (const skill of existing) {

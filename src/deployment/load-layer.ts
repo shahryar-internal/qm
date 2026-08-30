@@ -10,6 +10,7 @@ import {
 import { credentialServiceForPath } from "../credentials/resident-paths.ts";
 import type { ResidentAuthConnector } from "../credentials/resident-auth.ts";
 import type { CommandRule } from "../types.ts";
+import type { BackgroundJobDeploymentProfile } from "../background-jobs/types.ts";
 
 export interface DeploymentLayerRuntime {
   dir: string;
@@ -22,6 +23,7 @@ export interface DeploymentLayerRuntime {
   commandRules: CommandRule[];
   requestWorkspaces: Array<{ prefix: string; maxBytes: number }>;
   brokeredTools: BrokeredLayerTool[];
+  backgroundJobs: BackgroundJobDeploymentProfile[];
 }
 
 export interface BrokeredLayerTool {
@@ -43,6 +45,7 @@ export function emptyDeploymentLayer(): DeploymentLayerRuntime {
     commandRules: [],
     requestWorkspaces: [],
     brokeredTools: [],
+    backgroundJobs: [],
   };
 }
 
@@ -81,8 +84,30 @@ function toolService(tool: ToolDescriptor, why: string): string {
   );
 }
 
-export function resolvedDeploymentLayer(dir: string, tools: ToolDescriptor[]): DeploymentLayerRuntime {
+function assertBackgroundJobToolIds(
+  tools: readonly ToolDescriptor[],
+  backgroundJobs: readonly BackgroundJobDeploymentProfile[],
+): void {
+  const ids = new Map<string, string>(tools.map((tool) => [tool.id, `deployment tool ${tool.id}`]));
+  const profileIds = new Set<string>();
+  for (const profile of backgroundJobs) {
+    if (profileIds.has(profile.definition.id)) throw new Error(`duplicate background job id: ${profile.definition.id}`);
+    profileIds.add(profile.definition.id);
+    for (const tool of Object.values(profile.tools)) {
+      const prior = ids.get(tool.id);
+      if (prior) throw new Error(`background job tool id ${tool.id} collides with ${prior}`);
+      ids.set(tool.id, `background job ${profile.definition.id}`);
+    }
+  }
+}
+
+export function resolvedDeploymentLayer(
+  dir: string,
+  tools: ToolDescriptor[],
+  backgroundJobs: BackgroundJobDeploymentProfile[] = [],
+): DeploymentLayerRuntime {
   assertDisjointCredentialLinks(tools);
+  assertBackgroundJobToolIds(tools, backgroundJobs);
   const withAuth = tools.filter((t) => t.auth);
   const brokered = withAuth.filter((t) => t.auth!.broker);
   if (brokered.length > 1) {
@@ -123,6 +148,7 @@ export function resolvedDeploymentLayer(dir: string, tools: ToolDescriptor[]): D
         broker: t.auth!.broker!,
       };
     }),
+    backgroundJobs,
   };
 }
 
@@ -138,6 +164,7 @@ export function replaceDeploymentLayer(target: DeploymentLayerRuntime, source: D
     "commandRules",
     "requestWorkspaces",
     "brokeredTools",
+    "backgroundJobs",
   ] as const) {
     target[key].splice(0, target[key].length, ...(source[key] as never[]));
   }
