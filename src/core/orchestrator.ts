@@ -2064,6 +2064,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(deps.control && controlClaims ? { control: deps.control, controlClaims } : {}),
           ...(deps.webhookPublicUrl ? { webhookPublicUrl: deps.webhookPublicUrl } : {}),
           ...(surfaceToolDeps ? { surface: surfaceToolDeps } : {}),
+          ...(() => {
+            const backgroundJobs =
+              surfaceToolDeps &&
+              deps.backgroundJobs?.bind({
+                surface: input.surface,
+                actorId: actor.id,
+                actorType: actor.type,
+                conversationKind: conversation.kind,
+                conversationThreadRef: conversation.threadRef,
+                conversationAudienceIds: conversation.audience.map((principal) => principal.id),
+                originKind: input.origin.kind,
+                originMessageTs: messageTs,
+                verifiedSlack: input.verifiedSlack,
+              });
+            return backgroundJobs ? { backgroundJobs } : {};
+          })(),
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),

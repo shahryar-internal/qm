@@ -63,6 +63,7 @@ import type { ShareArtifactRequest, ShareArtifactResult } from "../api/artifact-
 import type { Cron, Webhook } from "../types.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
+import type { BackgroundJobOutcome, BoundBackgroundJobTools, WorkflowCardEnvelope } from "../background-jobs/types.ts";
 
 const SKILL_SKILLMD_RE = /^(?:\.\/)?skills\/([^/]+)\/SKILL\.md$/;
 function skillTreeDirFor(path: string): string | null {
@@ -249,6 +250,9 @@ export interface ToolContext extends SurfaceToolDeps {
     content: string,
   ): Promise<ControlOk<{ version: number }> | ControlErr<"soul_update_denied"> | ControlUnavailable>;
   shareArtifact(req: ShareArtifactRequest): Promise<ShareArtifactResult | ControlUnavailable>;
+  backgroundJobStart?(input: unknown): Promise<BackgroundJobOutcome>;
+  backgroundJobStatus?(): Promise<BackgroundJobOutcome>;
+  backgroundJobCancel?(): Promise<BackgroundJobOutcome>;
 }
 
 interface SurfaceSearchToolOpts {
@@ -369,6 +373,7 @@ export interface SurfaceToolDeps {
   ): Promise<SurfaceStandingOrderResult>;
   staySilent(reason: string): Promise<{ ok: true; message: string }>;
   postNativeCard?(card: TrustedAnalyticsCard, idempotencyKey: string): Promise<SurfacePostResult>;
+  postWorkflowCard?(card: Readonly<WorkflowCardEnvelope>, deliveryKey: string): Promise<SurfacePostResult>;
 }
 
 export interface ControlUnavailable {
@@ -442,6 +447,7 @@ export interface ToolContextDeps {
   controlClaims?: CapabilityClaims;
   webhookPublicUrl?: string;
   surface?: SurfaceToolDeps;
+  backgroundJobs?: BoundBackgroundJobTools;
 }
 
 const EFFECT_AUTHORIZATION_EXEMPT = new Set<PropertyKey>(["mcpToolDefs", "soulRead", "staySilent"]);
@@ -554,6 +560,29 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   }
 
   const context: ToolContext = {
+    ...(deps.backgroundJobs
+      ? {
+          backgroundJobStart: (input: unknown) => deps.backgroundJobs!.start(input),
+          backgroundJobStatus: async () => {
+            const result = await deps.backgroundJobs!.status();
+            if (!result.ok || !result.cardDeliveryKey) return result;
+            if (!result.card)
+              return Object.freeze({
+                ok: false as const,
+                state: "unavailable" as const,
+                message: "The background job result card is unavailable.",
+              });
+            const posted = await deps.surface?.postWorkflowCard?.(result.card, result.cardDeliveryKey);
+            if (posted?.ok) return result;
+            return Object.freeze({
+              ok: false as const,
+              state: "unavailable" as const,
+              message: "The background job result card could not be delivered.",
+            });
+          },
+          backgroundJobCancel: () => deps.backgroundJobs!.cancel(),
+        }
+      : {}),
     ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),
     ...(deps.credentialExec ? { credentialExec: deps.credentialExec } : {}),
     async computerStatus(): Promise<ComputerStatus> {

@@ -1,5 +1,4 @@
 import type { ResolvedSecurityPolicy } from "./security/security-posture.ts";
-
 export interface VerifiedSlackTurn {
   teamId: string;
   userId: string;

@@ -36,12 +36,19 @@ import { orgId } from "../../config.ts";
 import { headLooksLikeText, replaceThreadSegment } from "./turn-helpers.ts";
 import type { OrchestratorDeps, OrchestratorInput } from "./types.ts";
 import { sanitizeDestination } from "../../delivery/destination.ts";
+import {
+  WORKFLOW_ARTIFACT_MIME,
+  decodeWorkflowArtifactCard,
+} from "../../../plugins/chassis/src/workflow-artifact-card.ts";
+import type { WorkflowCardEnvelope } from "../../background-jobs/types.ts";
 
 const SURFACE_READ_DEFAULT = 100;
 const SURFACE_READ_MAX = 200;
 const SURFACE_SEARCH_DEFAULT = 10;
 const SURFACE_SEARCH_MAX = 40;
 const SURFACE_FILE_MAX_CHARS = 100_000;
+const WORKFLOW_CARD_MAX_BYTES = 128 * 1024;
+const WORKFLOW_CARD_BASE_URL = "https://workflow-artifact.invalid/";
 
 export interface SpineState {
   surfaceOutboundCount: number;
@@ -224,6 +231,31 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
       } catch (error) {
         return { ok: false, message: errMessage(error) };
       }
+    },
+    postWorkflowCard: async (card: Readonly<WorkflowCardEnvelope>, deliveryKey: string) => {
+      if (!/^background-job-card:[a-z0-9][a-z0-9._:-]{9,199}$/.test(deliveryKey)) {
+        return { ok: false, message: "the background job card binding is invalid" };
+      }
+      const bytes = Buffer.from(JSON.stringify(card), "utf8");
+      try {
+        decodeWorkflowArtifactCard(bytes, WORKFLOW_CARD_BASE_URL);
+      } catch {
+        return { ok: false, message: "the background job card is invalid" };
+      }
+      const stored = await blobTransfer.put(bytes, { maxBytes: WORKFLOW_CARD_MAX_BYTES });
+      return enqueue(
+        currentDestination,
+        "",
+        [
+          {
+            name: "background-job.workflow.json",
+            mimetype: WORKFLOW_ARTIFACT_MIME,
+            sizeBytes: stored.sizeBytes,
+            blobId: stored.blobId,
+          },
+        ],
+        deliveryKey,
+      );
     },
     post: async (postText, opts, files) => {
       let destination = currentDestination;

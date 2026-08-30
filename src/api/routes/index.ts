@@ -27,6 +27,8 @@ import { egressAuditRoutes } from "./egress-audit.ts";
 import { authBrokerRoutes } from "./auth-broker.ts";
 import { userModelAuthRoutes } from "./user-model-auth.ts";
 import { notionAuthorityRoutes } from "./notion-authority.ts";
+import { miniappRawRoutes } from "./miniapps.ts";
+import { jobAuthorityJwksRoutes } from "./job-authority-jwks.ts";
 
 export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   { method: "GET", path: "/healthz", auth: "public", handle: ({ res }) => sendJson(res, 200, { ok: true }) },
@@ -42,6 +44,8 @@ export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   ...blobRoutes,
   ...sessionStateRawRoutes,
   ...webhookRawRoutes,
+  ...miniappRawRoutes,
+  ...jobAuthorityJwksRoutes,
 ];
 
 export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [

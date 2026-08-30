@@ -54,6 +54,8 @@ import type { RateLimiter } from "../ratelimit/rate-limiter.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { SlackInstallationStore, SlackSocketAppIdReader } from "../surfaces/slack-installation.ts";
 import type { NotionAuthorityPublicState } from "../mcp/notion-authority.ts";
+import type { MiniappStore } from "../miniapps/miniapp.ts";
+import type { JsonWebKey } from "node:crypto";
 
 export interface ServerDeps {
   production?: boolean;
@@ -144,4 +146,6 @@ export interface ServerDeps {
   secretDrops?: SecretDropStore;
   fireDropResolution?: (drop: DropResolution) => Promise<unknown>;
   blobTransfer?: BlobTransferStore;
+  miniapps?: MiniappStore;
+  jobAuthorityJwks?: () => Readonly<{ keys: readonly Readonly<JsonWebKey>[] }>;
 }

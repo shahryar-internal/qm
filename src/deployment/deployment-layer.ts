@@ -1,3 +1,6 @@
+import { parseBackgroundJobDeploymentProfile } from "../background-jobs/deployment-profile.ts";
+import type { BackgroundJobDeploymentProfile } from "../background-jobs/types.ts";
+
 export type ApprovalDecision = "allow" | "require_approval" | "deny";
 
 export interface ToolApproval {
@@ -41,6 +44,7 @@ export interface ToolDescriptor {
   install?: { binary?: string };
   selfCheck?: { kind: "executable-sha256-v1" };
   requestWorkspace?: { maxBytes: number };
+  backgroundJob?: BackgroundJobDeploymentProfile;
 }
 
 const BUILT_IN_CREDENTIAL_PATHS: readonly ToolCredentialPath[] = [
@@ -150,6 +154,27 @@ export function parseToolDescriptor(raw: string, sourcePath: string): ToolDescri
       throw new Error(`${sourcePath}: "requestWorkspace.maxBytes" must be an integer from 1 through 20971520`);
     }
     out.requestWorkspace = { maxBytes: record["maxBytes"] as number };
+  }
+
+  if (d["backgroundJob"] !== undefined) {
+    out.backgroundJob = parseBackgroundJobDeploymentProfile(d["backgroundJob"]);
+    if (out.backgroundJob.definition.id !== out.id || out.backgroundJob.tools.start.id !== out.id) {
+      throw new Error(`${sourcePath}: backgroundJob definition and start tool ids must equal the deployment tool id`);
+    }
+    if (
+      out.advertise ||
+      out.hints ||
+      out.egress ||
+      out.auth ||
+      out.approvals ||
+      out.install ||
+      out.selfCheck ||
+      out.requestWorkspace
+    ) {
+      throw new Error(
+        `${sourcePath}: backgroundJob descriptors cannot be advertised, installed, brokered, or executed as shell tools`,
+      );
+    }
   }
 
   const credentialPaths = out.auth?.credentialPaths ?? [];

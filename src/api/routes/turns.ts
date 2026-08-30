@@ -58,6 +58,21 @@ async function postTurn(ctx: ApiCtx): Promise<void> {
   return sendJson(res, status, result);
 }
 
+export function publicTurnBody(body: TurnRequest): TurnRequest {
+  const {
+    ownerKeychainUnion: _ownerKeychainUnion,
+    spawned: _spawned,
+    unattendedGrants: _unattendedGrants,
+    trustedSlackTeamId: _trustedSlackTeamId,
+    trustedSlackUserId: _trustedSlackUserId,
+    verifiedSlack: _verifiedSlack,
+    slackAgentSessionToken: _slackAgentSessionToken,
+    slackAgentSession: _slackAgentSession,
+    ...safeBody
+  } = body;
+  return safeBody;
+}
+
 async function getApproval(ctx: ApiCtx): Promise<void> {
   const { res, app, actor } = ctx;
   const id = ctx.params.id!;
