@@ -126,16 +126,67 @@ test("card output is independently revalidated after decoder execution", () => {
   assert.throws(() => validateWorkflowArtifactCard({ heading: "Unknown", onClick: "effect" }, "https://qm.test/chat"));
 });
 
+test("card text budgets match the native Slack renderer without silent clipping", () => {
+  const base = "https://qm.test/chat";
+  assert.equal(validateWorkflowArtifactCard({ heading: "x".repeat(150) }, base).heading.length, 150);
+  assert.throws(() => validateWorkflowArtifactCard({ heading: "x".repeat(151) }, base));
+  assert.throws(() =>
+    validateWorkflowArtifactCard(
+      {
+        heading: "Oversized section",
+        sections: [
+          {
+            key: "details",
+            label: "Details",
+            items: [{ value: "x".repeat(1_498) }, { value: "y".repeat(1_498) }],
+          },
+        ],
+      },
+      base,
+    ),
+  );
+  assert.throws(() =>
+    validateWorkflowArtifactCard(
+      {
+        heading: "Oversized links",
+        links: [
+          { label: "One", href: `https://docs.example/${"x".repeat(1_500)}` },
+          { label: "Two", href: `https://docs.example/${"y".repeat(1_500)}` },
+        ],
+      },
+      base,
+    ),
+  );
+});
+
 test("links allow same-origin HTTP(S) or credential-free cross-origin HTTPS only", () => {
   const base = "http://qm.test/chat";
   assert.equal(safeWorkflowArtifactHref("/files/one", base), "http://qm.test/files/one");
   assert.equal(safeWorkflowArtifactHref("https://docs.example/path", base), "https://docs.example/path");
+  assert.equal(
+    safeWorkflowArtifactHref("https://docs.example/path?view=compact", base),
+    "https://docs.example/path?view=compact",
+  );
   for (const value of [
     "http://docs.example/path",
     "javascript:alert(1)",
     "data:text/html,bad",
     "https://user:secret@docs.example/path",
     "//user:secret@qm.test/path",
+    "https://docs.example/path?token=secret",
+    "https://docs.example/path?access_token=secret",
+    "https://docs.example/path?idToken=secret",
+    "https://docs.example/path?apiKey=secret",
+    "https://docs.example/path?key=secret",
+    "https://docs.example/path?authorization=secret",
+    "https://docs.example/path?auth_token=secret",
+    "https://docs.example/path?authToken=secret",
+    "https://docs.example/path?oauth_token=secret",
+    "https://docs.example/path?X-Amz-Credential=secret",
+    "https://docs.example/path?X-Amz-Signature=secret",
+    "https://docs.example/path?X-Goog-Signature=secret",
+    "https://docs.example/path?AWSAccessKeyId=secret",
+    "https://docs.example/path?sig=secret",
   ]) {
     assert.equal(safeWorkflowArtifactHref(value, base), null);
   }

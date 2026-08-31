@@ -519,6 +519,103 @@ test("uploadAttachments renders a valid workflow artifact as Block Kit instead o
   assert.equal(JSON.stringify(posts[0].blocks).includes("calendar.example.com/event/1"), true);
 });
 
+test("workflow fallback text cannot trigger Slack controls, mentions, or automatic links", async () => {
+  const posts: any[] = [];
+  const client = {
+    chat: {
+      postMessage: async (args: any) => {
+        posts.push(args);
+        return { ts: "171.3" };
+      },
+    },
+    files: {
+      uploadV2: async () => ({ ok: true }),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText:
+        "<!channel> <@U123> <#C123|ops> @here @alice https://evil.example/path www.evil.test evil.test alice@example.test <https://evil.example|open>",
+      payload: { heading: "Safe card" },
+    }),
+  );
+
+  await uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "safe.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: artifact.length, blobId: "B1" }],
+    async () => artifact,
+  );
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].mrkdwn, false);
+  assert.equal(posts[0].parse, "none");
+  assert.equal(posts[0].link_names, false);
+  assert.equal(posts[0].unfurl_links, false);
+  assert.equal(posts[0].unfurl_media, false);
+  assert.doesNotMatch(posts[0].text, /<[@#!]|<(?:https?|mailto):/i);
+  assert.doesNotMatch(posts[0].text, /@(?!\u200b)/u);
+  assert.doesNotMatch(posts[0].text, /\b(?:https?|ftp):\/\//i);
+  assert.doesNotMatch(posts[0].text, /\bwww\.(?!\u200b)/i);
+  assert.doesNotMatch(posts[0].text, /\b[a-z0-9-]+\.(?:com|example|test)\b/i);
+});
+
+test("workflow card rendering rejects escaped text that would exceed Slack block limits", async () => {
+  const posts: any[] = [];
+  const client = {
+    chat: { postMessage: async (args: any) => void posts.push(args) },
+    files: {
+      uploadV2: async () => ({ ok: true }),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  for (const payload of [
+    { heading: "Summary overflow", summary: "&".repeat(700) },
+    {
+      heading: "Section overflow",
+      sections: [{ key: "details", label: "Details", items: [{ value: "&".repeat(700) }] }],
+    },
+    {
+      heading: "Link overflow",
+      links: Array.from({ length: 5 }, (_, index) => ({
+        label: "&".repeat(120),
+        href: `https://example.com/${index}`,
+      })),
+    },
+  ]) {
+    const artifact = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        renderer: "qm.card.v1",
+        fallbackText: "Safe fallback",
+        payload,
+      }),
+    );
+    await assert.rejects(
+      uploadAttachments(
+        client,
+        "C1",
+        "170.1",
+        [
+          {
+            name: "overflow.workflow.json",
+            mimetype: WORKFLOW_ARTIFACT_MIME,
+            sizeBytes: artifact.length,
+            blobId: "B1",
+          },
+        ],
+        async () => artifact,
+      ),
+      /could not be rendered safely/,
+    );
+  }
+  assert.equal(posts.length, 0);
+});
+
 test("uploadAttachments deletes a workflow card whose Slack post finishes after cancellation", async () => {
   let cancelled = false;
   let releasePost: ((value: { ts: string }) => void) | undefined;

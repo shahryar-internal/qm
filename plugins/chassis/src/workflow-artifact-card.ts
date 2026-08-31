@@ -13,11 +13,15 @@ const MAX_SECTIONS = 12;
 const MAX_SECTION_ITEMS = 32;
 const MAX_LINKS = 16;
 const MAX_HREF = 2_048;
+const MAX_HEADING = 150;
+const MAX_SLACK_TEXT = 3_000;
 const MAX_ARTIFACT_BYTES = 128 * 1024;
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RENDERER_NAME = /^[a-z0-9](?:[a-z0-9._/-]{0,62}[a-z0-9])?$/;
 const SECTION_KEY = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,62}[a-zA-Z0-9])?$/;
 const TONES = new Set(["neutral", "info", "success", "warning", "danger"]);
+const CREDENTIAL_QUERY_KEY =
+  /(?:^|[^a-z0-9])(?:(?:aws[-_]?)?access[-_]?key(?:[-_]?id)?|api[-_]?key|o?auth(?:orization|entication)?(?:[-_]?(?:token|key))?|credential|id[-_]?token|access[-_]?token|refresh[-_]?token|key|secret|signature|sig|token)(?:$|[^a-z0-9])/i;
 
 export interface WorkflowArtifactEnvelope {
   version: 1;
@@ -127,12 +131,26 @@ export function safeWorkflowArtifactHref(value: string, baseUrl: string): string
     const base = new URL(baseUrl);
     const url = new URL(value, base);
     if (url.username || url.password) return null;
+    for (const key of url.searchParams.keys()) {
+      if (CREDENTIAL_QUERY_KEY.test(key)) return null;
+    }
     if (url.origin !== base.origin && url.protocol !== "https:") return null;
     if (url.origin === base.origin && url.protocol !== "http:" && url.protocol !== "https:") return null;
     return url.href;
   } catch {
     return null;
   }
+}
+
+function sectionTextLength(section: NonNullable<WorkflowArtifactCard["sections"]>[number]): number {
+  return section.items.reduce((length, item) => {
+    const row = (item.label ? item.label.length + 6 : 2) + item.value.length + (item.href ? item.href.length + 3 : 0);
+    return length + row + 1;
+  }, section.label.length + 2);
+}
+
+function linksTextLength(links: NonNullable<WorkflowArtifactCard["links"]>): number {
+  return links.reduce((length, link, index) => length + link.label.length + link.href.length + 3 + (index ? 3 : 0), 0);
 }
 
 function validateLink(value: unknown, baseUrl: string): { label: string; href: string } {
@@ -149,7 +167,7 @@ export function validateWorkflowArtifactCard(value: unknown, baseUrl: string): W
   if (!ownRecord(value) || !exactKeys(value, ["heading"], ["summary", "status", "sections", "links"])) {
     throw new Error("invalid workflow artifact card");
   }
-  if (!boundedString(value.heading, 160, false)) throw new Error("invalid workflow artifact card");
+  if (!boundedString(value.heading, MAX_HEADING, false)) throw new Error("invalid workflow artifact card");
   const card: WorkflowArtifactCard = { heading: value.heading };
   if (Object.hasOwn(value, "summary")) {
     if (!boundedString(value.summary, 2_000, false)) throw new Error("invalid workflow artifact card");
@@ -191,7 +209,7 @@ export function validateWorkflowArtifactCard(value: unknown, baseUrl: string): W
         throw new Error("invalid workflow artifact card");
       }
       keys.add(section.key);
-      return {
+      const normalized = {
         key: section.key,
         label: section.label,
         items: section.items.map((item) => {
@@ -213,12 +231,15 @@ export function validateWorkflowArtifactCard(value: unknown, baseUrl: string): W
           return normalized;
         }),
       };
+      if (sectionTextLength(normalized) > MAX_SLACK_TEXT) throw new Error("invalid workflow artifact card");
+      return normalized;
     });
   }
   if (Object.hasOwn(value, "links")) {
     if (!Array.isArray(value.links) || value.links.length > MAX_LINKS)
       throw new Error("invalid workflow artifact card");
     card.links = value.links.map((link) => validateLink(link, baseUrl));
+    if (linksTextLength(card.links) > MAX_SLACK_TEXT) throw new Error("invalid workflow artifact card");
   }
   validateJsonValue(card, 0, { nodes: 0, stringUnits: 0 });
   return card;

@@ -220,6 +220,26 @@ function clipped(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
+function exactSlackText(value: string, max: number): string {
+  if (value.length > max) throw new Error("workflow artifact card exceeds Slack text limit");
+  return value;
+}
+
+function neutralizeSlackFallbackText(value: string): string {
+  return value
+    .replace(/&/g, "＆")
+    .replace(/</g, "‹")
+    .replace(/>/g, "›")
+    .replace(/@/g, "@\u200b")
+    .replace(/\b((?:https?|ftp):)\/\//gi, "$1\u200b//")
+    .replace(/\b((?:mailto|tel):)/gi, "$1\u200b")
+    .replace(/\bwww\./gi, (value) => `${value.slice(0, -1)}.\u200b`)
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.replace(".", ".\u200b"))
+    .replace(/\b(?:[a-z0-9](?:[a-z0-9-]{0,62})\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})\b/gi, (value) =>
+      value.replace(".", ".\u200b"),
+    );
+}
+
 function slackWorkflowHref(href: string): string | undefined {
   const url = new URL(href);
   if (url.origin === new URL(SLACK_WORKFLOW_BASE_URL).origin) return undefined;
@@ -241,7 +261,7 @@ function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string
     danger: ":red_circle:",
   } as const;
   const blocks: Array<Record<string, unknown>> = [
-    { type: "header", text: { type: "plain_text", text: clipped(card.heading, 150), emoji: true } },
+    { type: "header", text: { type: "plain_text", text: exactSlackText(card.heading, 150), emoji: true } },
   ];
   if (card.status) {
     blocks.push({
@@ -250,7 +270,7 @@ function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string
     });
   }
   if (card.summary) {
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: clipped(escapeMrkdwn(card.summary), 3_000) } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: exactSlackText(escapeMrkdwn(card.summary), 3_000) } });
   }
   for (const section of card.sections ?? []) {
     const rows = section.items.map((item) => {
@@ -258,7 +278,7 @@ function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string
       return item.label ? `• *${escapeMrkdwn(item.label)}:* ${value}` : `• ${value}`;
     });
     const text = `*${escapeMrkdwn(section.label)}*${rows.length ? `\n${rows.join("\n")}` : ""}`;
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: clipped(text, 3_000) } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: exactSlackText(text, 3_000) } });
   }
   if (card.links?.length) {
     const links = card.links
@@ -267,7 +287,7 @@ function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string
         return href ? `<${href}|${escapeMrkdwn(link.label)}>` : escapeMrkdwn(link.label);
       })
       .join(" · ");
-    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: clipped(links, 3_000) }] });
+    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: exactSlackText(links, 3_000) }] });
   }
   return blocks;
 }
@@ -472,8 +492,11 @@ export async function uploadAttachments(
     const response = (await client.chat!.postMessage({
       channel,
       ...(threadTs ? { thread_ts: threadTs, reply_broadcast: false } : {}),
-      text: lead ? `${lead}\n\n${card.fallbackText}` : card.fallbackText,
+      text: neutralizeSlackFallbackText(lead ? `${lead}\n\n${card.fallbackText}` : card.fallbackText),
       blocks,
+      mrkdwn: false,
+      parse: "none",
+      link_names: false,
       unfurl_links: false,
       unfurl_media: false,
       ...botIdentityArgs(),
