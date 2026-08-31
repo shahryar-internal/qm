@@ -151,7 +151,10 @@ export function createTurnMethods(
         return (await deps.projects.withVersion(conversationRef, projectVersion, fn)) ?? null;
       }
 
-      const individualAuth = !!deps.userModelCredentials && (await deps.config.getIndividualModelAuthDurable());
+      const individualAuth =
+        !deps.runtimeChoiceOverride &&
+        !!deps.userModelCredentials &&
+        (await deps.config.getIndividualModelAuthDurable());
       if (req.surface === "web") {
         const threadRef = req.conversation.threadRef;
         const existing = await deps.sessions.getByThread(threadRef);

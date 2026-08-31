@@ -37,6 +37,7 @@ import type { BudgetTracker } from "../../ratelimit/budget.ts";
 import type { AwsRoleBroker } from "../../auth/aws-role-broker.ts";
 import type { ControlService } from "../../api/control-service.ts";
 import type { Harness } from "../../harness/harness.ts";
+import type { RuntimeChoice } from "../../harness/harness-router.ts";
 import type { AdminService } from "../../admin/admin-service.ts";
 import type { ErrorLog } from "../../admin/error-log.ts";
 import type { MetricsSink } from "../../admin/metrics-sink.ts";
@@ -101,6 +102,7 @@ export interface OrchestratorDeps {
   config?: ScopedConfigStore;
   /** The deployment's fallback harness (wiring's config.harness) — used when no org runtime selection exists. */
   defaultHarness?: string;
+  runtimeChoiceOverride?: RuntimeChoice;
   userModelCredentials?: UserModelCredentialStore;
   brandingDefault?: OrgBranding;
   resolveBaseModelId?: () => string | undefined;

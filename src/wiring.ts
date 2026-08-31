@@ -981,7 +981,7 @@ export function buildApp(
     return selectableModelCatalog(overrides.modelCredentialFetch);
   };
   const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, (input) => {
-    if (input.runtimePinned && input.harness && isHarnessId(input.harness) && input.model) {
+    if (!devGeminiRuntime && input.runtimePinned && input.harness && isHarnessId(input.harness) && input.model) {
       return { harnessId: input.harness, modelId: input.model };
     }
     return resolveRuntimeChoiceDurable(
@@ -1179,6 +1179,7 @@ export function buildApp(
     resolution,
     config: configStore,
     defaultHarness: fallbackHarness,
+    ...(devGeminiRuntime ? { runtimeChoiceOverride: devGeminiRuntime } : {}),
     userModelCredentials,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     sessionTapeMode: config.sessionTapeMode,

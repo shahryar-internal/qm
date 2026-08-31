@@ -2428,7 +2428,19 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let claudeOauthToken: string | undefined;
         let codexTurnAuth: CodexTurnAuth | undefined;
         const userCredStore = deps.userModelCredentials;
-        if (userCredStore && humanTurn && (await deps.config?.getIndividualModelAuthDurable())) {
+        const individualAuthRequired =
+          !!userCredStore && humanTurn && (await deps.config?.getIndividualModelAuthDurable()) === true;
+        if (individualAuthRequired && deps.runtimeChoiceOverride) {
+          deps.auditLog.record({
+            at: Date.now(),
+            principalId: actor.id,
+            action: "individual-model-auth.bypassed",
+            resource: conversation.threadRef,
+            scopeLabel: scopeId,
+            status: "forced-runtime",
+            detail: JSON.stringify(deps.runtimeChoiceOverride),
+          });
+        } else if (userCredStore && individualAuthRequired) {
           const [anthCred, oaiCred] = await Promise.all([
             userCredStore.get(actor.id, "anthropic"),
             userCredStore.get(actor.id, "openai"),
