@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  decodeWorkflowArtifactCard,
+  workflowArtifactSlackLinksText,
+  workflowArtifactSlackMrkdwn,
+  workflowArtifactSlackSectionText,
+} from "../../chassis/src/workflow-artifact-card.ts";
+import {
   WORKFLOW_ARTIFACT_MIME,
   WORKFLOW_ARTIFACT_CARD_RENDERER,
   WorkflowArtifactRegistry,
@@ -130,6 +136,11 @@ test("card text budgets match the native Slack renderer without silent clipping"
   const base = "https://qm.test/chat";
   assert.equal(validateWorkflowArtifactCard({ heading: "x".repeat(150) }, base).heading.length, 150);
   assert.throws(() => validateWorkflowArtifactCard({ heading: "x".repeat(151) }, base));
+  assert.equal(
+    validateWorkflowArtifactCard({ heading: "Summary", summary: "&".repeat(600) }, base).summary?.length,
+    600,
+  );
+  assert.throws(() => validateWorkflowArtifactCard({ heading: "Summary", summary: "&".repeat(601) }, base));
   assert.throws(() =>
     validateWorkflowArtifactCard(
       {
@@ -159,6 +170,57 @@ test("card text budgets match the native Slack renderer without silent clipping"
   );
 });
 
+test("the shared decoder and Slack renderer use one exact escaped serialization contract", () => {
+  const base = "https://qm.test/chat";
+  const card = validateWorkflowArtifactCard(
+    {
+      heading: "Review ready",
+      summary: "R&D <review>",
+      sections: [
+        {
+          key: "facts",
+          label: "Facts & evidence",
+          items: [{ label: "Owner <lead>", value: "R&D", href: "https://docs.example/fact" }],
+        },
+      ],
+      links: [{ label: "Open <source>", href: "https://docs.example/source" }],
+    },
+    base,
+  );
+  assert.equal(workflowArtifactSlackMrkdwn(card.summary!), "R&amp;D &lt;review&gt;");
+  assert.equal(
+    workflowArtifactSlackSectionText(card.sections![0], base),
+    "*Facts &amp; evidence*\n• *Owner &lt;lead&gt;:* <https://docs.example/fact|R&amp;D>",
+  );
+  assert.equal(workflowArtifactSlackLinksText(card.links!, base), "<https://docs.example/source|Open &lt;source&gt;>");
+
+  const encoded = (payload: unknown) =>
+    new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        renderer: WORKFLOW_ARTIFACT_CARD_RENDERER,
+        fallbackText: "Open the original card.",
+        payload,
+      }),
+    );
+  for (const payload of [
+    { heading: "Summary", summary: "&".repeat(601) },
+    {
+      heading: "Section",
+      sections: [{ key: "facts", label: "Facts", items: [{ value: "&".repeat(600) }] }],
+    },
+    {
+      heading: "Links",
+      links: Array.from({ length: 5 }, (_, index) => ({
+        label: "&".repeat(120),
+        href: `https://docs.example/${index}`,
+      })),
+    },
+  ]) {
+    assert.throws(() => decodeWorkflowArtifactCard(encoded(payload), base), /invalid workflow artifact card/);
+  }
+});
+
 test("links allow same-origin HTTP(S) or credential-free cross-origin HTTPS only", () => {
   const base = "http://qm.test/chat";
   assert.equal(safeWorkflowArtifactHref("/files/one", base), "http://qm.test/files/one");
@@ -166,6 +228,10 @@ test("links allow same-origin HTTP(S) or credential-free cross-origin HTTPS only
   assert.equal(
     safeWorkflowArtifactHref("https://docs.example/path?view=compact", base),
     "https://docs.example/path?view=compact",
+  );
+  assert.equal(
+    safeWorkflowArtifactHref("https://docs.example/path?view=compact&keyboard=short&author=one&monkey=two", base),
+    "https://docs.example/path?view=compact&keyboard=short&author=one&monkey=two",
   );
   for (const value of [
     "http://docs.example/path",
@@ -187,6 +253,17 @@ test("links allow same-origin HTTP(S) or credential-free cross-origin HTTPS only
     "https://docs.example/path?X-Goog-Signature=secret",
     "https://docs.example/path?AWSAccessKeyId=secret",
     "https://docs.example/path?sig=secret",
+    "https://docs.example/path?clientSecret=secret",
+    "https://docs.example/path?secretKey=secret",
+    "https://docs.example/path?privateKey=secret",
+    "https://docs.example/path?sessionToken=secret",
+    "https://docs.example/path?credentials=secret",
+    "https://docs.example/path?credentialId=secret",
+    "https://docs.example/path?signatureVersion=secret",
+    "https://docs.example/path?client-secrets=secret",
+    "https://docs.example/path?session_tokens=secret",
+    "https://docs.example/path?private.keys=secret",
+    "https://docs.example/path?signatures=secret",
   ]) {
     assert.equal(safeWorkflowArtifactHref(value, base), null);
   }

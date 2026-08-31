@@ -4,6 +4,9 @@ import { messageWithForwardedContent, type SlackMessageAttachment } from "./forw
 import {
   WORKFLOW_ARTIFACT_MIME,
   decodeWorkflowArtifactCard,
+  workflowArtifactSlackLinksText,
+  workflowArtifactSlackMrkdwn,
+  workflowArtifactSlackSectionText,
   type WorkflowArtifactCard,
 } from "../../plugins/chassis/src/workflow-artifact-card.ts";
 import { WORKFLOW_ARTIFACT_SUFFIX, workflowArtifactMime } from "../../plugins/chassis/src/workflow-artifact.ts";
@@ -212,17 +215,8 @@ export interface UploadClient {
 
 const SLACK_WORKFLOW_BASE_URL = "https://workflow-artifact.invalid/";
 
-function escapeMrkdwn(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 function clipped(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
-}
-
-function exactSlackText(value: string, max: number): string {
-  if (value.length > max) throw new Error("workflow artifact card exceeds Slack text limit");
-  return value;
 }
 
 function neutralizeSlackFallbackText(value: string): string {
@@ -240,18 +234,6 @@ function neutralizeSlackFallbackText(value: string): string {
     );
 }
 
-function slackWorkflowHref(href: string): string | undefined {
-  const url = new URL(href);
-  if (url.origin === new URL(SLACK_WORKFLOW_BASE_URL).origin) return undefined;
-  return href.replace(/\|/g, "%7C").replace(/</g, "%3C").replace(/>/g, "%3E");
-}
-
-function linkedValue(value: string, href: string | undefined): string {
-  const label = escapeMrkdwn(value);
-  const safe = href ? slackWorkflowHref(href) : undefined;
-  return safe ? `<${safe}|${label}>` : label;
-}
-
 function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string, unknown>> {
   const toneIcon = {
     neutral: ":white_circle:",
@@ -261,33 +243,30 @@ function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string
     danger: ":red_circle:",
   } as const;
   const blocks: Array<Record<string, unknown>> = [
-    { type: "header", text: { type: "plain_text", text: exactSlackText(card.heading, 150), emoji: true } },
+    { type: "header", text: { type: "plain_text", text: card.heading, emoji: true } },
   ];
   if (card.status) {
     blocks.push({
       type: "context",
-      elements: [{ type: "mrkdwn", text: `${toneIcon[card.status.tone]} *${escapeMrkdwn(card.status.label)}*` }],
+      elements: [
+        { type: "mrkdwn", text: `${toneIcon[card.status.tone]} *${workflowArtifactSlackMrkdwn(card.status.label)}*` },
+      ],
     });
   }
   if (card.summary) {
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: exactSlackText(escapeMrkdwn(card.summary), 3_000) } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: workflowArtifactSlackMrkdwn(card.summary) } });
   }
   for (const section of card.sections ?? []) {
-    const rows = section.items.map((item) => {
-      const value = linkedValue(item.value, item.href);
-      return item.label ? `• *${escapeMrkdwn(item.label)}:* ${value}` : `• ${value}`;
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: workflowArtifactSlackSectionText(section, SLACK_WORKFLOW_BASE_URL) },
     });
-    const text = `*${escapeMrkdwn(section.label)}*${rows.length ? `\n${rows.join("\n")}` : ""}`;
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: exactSlackText(text, 3_000) } });
   }
   if (card.links?.length) {
-    const links = card.links
-      .map((link) => {
-        const href = slackWorkflowHref(link.href);
-        return href ? `<${href}|${escapeMrkdwn(link.label)}>` : escapeMrkdwn(link.label);
-      })
-      .join(" · ");
-    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: exactSlackText(links, 3_000) }] });
+    blocks.push({
+      type: "context",
+      elements: [{ type: "mrkdwn", text: workflowArtifactSlackLinksText(card.links, SLACK_WORKFLOW_BASE_URL) }],
+    });
   }
   return blocks;
 }
@@ -486,7 +465,9 @@ export async function uploadAttachments(
     const card = cards[i]!;
     const lead = i === 0 ? opts.initialComment?.trim() : undefined;
     const blocks = [
-      ...(lead ? [{ type: "section", text: { type: "mrkdwn", text: clipped(escapeMrkdwn(lead), 3_000) } }] : []),
+      ...(lead
+        ? [{ type: "section", text: { type: "mrkdwn", text: clipped(workflowArtifactSlackMrkdwn(lead), 3_000) } }]
+        : []),
       ...card.blocks,
     ];
     const response = (await client.chat!.postMessage({

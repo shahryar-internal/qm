@@ -14,6 +14,12 @@ import {
   type SlackFile,
 } from "../src/slack/lib.ts";
 import { WORKFLOW_ARTIFACT_MIME } from "../plugins/chassis/src/workflow-artifact.ts";
+import {
+  validateWorkflowArtifactCard,
+  workflowArtifactSlackLinksText,
+  workflowArtifactSlackMrkdwn,
+  workflowArtifactSlackSectionText,
+} from "../plugins/chassis/src/workflow-artifact-card.ts";
 
 function fakeFetch(opts: {
   ok?: boolean;
@@ -480,26 +486,28 @@ test("uploadAttachments renders a valid workflow artifact as Block Kit instead o
       info: async () => ({ file: { shares: {} } }),
     },
   };
+  const payload = {
+    heading: "Today's calendar",
+    summary: "Two meetings with <@U999>",
+    status: { label: "Ready", tone: "success" as const },
+    sections: [
+      {
+        key: "events",
+        label: "Events",
+        items: [{ label: "10:00", value: "Planning", href: "https://calendar.example.com/event/1" }],
+      },
+    ],
+    links: [{ label: "Open calendar", href: "https://calendar.example.com" }],
+  };
   const artifact = Buffer.from(
     JSON.stringify({
       version: 1,
       renderer: "qm.card.v1",
       fallbackText: "Calendar ready",
-      payload: {
-        heading: "Today's calendar",
-        summary: "Two meetings with <@U999>",
-        status: { label: "Ready", tone: "success" },
-        sections: [
-          {
-            key: "events",
-            label: "Events",
-            items: [{ label: "10:00", value: "Planning", href: "https://calendar.example.com/event/1" }],
-          },
-        ],
-        links: [{ label: "Open calendar", href: "https://calendar.example.com" }],
-      },
+      payload,
     }),
   );
+  const normalized = validateWorkflowArtifactCard(payload, "https://workflow-artifact.invalid/");
 
   const result = await uploadAttachments(
     client,
@@ -515,8 +523,15 @@ test("uploadAttachments renders a valid workflow artifact as Block Kit instead o
   assert.equal(posts[0].text, "Calendar ready");
   assert.equal(posts[0].thread_ts, "170.1");
   assert.equal(posts[0].blocks[0].type, "header");
-  assert.equal(JSON.stringify(posts[0].blocks).includes("&lt;@U999&gt;"), true);
-  assert.equal(JSON.stringify(posts[0].blocks).includes("calendar.example.com/event/1"), true);
+  assert.equal(posts[0].blocks[2].text.text, workflowArtifactSlackMrkdwn(normalized.summary!));
+  assert.equal(
+    posts[0].blocks[3].text.text,
+    workflowArtifactSlackSectionText(normalized.sections![0], "https://workflow-artifact.invalid/"),
+  );
+  assert.equal(
+    posts[0].blocks[4].elements[0].text,
+    workflowArtifactSlackLinksText(normalized.links!, "https://workflow-artifact.invalid/"),
+  );
 });
 
 test("workflow fallback text cannot trigger Slack controls, mentions, or automatic links", async () => {
@@ -564,7 +579,7 @@ test("workflow fallback text cannot trigger Slack controls, mentions, or automat
   assert.doesNotMatch(posts[0].text, /\b[a-z0-9-]+\.(?:com|example|test)\b/i);
 });
 
-test("workflow card rendering rejects escaped text that would exceed Slack block limits", async () => {
+test("the shared workflow decoder rejects escaped text that would exceed Slack block limits", async () => {
   const posts: any[] = [];
   const client = {
     chat: { postMessage: async (args: any) => void posts.push(args) },
@@ -574,10 +589,10 @@ test("workflow card rendering rejects escaped text that would exceed Slack block
     },
   };
   for (const payload of [
-    { heading: "Summary overflow", summary: "&".repeat(700) },
+    { heading: "Summary overflow", summary: "&".repeat(601) },
     {
       heading: "Section overflow",
-      sections: [{ key: "details", label: "Details", items: [{ value: "&".repeat(700) }] }],
+      sections: [{ key: "details", label: "Details", items: [{ value: "&".repeat(600) }] }],
     },
     {
       heading: "Link overflow",

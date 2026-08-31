@@ -14,14 +14,36 @@ const MAX_SECTION_ITEMS = 32;
 const MAX_LINKS = 16;
 const MAX_HREF = 2_048;
 const MAX_HEADING = 150;
-const MAX_SLACK_TEXT = 3_000;
+export const WORKFLOW_ARTIFACT_SLACK_TEXT_MAX = 3_000;
 const MAX_ARTIFACT_BYTES = 128 * 1024;
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RENDERER_NAME = /^[a-z0-9](?:[a-z0-9._/-]{0,62}[a-z0-9])?$/;
 const SECTION_KEY = /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,62}[a-zA-Z0-9])?$/;
 const TONES = new Set(["neutral", "info", "success", "warning", "danger"]);
-const CREDENTIAL_QUERY_KEY =
-  /(?:^|[^a-z0-9])(?:(?:aws[-_]?)?access[-_]?key(?:[-_]?id)?|api[-_]?key|o?auth(?:orization|entication)?(?:[-_]?(?:token|key))?|credential|id[-_]?token|access[-_]?token|refresh[-_]?token|key|secret|signature|sig|token)(?:$|[^a-z0-9])/i;
+const CREDENTIAL_QUERY_TERMS = new Set([
+  "auth",
+  "authentication",
+  "authentications",
+  "authorization",
+  "authorizations",
+  "credential",
+  "credentialid",
+  "credentialids",
+  "credentials",
+  "key",
+  "keys",
+  "oauth",
+  "secret",
+  "secrets",
+  "sig",
+  "sigs",
+  "signature",
+  "signatures",
+  "token",
+  "tokens",
+]);
+const CREDENTIAL_QUERY_COMPACT =
+  /^(?:(?:id|access|refresh|session|auth|oauth|bearer|security|xamzsecurity)tokens?|(?:api|access|secret|private|signing|auth|oauth|client)keys?|awsaccesskeyids?|keypairids?|clientsecrets?|(?:xamz|xgoog)?signatures?(?:versions?)?|sigs?|(?:xamz|client)?credentials?(?:ids?)?|o?auth(?:entication|orization)?s?(?:tokens?|keys?)?)$/;
 
 export interface WorkflowArtifactEnvelope {
   version: 1;
@@ -44,6 +66,9 @@ export interface WorkflowArtifactCard {
   }[];
   links?: readonly { label: string; href: string }[];
 }
+
+export type WorkflowArtifactSection = NonNullable<WorkflowArtifactCard["sections"]>[number];
+export type WorkflowArtifactLinks = NonNullable<WorkflowArtifactCard["links"]>;
 
 interface Budget {
   nodes: number;
@@ -125,6 +150,18 @@ export function validateWorkflowArtifactEnvelope(value: unknown): WorkflowArtifa
   };
 }
 
+function credentialQueryKey(value: string): boolean {
+  const words =
+    value
+      .normalize("NFKC")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .match(/[a-z0-9]+/g) ?? [];
+  if (words.some((word) => CREDENTIAL_QUERY_TERMS.has(word))) return true;
+  return CREDENTIAL_QUERY_COMPACT.test(words.join(""));
+}
+
 export function safeWorkflowArtifactHref(value: string, baseUrl: string): string | null {
   if (!boundedString(value, MAX_HREF, false)) return null;
   try {
@@ -132,7 +169,7 @@ export function safeWorkflowArtifactHref(value: string, baseUrl: string): string
     const url = new URL(value, base);
     if (url.username || url.password) return null;
     for (const key of url.searchParams.keys()) {
-      if (CREDENTIAL_QUERY_KEY.test(key)) return null;
+      if (credentialQueryKey(key)) return null;
     }
     if (url.origin !== base.origin && url.protocol !== "https:") return null;
     if (url.origin === base.origin && url.protocol !== "http:" && url.protocol !== "https:") return null;
@@ -142,15 +179,40 @@ export function safeWorkflowArtifactHref(value: string, baseUrl: string): string
   }
 }
 
-function sectionTextLength(section: NonNullable<WorkflowArtifactCard["sections"]>[number]): number {
-  return section.items.reduce((length, item) => {
-    const row = (item.label ? item.label.length + 6 : 2) + item.value.length + (item.href ? item.href.length + 3 : 0);
-    return length + row + 1;
-  }, section.label.length + 2);
+export function workflowArtifactSlackMrkdwn(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function linksTextLength(links: NonNullable<WorkflowArtifactCard["links"]>): number {
-  return links.reduce((length, link, index) => length + link.label.length + link.href.length + 3 + (index ? 3 : 0), 0);
+export function workflowArtifactSlackHref(href: string, baseUrl: string): string | undefined {
+  if (new URL(href).origin === new URL(baseUrl).origin) return undefined;
+  return href.replace(/\|/g, "%7C").replace(/</g, "%3C").replace(/>/g, "%3E");
+}
+
+function workflowArtifactSlackLinkedValue(value: string, href: string | undefined, baseUrl: string): string {
+  const label = workflowArtifactSlackMrkdwn(value);
+  const safe = href ? workflowArtifactSlackHref(href, baseUrl) : undefined;
+  return safe ? `<${safe}|${label}>` : label;
+}
+
+export function workflowArtifactSlackSectionText(section: WorkflowArtifactSection, baseUrl: string): string {
+  const rows = section.items.map((item) => {
+    const value = workflowArtifactSlackLinkedValue(item.value, item.href, baseUrl);
+    return item.label ? `• *${workflowArtifactSlackMrkdwn(item.label)}:* ${value}` : `• ${value}`;
+  });
+  return `*${workflowArtifactSlackMrkdwn(section.label)}*${rows.length ? `\n${rows.join("\n")}` : ""}`;
+}
+
+export function workflowArtifactSlackLinksText(links: WorkflowArtifactLinks, baseUrl: string): string {
+  return links
+    .map((link) => {
+      const href = workflowArtifactSlackHref(link.href, baseUrl);
+      return href ? `<${href}|${workflowArtifactSlackMrkdwn(link.label)}>` : workflowArtifactSlackMrkdwn(link.label);
+    })
+    .join(" · ");
+}
+
+export function workflowArtifactSlackTextFits(value: string): boolean {
+  return value.length <= WORKFLOW_ARTIFACT_SLACK_TEXT_MAX;
 }
 
 function validateLink(value: unknown, baseUrl: string): { label: string; href: string } {
@@ -171,6 +233,9 @@ export function validateWorkflowArtifactCard(value: unknown, baseUrl: string): W
   const card: WorkflowArtifactCard = { heading: value.heading };
   if (Object.hasOwn(value, "summary")) {
     if (!boundedString(value.summary, 2_000, false)) throw new Error("invalid workflow artifact card");
+    if (!workflowArtifactSlackTextFits(workflowArtifactSlackMrkdwn(value.summary))) {
+      throw new Error("invalid workflow artifact card");
+    }
     card.summary = value.summary;
   }
   if (Object.hasOwn(value, "status")) {
@@ -231,7 +296,9 @@ export function validateWorkflowArtifactCard(value: unknown, baseUrl: string): W
           return normalized;
         }),
       };
-      if (sectionTextLength(normalized) > MAX_SLACK_TEXT) throw new Error("invalid workflow artifact card");
+      if (!workflowArtifactSlackTextFits(workflowArtifactSlackSectionText(normalized, baseUrl))) {
+        throw new Error("invalid workflow artifact card");
+      }
       return normalized;
     });
   }
@@ -239,7 +306,9 @@ export function validateWorkflowArtifactCard(value: unknown, baseUrl: string): W
     if (!Array.isArray(value.links) || value.links.length > MAX_LINKS)
       throw new Error("invalid workflow artifact card");
     card.links = value.links.map((link) => validateLink(link, baseUrl));
-    if (linksTextLength(card.links) > MAX_SLACK_TEXT) throw new Error("invalid workflow artifact card");
+    if (!workflowArtifactSlackTextFits(workflowArtifactSlackLinksText(card.links, baseUrl))) {
+      throw new Error("invalid workflow artifact card");
+    }
   }
   validateJsonValue(card, 0, { nodes: 0, stringUnits: 0 });
   return card;
