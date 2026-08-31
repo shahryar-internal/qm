@@ -134,6 +134,7 @@ export {
   deliveryCandidatesFor,
   createDeliveryTracker,
   deliverWithRetry,
+  deletePostedByKey,
   postWithVerify,
 } from "./delivery.ts";
 export {

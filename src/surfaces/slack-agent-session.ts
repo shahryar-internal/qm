@@ -8,6 +8,7 @@ const MAX_STOPS = 16;
 const MAX_TITLE = 200;
 const SUBMISSION_PENDING_MS = 300_000;
 const PROVIDER_WRITE_LEASE_MS = 60_000;
+const PRESENTATION_LEASE_MS = 60_000;
 
 export type SlackAgentSessionStatus = "processing" | "active" | "suspended" | "closed";
 
@@ -34,6 +35,25 @@ export interface SlackAgentSessionBinding {
   finishedAt?: number;
   streamStopState?: "listed" | "late";
   approvalClaim?: { claimId: string; generation: number };
+  presentation?: {
+    runId: string;
+    state: "pending" | "claimed" | "settled";
+    generation: number;
+    claimId?: string;
+    leaseExpiresAt?: number;
+  };
+}
+
+export interface SlackAgentPresentationClaim extends SlackAgentSessionKey {
+  token: string;
+  runId: string;
+  ownerUserId: string;
+  triggerTs: string;
+  authorityMessageTs: string;
+  coreThreadRef: string;
+  claimId: string;
+  generation: number;
+  leaseExpiresAt: number;
 }
 
 export interface SlackAgentRetryWindow {
@@ -121,6 +141,18 @@ export interface SlackAgentSessionStore {
   ): Promise<SlackAgentBindingResult>;
   prepareSubmission(input: SlackAgentSessionKey & { token: string }): Promise<SlackAgentBindingResult>;
   bindRun(input: SlackAgentSessionKey & { token: string; runId: string }): Promise<SlackAgentBindingResult>;
+  claimPresentation(
+    input: SlackAgentSessionKey & { token: string; runId: string },
+  ): Promise<SlackAgentPresentationClaim | null>;
+  claimDuePresentations(input: {
+    teamId: string;
+    agentId: string;
+    limit: number;
+  }): Promise<SlackAgentPresentationClaim[]>;
+  presentationClaimActive(claim: SlackAgentPresentationClaim): Promise<boolean>;
+  renewPresentation(claim: SlackAgentPresentationClaim): Promise<SlackAgentPresentationClaim | null>;
+  settlePresentation(claim: SlackAgentPresentationClaim, outcome: "delivered" | "cancelled_clean"): Promise<boolean>;
+  releasePresentation(claim: SlackAgentPresentationClaim): Promise<boolean>;
   bindStream(input: SlackAgentSessionKey & { token: string; streamTs: string }): Promise<SlackAgentBindingResult>;
   cancelled(input: SlackAgentSessionKey & { token: string; runId?: string }): Promise<boolean>;
   cancellationLatched(input: SlackAgentSessionKey & { token: string }): Promise<boolean>;
@@ -354,6 +386,57 @@ function result(record: SlackAgentSessionRecord | null, token: string, runId?: s
   };
 }
 
+function exactPresentationClaim(
+  record: SlackAgentSessionRecord,
+  claim: SlackAgentPresentationClaim,
+): SlackAgentSessionBinding | undefined {
+  if (!sameKey(record, claim)) return undefined;
+  const binding = record.bindings.find((candidate) => candidate.token === claim.token);
+  const presentation = binding?.presentation;
+  if (
+    !binding ||
+    !presentation ||
+    presentation.runId !== claim.runId ||
+    presentation.state !== "claimed" ||
+    presentation.claimId !== claim.claimId ||
+    presentation.generation !== claim.generation ||
+    presentation.leaseExpiresAt !== claim.leaseExpiresAt
+  ) {
+    return undefined;
+  }
+  return binding;
+}
+
+function presentationClaim(
+  key: SlackAgentSessionKey,
+  binding: SlackAgentSessionBinding,
+): SlackAgentPresentationClaim | null {
+  const presentation = binding.presentation;
+  if (
+    !presentation ||
+    presentation.state !== "claimed" ||
+    !presentation.claimId ||
+    !Number.isSafeInteger(presentation.generation) ||
+    presentation.generation < 1 ||
+    !Number.isSafeInteger(presentation.leaseExpiresAt) ||
+    presentation.leaseExpiresAt! < 0
+  ) {
+    return null;
+  }
+  return {
+    ...key,
+    token: binding.token,
+    runId: presentation.runId,
+    ownerUserId: binding.ownerUserId,
+    triggerTs: binding.triggerTs,
+    authorityMessageTs: binding.authorityMessageTs,
+    coreThreadRef: binding.coreThreadRef,
+    claimId: presentation.claimId,
+    generation: presentation.generation,
+    leaseExpiresAt: presentation.leaseExpiresAt!,
+  };
+}
+
 export function createSlackAgentSessionStore(
   backing: DurableMap<StoredSlackAgentSession | StoredSlackAgentProviderRetry>,
   now: () => number = Date.now,
@@ -452,7 +535,11 @@ export function createSlackAgentSessionStore(
                 },
               }
             : exact;
-          if (claimed.finishedAt === undefined || claimed.cancelRequestedAt) {
+          if (
+            claimed.finishedAt === undefined ||
+            claimed.cancelRequestedAt ||
+            claimed.presentation?.state === "settled"
+          ) {
             if (claimed === exact) return value;
             const bindings = value.record.bindings.map((binding) => (binding.token === token ? claimed : binding));
             return { record: { ...value.record, bindings, updatedAt: now() } };
@@ -475,10 +562,16 @@ export function createSlackAgentSessionStore(
           value.record.stopEvents.filter((event) => event.state === "pending").flatMap((event) => event.bindingTokens),
         );
         const protectedFinished = value.record.bindings.filter(
-          (binding) => binding.finishedAt !== undefined && pendingStopTokens.has(binding.token),
+          (binding) =>
+            binding.finishedAt !== undefined &&
+            (pendingStopTokens.has(binding.token) ||
+              (binding.presentation !== undefined && binding.presentation.state !== "settled")),
         );
         const finished = value.record.bindings.filter(
-          (binding) => binding.finishedAt !== undefined && !pendingStopTokens.has(binding.token),
+          (binding) =>
+            binding.finishedAt !== undefined &&
+            !pendingStopTokens.has(binding.token) &&
+            (!binding.presentation || binding.presentation.state === "settled"),
         );
         const finishedSlots = Math.max(0, MAX_BINDINGS - live.length - protectedFinished.length - 1);
         accepted = true;
@@ -563,20 +656,215 @@ export function createSlackAgentSessionStore(
         return {
           record: {
             ...value.record,
-            bindings: value.record.bindings.map((binding) =>
-              binding.token === token
-                ? {
-                    ...binding,
-                    runIds: [...new Set([...binding.runIds, runId])].slice(-MAX_RUNS),
-                    submissionState: "submitted" as const,
-                  }
-                : binding,
-            ),
+            bindings: value.record.bindings.map((binding) => {
+              if (binding.token !== token) return binding;
+              let presentation = binding.presentation;
+              if (!binding.approvalClaim && (binding.submissionState === "pending" || presentation)) {
+                if (presentation?.runId !== runId) {
+                  presentation = {
+                    runId,
+                    state: "pending" as const,
+                    generation: (presentation?.generation ?? 0) + 1,
+                  };
+                }
+              }
+              return {
+                ...binding,
+                runIds: [...new Set([...binding.runIds, runId])].slice(-MAX_RUNS),
+                submissionState: "submitted" as const,
+                ...(presentation ? { presentation } : {}),
+              };
+            }),
             updatedAt: now(),
           },
         };
       });
       return result(stored?.record ?? null, token, runId);
+    },
+    async claimPresentation(input) {
+      const key = normalizeKey(input);
+      const token = bounded(input.token);
+      const runId = bounded(input.runId);
+      if (!key || !token || !runId) return null;
+      const claimedAt = now();
+      const claimId = randomUUID();
+      let claim: SlackAgentPresentationClaim | null = null;
+      const stored = await update(recordKey(key), (value) => {
+        if (!sameKey(value.record, key)) return value;
+        const binding = value.record.bindings.find((candidate) => candidate.token === token);
+        const presentation = binding?.presentation;
+        if (
+          !binding ||
+          binding.approvalClaim ||
+          !presentation ||
+          presentation.runId !== runId ||
+          presentation.state === "settled" ||
+          (presentation.state === "claimed" && (presentation.leaseExpiresAt ?? 0) > claimedAt)
+        ) {
+          return value;
+        }
+        const generation = Math.max(1, presentation.generation + 1);
+        const leaseExpiresAt = claimedAt + PRESENTATION_LEASE_MS;
+        const bindings = value.record.bindings.map((candidate) =>
+          candidate.token === token
+            ? {
+                ...candidate,
+                presentation: {
+                  runId,
+                  state: "claimed" as const,
+                  generation,
+                  claimId,
+                  leaseExpiresAt,
+                },
+              }
+            : candidate,
+        );
+        claim = {
+          ...key,
+          token,
+          runId,
+          ownerUserId: binding.ownerUserId,
+          triggerTs: binding.triggerTs,
+          authorityMessageTs: binding.authorityMessageTs,
+          coreThreadRef: binding.coreThreadRef,
+          claimId,
+          generation,
+          leaseExpiresAt,
+        };
+        return { record: { ...value.record, bindings, updatedAt: claimedAt } };
+      });
+      if (!claim || !stored?.record) return null;
+      const selected = exactPresentationClaim(stored.record, claim);
+      return selected ? presentationClaim(key, selected) : null;
+    },
+    async claimDuePresentations(input) {
+      const teamId = bounded(input.teamId);
+      const agentId = bounded(input.agentId);
+      const limit = Number.isSafeInteger(input.limit) ? Math.max(0, Math.min(100, input.limit)) : 0;
+      if (!teamId || !agentId || !limit) return [];
+      const due: Array<SlackAgentSessionKey & { token: string; runId: string }> = [];
+      for (const [, stored] of await sessionBacking.entries()) {
+        const record = (stored as Partial<StoredSlackAgentSession>)?.record;
+        if (!record || record.teamId !== teamId || record.agentId !== agentId) continue;
+        for (const binding of record.bindings) {
+          const presentation = binding.presentation;
+          if (
+            binding.approvalClaim ||
+            !presentation ||
+            presentation.state === "settled" ||
+            (presentation.state === "claimed" && (presentation.leaseExpiresAt ?? 0) > now())
+          ) {
+            continue;
+          }
+          due.push({
+            teamId: record.teamId,
+            agentId: record.agentId,
+            channelId: record.channelId,
+            threadTs: record.threadTs,
+            token: binding.token,
+            runId: presentation.runId,
+          });
+          if (due.length >= limit) break;
+        }
+        if (due.length >= limit) break;
+      }
+      const claims: SlackAgentPresentationClaim[] = [];
+      for (const candidate of due) {
+        const claimed = await this.claimPresentation(candidate);
+        if (claimed) claims.push(claimed);
+      }
+      return claims;
+    },
+    async presentationClaimActive(claim) {
+      const key = normalizeKey(claim);
+      if (!key) return false;
+      const stored = await sessionBacking.get(recordKey(key));
+      return !!stored?.record && !!exactPresentationClaim(stored.record, claim);
+    },
+    async renewPresentation(claim) {
+      const key = normalizeKey(claim);
+      if (!key) return null;
+      const renewedAt = now();
+      const leaseExpiresAt = renewedAt + PRESENTATION_LEASE_MS;
+      let renewed: SlackAgentPresentationClaim | null = null;
+      await update(recordKey(key), (value) => {
+        const binding = exactPresentationClaim(value.record, claim);
+        if (!binding) return value;
+        const bindings = value.record.bindings.map((candidate) =>
+          candidate.token === claim.token
+            ? {
+                ...candidate,
+                presentation: { ...candidate.presentation!, leaseExpiresAt },
+              }
+            : candidate,
+        );
+        renewed = { ...claim, leaseExpiresAt };
+        return { record: { ...value.record, bindings, updatedAt: renewedAt } };
+      });
+      return renewed;
+    },
+    async settlePresentation(claim, outcome) {
+      const key = normalizeKey(claim);
+      if (!key || (outcome !== "delivered" && outcome !== "cancelled_clean")) return false;
+      let settled = false;
+      await update(recordKey(key), (value) => {
+        const binding = exactPresentationClaim(value.record, claim);
+        if (
+          !binding ||
+          (outcome === "delivered" && binding.cancelRequestedAt !== undefined) ||
+          (outcome === "cancelled_clean" && binding.cancelRequestedAt === undefined)
+        ) {
+          return value;
+        }
+        settled = true;
+        const finishedAt = now();
+        const bindings = value.record.bindings.map((candidate) =>
+          candidate.token === claim.token
+            ? {
+                ...candidate,
+                finishedAt: candidate.finishedAt ?? finishedAt,
+                submissionState: "settled" as const,
+                presentation: {
+                  runId: claim.runId,
+                  state: "settled" as const,
+                  generation: claim.generation,
+                },
+              }
+            : candidate,
+        );
+        return {
+          record: {
+            ...value.record,
+            status: sessionStatus(bindings),
+            bindings,
+            updatedAt: finishedAt,
+          },
+        };
+      });
+      return settled;
+    },
+    async releasePresentation(claim) {
+      const key = normalizeKey(claim);
+      if (!key) return false;
+      let released = false;
+      await update(recordKey(key), (value) => {
+        if (!exactPresentationClaim(value.record, claim)) return value;
+        released = true;
+        const bindings = value.record.bindings.map((candidate) =>
+          candidate.token === claim.token
+            ? {
+                ...candidate,
+                presentation: {
+                  runId: claim.runId,
+                  state: "pending" as const,
+                  generation: claim.generation,
+                },
+              }
+            : candidate,
+        );
+        return { record: { ...value.record, bindings, updatedAt: now() } };
+      });
+      return released;
     },
     async bindStream(input) {
       const key = normalizeKey(input);
@@ -663,6 +951,7 @@ export function createSlackAgentSessionStore(
         if (
           !sameKey(value.record, key) ||
           !binding ||
+          (binding.presentation && binding.presentation.state !== "settled") ||
           (binding.approvalClaim &&
             (!input.approvalClaim ||
               binding.approvalClaim.claimId !== input.approvalClaim.claimId ||
@@ -911,6 +1200,15 @@ export function createSlackAgentSessionStore(
                 cancelEventId: eventId,
                 cancelRequestedAt: eventTs,
                 finishedAt: binding.finishedAt ?? latchAt,
+                ...(binding.presentation?.state === "settled"
+                  ? {
+                      presentation: {
+                        runId: binding.presentation.runId,
+                        state: "pending" as const,
+                        generation: binding.presentation.generation + 1,
+                      },
+                    }
+                  : {}),
               }
             : binding,
         );

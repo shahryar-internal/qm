@@ -241,6 +241,10 @@ export function supportsNativeAgentPresentation(client: any): boolean {
   );
 }
 
+function supportsNativeAgentStatus(client: any): boolean {
+  return Boolean(client?.agents?.sessions?.setStatus || client?.apiCall);
+}
+
 function nativeTaskStatus(status: RunTaskView["status"]): "in_progress" | "complete" | "error" {
   if (status === "failed") return "error";
   if (status === "completed" || status === "skipped") return "complete";
@@ -283,6 +287,8 @@ export function createNativeAgentPresenter(deps: {
   initiatorUserId: string;
   recipientTeamId?: string;
   createSession?: boolean;
+  streaming?: boolean;
+  resume?: boolean;
   resumeStreamTs?: string;
   title: string;
   sanitize(text: string): string;
@@ -308,6 +314,7 @@ export function createNativeAgentPresenter(deps: {
   onError?(error: unknown): void;
 }): NativeAgentPresenter {
   const { client } = deps;
+  const streaming = deps.streaming === true;
   let streamTs = deps.resumeStreamTs;
   const resumedStream = !!deps.resumeStreamTs;
   let rawText = "";
@@ -456,7 +463,8 @@ export function createNativeAgentPresenter(deps: {
 
   return {
     async begin() {
-      if (!supportsNativeAgentPresentation(client)) return false;
+      if (!supportsNativeAgentStatus(client) || (streaming && !supportsNativeAgentPresentation(client))) return false;
+      if (deps.resume) return !(await isCancelled());
       let processingStarted = false;
       try {
         if (await isCancelled()) return false;
@@ -494,11 +502,12 @@ export function createNativeAgentPresenter(deps: {
       }
     },
     onDelta(delta) {
-      if (!delta || finished) return;
+      if (!streaming || !delta || finished) return;
       rawText += delta;
       flushText();
     },
     async onTasks(nextTasks) {
+      if (!streaming) return;
       tasks = nextTasks.map((task) => ({ ...task }));
       const next = JSON.stringify(tasks);
       if (!tasks.length || next === taskSnapshot) return;
@@ -523,6 +532,11 @@ export function createNativeAgentPresenter(deps: {
         if (await isCancelled()) {
           finished = true;
           return streamTs;
+        }
+        if (!streaming) {
+          await setStatus(status);
+          finished = true;
+          return undefined;
         }
         if (resumedStream && streamTs) {
           const resumedTs = streamTs;

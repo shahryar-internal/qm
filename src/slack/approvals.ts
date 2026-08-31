@@ -14,6 +14,7 @@ import {
   createNativeAgentPresenter,
   createApprovalRegistry,
   createThreadTracker,
+  deletePostedByKey,
   dmThreadRef,
   encodeDeliveryTarget,
   inlineCode,
@@ -81,6 +82,7 @@ interface SlackApprovalContext {
   ackedFirstBlock?: string;
   nativeAgentSession?: SlackAgentSessionKey;
   isCancelled?: () => Promise<boolean>;
+  effectScopeId?: string;
   recovered?: boolean;
 }
 
@@ -246,14 +248,39 @@ export function createApprovals(deps: {
     client: any,
     args: any,
     isCancelled?: () => Promise<boolean>,
+    idempotencyKey?: string,
   ): Promise<{ ts?: unknown } | null> {
-    if (await isCancelled?.()) return null;
-    const posted = (await client.chat.postMessage(args)) as { ts?: unknown };
+    if (await isCancelled?.()) {
+      if (idempotencyKey) await deletePostedByKey(client, args, idempotencyKey, "0");
+      return null;
+    }
+    const posted = idempotencyKey
+      ? await postWithVerify(client, args, idempotencyKey, { verifyFirst: true, verifyOldest: "0" })
+      : ((await client.chat.postMessage(args)) as { ts?: unknown });
     if ((await isCancelled?.()) && posted.ts) {
-      await client.chat.delete?.({ channel: String(args.channel), ts: String(posted.ts) }).catch(() => undefined);
+      await deleteSlackMessage(client, String(args.channel), String(posted.ts), !!idempotencyKey);
       return null;
     }
     return posted;
+  }
+
+  function slackDeleteAlreadyApplied(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const value = error as { code?: unknown; data?: { error?: unknown } };
+    const code = typeof value.data?.error === "string" ? value.data.error : value.code;
+    return code === "not_found" || code === "message_not_found" || code === "already_deleted";
+  }
+
+  async function deleteSlackMessage(client: any, channel: string, ts: string, required: boolean): Promise<void> {
+    if (!client.chat?.delete) {
+      if (required) throw new Error("Slack message cleanup transport unavailable");
+      return;
+    }
+    try {
+      await client.chat.delete({ channel, ts });
+    } catch (error) {
+      if (!slackDeleteAlreadyApplied(error) && required) throw error;
+    }
   }
 
   async function rememberSlackApprovals(
@@ -322,7 +349,7 @@ export function createApprovals(deps: {
     approvals: NonNullable<TurnResult["pendingApprovals"]>,
   ): Promise<void> {
     const { approvalChannel, toDm, channelPointer } = await resolveApprovalCardChannel(client, ctx);
-    if (await ctx.isCancelled?.()) return;
+    if ((await ctx.isCancelled?.()) && !ctx.effectScopeId) return;
     if (!approvalChannel) {
       if (await ctx.isCancelled?.()) return;
       await client.chat
@@ -334,6 +361,23 @@ export function createApprovals(deps: {
         .catch(swallowAs("slack: post private approval failure", undefined));
       return;
     }
+    if ((await ctx.isCancelled?.()) && ctx.effectScopeId) {
+      await deletePostedByKey(
+        client,
+        slackReplyArgs(approvalChannel, "", toDm ? undefined : ctx.replyThreadTs, { threadOnly: !toDm }),
+        `${ctx.effectScopeId}:approval-card`,
+        "0",
+      );
+      if (toDm && channelPointer) {
+        await deletePostedByKey(
+          client,
+          slackReplyArgs(ctx.channel, "", ctx.replyThreadTs, { threadOnly: true }),
+          `${ctx.effectScopeId}:approval-pointer`,
+          "0",
+        );
+      }
+      return;
+    }
     const msg = approvalMessage(approvals);
     const posted = await cancellablePost(
       client,
@@ -342,6 +386,7 @@ export function createApprovals(deps: {
         blocks: msg.blocks,
       },
       ctx.isCancelled,
+      ctx.effectScopeId ? `${ctx.effectScopeId}:approval-card` : undefined,
     );
     if (!posted) return;
     try {
@@ -351,21 +396,30 @@ export function createApprovals(deps: {
         ...(posted.ts ? { approvalMessageTs: String(posted.ts) } : {}),
       });
     } catch (error) {
-      if (posted.ts)
-        await client.chat.delete?.({ channel: approvalChannel, ts: String(posted.ts) }).catch(() => undefined);
+      if (posted.ts) await deleteSlackMessage(client, approvalChannel, String(posted.ts), !!ctx.effectScopeId);
       throw error;
     }
     if (await ctx.isCancelled?.()) {
-      if (posted.ts)
-        await client.chat.delete?.({ channel: approvalChannel, ts: String(posted.ts) }).catch(() => undefined);
+      if (posted.ts) await deleteSlackMessage(client, approvalChannel, String(posted.ts), !!ctx.effectScopeId);
+      if (toDm && channelPointer && ctx.effectScopeId) {
+        await deletePostedByKey(
+          client,
+          slackReplyArgs(ctx.channel, "", ctx.replyThreadTs, { threadOnly: true }),
+          `${ctx.effectScopeId}:approval-pointer`,
+          "0",
+        );
+      }
       return;
     }
     if (toDm && channelPointer) {
-      await cancellablePost(
+      const pointerPost = cancellablePost(
         client,
         slackReplyArgs(ctx.channel, channelPointer, ctx.replyThreadTs, { threadOnly: true }),
         ctx.isCancelled,
-      ).catch(swallowAs("slack: post approval pointer", undefined));
+        ctx.effectScopeId ? `${ctx.effectScopeId}:approval-pointer` : undefined,
+      );
+      if (ctx.effectScopeId) await pointerPost;
+      else await pointerPost.catch(swallowAs("slack: post approval pointer", undefined));
     }
   }
 
@@ -449,6 +503,9 @@ export function createApprovals(deps: {
           result.attachments,
           fetchBlobFromCore,
           fetchFileArtifactFromCore,
+          ctx.originResultIdempotencyKey
+            ? { idempotencyKey: `${ctx.originResultIdempotencyKey}:attachments`, verifyOldest: "0" }
+            : undefined,
         );
       } catch (err) {
         console.error("[slack-plugin] file upload failed:", (err as Error).message);
@@ -580,8 +637,33 @@ export function createApprovals(deps: {
     },
     requests: readonly AgentRequestDirective[],
   ): Promise<void> {
+    const cleanupDurableEffects = async (): Promise<void> => {
+      if (!ctx.effectScopeId) return;
+      const originArgs = slackReplyArgs(ctx.channel, "", ctx.replyThreadTs, { threadOnly: ctx.threadOnly });
+      for (const [requestIndex, req] of requests.entries()) {
+        for (const suffix of ["invalid-target", "bot-target", "dm-failed", "request-failed", "status"]) {
+          await deletePostedByKey(client, originArgs, `${ctx.effectScopeId}:${requestIndex}:${suffix}`, "0");
+        }
+        const target = resolveAgentRequestTarget(ctx.audience, req.targetUserId, ctx.slackIdsByPrincipal);
+        if (!target || target.isExternalGuest || target.isBot) continue;
+        const opened = await client.conversations.open({ users: req.targetUserId });
+        const dmChannel = String(opened?.channel?.id ?? "");
+        if (!dmChannel) continue;
+        await deletePostedByKey(
+          client,
+          { channel: dmChannel, text: "", ...botIdentityArgs() },
+          `${ctx.effectScopeId}:${requestIndex}:dm`,
+          "0",
+        );
+      }
+    };
+    const cancelledAndCleaned = async (): Promise<boolean> => {
+      if (!(await ctx.isCancelled?.())) return false;
+      await cleanupDurableEffects();
+      return true;
+    };
     for (const [requestIndex, req] of requests.entries()) {
-      if (await ctx.isCancelled?.()) return;
+      if (await cancelledAndCleaned()) return;
       const target = resolveAgentRequestTarget(ctx.audience, req.targetUserId, ctx.slackIdsByPrincipal);
       const originAgentLabel = channelAgentLabel(ctx.kind, ctx.channelName, ctx.channel);
       if (!target || target.isExternalGuest) {
@@ -594,6 +676,7 @@ export function createApprovals(deps: {
             { threadOnly: ctx.threadOnly },
           ),
           ctx.isCancelled,
+          ctx.effectScopeId ? `${ctx.effectScopeId}:${requestIndex}:invalid-target` : undefined,
         );
         continue;
       }
@@ -608,6 +691,7 @@ export function createApprovals(deps: {
             { threadOnly: ctx.threadOnly },
           ),
           ctx.isCancelled,
+          ctx.effectScopeId ? `${ctx.effectScopeId}:${requestIndex}:bot-target` : undefined,
         );
         continue;
       }
@@ -636,7 +720,7 @@ export function createApprovals(deps: {
       let pendingCtx: SlackAgentRequestContext | undefined;
       try {
         const opened = await client.conversations.open({ users: req.targetUserId });
-        if (await ctx.isCancelled?.()) return;
+        if (await cancelledAndCleaned()) return;
         const dmChannel = String(opened?.channel?.id ?? "");
         if (!dmChannel) {
           await cancellablePost(
@@ -650,29 +734,29 @@ export function createApprovals(deps: {
               },
             ),
             ctx.isCancelled,
+            ctx.effectScopeId ? `${ctx.effectScopeId}:${requestIndex}:dm-failed` : undefined,
           );
           continue;
         }
 
         pendingCtx = { ...base, dmChannel };
+        const statusKey = ctx.effectScopeId ? `${ctx.effectScopeId}:${requestIndex}:status` : undefined;
+        const dmKey = ctx.effectScopeId ? `${ctx.effectScopeId}:${requestIndex}:dm` : undefined;
         const statusArgs = slackReplyArgs(
           ctx.channel,
           agentRequestStatusText(pendingCtx, "waiting"),
           ctx.replyThreadTs,
           { threadOnly: ctx.threadOnly },
         );
+        if (await cancelledAndCleaned()) return;
         const status = ctx.effectScopeId
-          ? await postWithVerify(client, statusArgs, `${ctx.effectScopeId}:${requestIndex}:status`, {
+          ? await postWithVerify(client, statusArgs, statusKey!, {
               verifyFirst: true,
               verifyOldest: "0",
             })
           : await cancellablePost(client, statusArgs, ctx.isCancelled);
         if (!status) return;
-        if (await ctx.isCancelled?.()) {
-          if (status.ts)
-            await client.chat.delete?.({ channel: ctx.channel, ts: String(status.ts) }).catch(() => undefined);
-          return;
-        }
+        if (await cancelledAndCleaned()) return;
         if (status?.ts) pendingCtx.originStatusTs = String(status.ts);
 
         const prompt = agentRequestMessage({
@@ -688,42 +772,30 @@ export function createApprovals(deps: {
           blocks: prompt.blocks,
         };
         const dm = ctx.effectScopeId
-          ? await postWithVerify(client, dmArgs, `${ctx.effectScopeId}:${requestIndex}:dm`, {
+          ? await postWithVerify(client, dmArgs, dmKey!, {
               verifyFirst: true,
               verifyOldest: "0",
             })
           : await cancellablePost(client, dmArgs, ctx.isCancelled);
         if (!dm) {
           if (pendingCtx.originStatusTs)
-            await client.chat.delete?.({ channel: ctx.channel, ts: pendingCtx.originStatusTs }).catch(() => undefined);
+            await deleteSlackMessage(client, ctx.channel, pendingCtx.originStatusTs, !!ctx.effectScopeId);
           return;
         }
-        if (await ctx.isCancelled?.()) {
-          if (pendingCtx.originStatusTs)
-            await client.chat.delete?.({ channel: ctx.channel, ts: pendingCtx.originStatusTs }).catch(() => undefined);
-          if (dm.ts) await client.chat.delete?.({ channel: dmChannel, ts: String(dm.ts) }).catch(() => undefined);
-          return;
-        }
+        if (await cancelledAndCleaned()) return;
         if (dm?.ts) pendingCtx.dmMessageTs = String(dm.ts);
         pendingSlackAgentRequests.set(requestId, pendingCtx);
-        if (await ctx.isCancelled?.()) {
+        if (await cancelledAndCleaned()) {
           pendingSlackAgentRequests.delete(requestId);
-          if (pendingCtx.originStatusTs)
-            await client.chat.delete?.({ channel: ctx.channel, ts: pendingCtx.originStatusTs }).catch(() => undefined);
-          if (pendingCtx.dmMessageTs)
-            await client.chat.delete?.({ channel: dmChannel, ts: pendingCtx.dmMessageTs }).catch(() => undefined);
           return;
         }
       } catch (err) {
         if (await ctx.isCancelled?.()) {
-          if (pendingCtx?.originStatusTs)
-            await client.chat.delete?.({ channel: ctx.channel, ts: pendingCtx.originStatusTs }).catch(() => undefined);
-          if (pendingCtx?.dmMessageTs)
-            await client.chat
-              .delete?.({ channel: pendingCtx.dmChannel, ts: pendingCtx.dmMessageTs })
-              .catch(() => undefined);
+          await cleanupDurableEffects();
+          if (pendingCtx) pendingSlackAgentRequests.delete(requestId);
           return;
         }
+        if (ctx.effectScopeId) throw err;
         const reason = `Slack couldn't send the personal-agent request to ${target.displayName ?? req.targetUserId}: ${(err as Error).message}`;
         if (pendingCtx?.originStatusTs) {
           await failAgentRequest(client, pendingCtx, reason);
@@ -739,10 +811,12 @@ export function createApprovals(deps: {
               },
             ),
             ctx.isCancelled,
+            ctx.effectScopeId ? `${ctx.effectScopeId}:${requestIndex}:request-failed` : undefined,
           );
         }
       }
     }
+    await cancelledAndCleaned();
   }
 
   async function postApprovalFollowup(
@@ -753,8 +827,11 @@ export function createApprovals(deps: {
     idempotencyKey?: string,
     verifyOldest?: string,
   ): Promise<void> {
-    if (await isCancelled?.()) return;
     const args = slackReplyArgs(ctx.channel, text, ctx.replyThreadTs, { threadOnly: ctx.threadOnly });
+    if (await isCancelled?.()) {
+      if (idempotencyKey) await deletePostedByKey(client, args, idempotencyKey, verifyOldest ?? "0");
+      return;
+    }
     const posted = idempotencyKey
       ? await postWithVerify(client, args, idempotencyKey, {
           verifyFirst: true,
@@ -762,7 +839,7 @@ export function createApprovals(deps: {
         })
       : ((await client.chat.postMessage(args)) as { ts?: unknown });
     if ((await isCancelled?.()) && posted.ts) {
-      await client.chat.delete?.({ channel: ctx.channel, ts: String(posted.ts) }).catch(() => undefined);
+      await deleteSlackMessage(client, ctx.channel, String(posted.ts), !!idempotencyKey);
     }
   }
 
@@ -1235,6 +1312,10 @@ export function createApprovals(deps: {
     let continuationResultResolved = false;
     let attachmentCompensationFailed = false;
     let stoppedAttachmentCleanupComplete = false;
+    let stoppedResultCleanupComplete = false;
+    const resultDeliveryKey = (): string =>
+      nativeRunId ? `run:${nativeRunId}` : `${continuationClaim.idempotencyKey}:result`;
+    const resultDeliveryOldest = String(Math.max(0, Number(continuationClaim.actionTs) - 300));
     const attachmentDeliveryOptions = () => ({
       isCancelled: nativeContinuationWasStopped,
       idempotencyKey: nativeRunId
@@ -1268,9 +1349,25 @@ export function createApprovals(deps: {
         throw error;
       }
     };
+    const compensateStoppedResult = async (): Promise<void> => {
+      if (stoppedResultCleanupComplete) return;
+      try {
+        await deletePostedByKey(
+          client,
+          slackReplyArgs(ctx.channel, "", ctx.replyThreadTs, { threadOnly: ctx.threadOnly }),
+          resultDeliveryKey(),
+          resultDeliveryOldest,
+        );
+        stoppedResultCleanupComplete = true;
+      } catch (error) {
+        attachmentCompensationFailed = true;
+        throw error;
+      }
+    };
     const consumeStoppedContinuation = async (): Promise<boolean> => {
       if (!(await nativeContinuationWasStopped())) return false;
       if (settled) return true;
+      await compensateStoppedResult();
       await compensateStoppedAttachments();
       await acknowledge();
       await retainClaim();
@@ -1281,7 +1378,17 @@ export function createApprovals(deps: {
     const finishNativeContinuation = async (text: string, status: "active" | "suspended"): Promise<boolean> => {
       if (!nativeContinuation) return false;
       try {
-        await nativeContinuation.finish(text, status);
+        const surfaceTs = await nativeContinuation.finish(text, status);
+        if (text && !surfaceTs) {
+          await postApprovalFollowup(
+            client,
+            ctx,
+            toSlackMrkdwn(text),
+            nativeContinuationWasStopped,
+            resultDeliveryKey(),
+            resultDeliveryOldest,
+          );
+        }
         return true;
       } catch (error) {
         console.error("[slack-plugin] native approval continuation failed:", (error as Error).message);
@@ -1411,6 +1518,7 @@ export function createApprovals(deps: {
             initiatorUserId: clickerId,
             recipientTeamId: ids.ownTeamId,
             createSession: begun.created,
+            streaming: false,
             ...(resumeStreamTs ? { resumeStreamTs } : {}),
             title: `Continue: ${ctx.turn.text}`,
             sanitize: stripSlackDirectives,

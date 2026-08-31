@@ -119,6 +119,10 @@ export function createDeliveryPoller(deps: {
                   d.attachments,
                   fetchBlobFromCore,
                   fetchFileArtifactFromCore,
+                  {
+                    idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                    verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                  },
                 );
               } catch (err) {
                 console.error(`[slack-plugin] delivery ${d.id} attachment upload failed:`, (err as Error).message);
@@ -216,7 +220,11 @@ export function createDeliveryPoller(deps: {
                   d.attachments!,
                   fetchBlobFromCore,
                   fetchFileArtifactFromCore,
-                  { initialComment: text },
+                  {
+                    initialComment: text,
+                    idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                    verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                  },
                 );
                 if (uploaded.uploaded) {
                   const root = threadTs ?? uploaded.messageTs;
@@ -288,7 +296,11 @@ export function createDeliveryPoller(deps: {
                   d.attachments,
                   fetchBlobFromCore,
                   fetchFileArtifactFromCore,
-                  { initialComment: text },
+                  {
+                    initialComment: text,
+                    idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                    verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                  },
                 );
                 if (uploaded.uploaded) {
                   composedUpload = true;
@@ -315,6 +327,10 @@ export function createDeliveryPoller(deps: {
                     d.attachments,
                     fetchBlobFromCore,
                     fetchFileArtifactFromCore,
+                    {
+                      idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                      verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                    },
                   );
                 } catch (error) {
                   uploadError = error;

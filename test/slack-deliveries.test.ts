@@ -105,6 +105,17 @@ test("Slack delivery keeps the separate-comment fallback when upload comments ca
   assert.equal((uploads[0]!.file_uploads as unknown[]).length, 3);
 });
 
+test("Slack delivery uses its durable delivery id when no explicit attachment key exists", async () => {
+  const first = await deliver();
+  const markers = (first.uploads[0]!.file_uploads as Array<{ filename: string; alt_txt: string }>).map((file) => ({
+    name: file.filename,
+    alt_txt: file.alt_txt,
+  }));
+  const replay = await deliver({}, {}, undefined, [{ ts: "101.300", thread_ts: "100.200", files: markers }]);
+  assert.deepEqual(replay.uploads, []);
+  assert.deepEqual(replay.acknowledgements, ["D1"]);
+});
+
 const analyticsCard = {
   version: 1,
   renderer: "qm.analytics.card.v1",
@@ -125,8 +136,8 @@ test("Slack delivery renders only a core-verified sealed analytics card at the c
     () => analyticsCard,
   );
 
-  assert.equal(reads.length, 1, "native cards read before posting after a restart or lost ack");
-  assert.equal(reads[0]!.oldest, "5");
+  assert.equal(reads.length, 2, "attachments and native cards both reconcile before posting after restart");
+  assert.ok(reads.every((read) => read.oldest === "5"));
   assert.equal(posts.length, 1);
   assert.equal(posts[0]!.channel, "C1");
   assert.equal(posts[0]!.thread_ts, "100.200");
@@ -149,7 +160,7 @@ test("a persisted native-card idempotency key converges after Slack succeeded bu
     [prior],
   );
 
-  assert.equal(result.reads.length, 1);
+  assert.equal(result.reads.length, 2);
   assert.equal(result.posts.length, 0);
   assert.deepEqual(result.acknowledgements, ["D1"]);
 });

@@ -296,6 +296,15 @@ export async function startSlackPlugin(
   const deliveriesTimer = setInterval(drainDeliveries, 60_000);
   drainDeliveries();
 
+  const drainAgentPresentations = (): void => {
+    if (stopped) return;
+    void handler
+      .drainAgentPresentations(app.client)
+      .catch((err) => console.error("[slack-plugin] Agent presentation drain failed:", errMessage(err)));
+  };
+  const agentPresentationTimer = setInterval(drainAgentPresentations, 15_000);
+  drainAgentPresentations();
+
   const drainReactionCleanups = (): void => {
     if (stopped) return;
     void handler
@@ -344,6 +353,7 @@ export async function startSlackPlugin(
       }
       stopped = true;
       clearInterval(deliveriesTimer);
+      clearInterval(agentPresentationTimer);
       clearInterval(reactionCleanupTimer);
       clearInterval(statusIntentTimer);
       clearInterval(submittedApprovalTimer);

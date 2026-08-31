@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { selectSlackAgentStopRuns } from "../src/api/slack-core-client.ts";
+import { selectSlackAgentStopRuns, slackAgentPresentationRequest } from "../src/api/slack-core-client.ts";
 import type { Run } from "../src/runs/run-store.ts";
+import type { SlackAgentPresentationClaim } from "../src/surfaces/slack-agent-session.ts";
 import type { SlackAgentSessionRecord } from "../src/surfaces/slack-agent-session.ts";
 
 function run(input: {
@@ -63,6 +64,22 @@ const stop = {
   streamingMessageTs: ["stream-1"],
 };
 
+const presentationClaim: SlackAgentPresentationClaim = {
+  teamId: "T1",
+  agentId: "A1",
+  channelId: "D1",
+  threadTs: "10.1",
+  token: "binding",
+  runId: "presentation",
+  ownerUserId: "U1",
+  triggerTs: "10.1",
+  authorityMessageTs: "10.1",
+  coreThreadRef: "dm:D1:10.1",
+  claimId: "claim",
+  generation: 1,
+  leaseExpiresAt: 60_000,
+};
+
 const session = (runIds: string[], streamTs = "stream-1"): SlackAgentSessionRecord => ({
   teamId: "T1",
   agentId: "A1",
@@ -95,6 +112,35 @@ const session = (runIds: string[], streamTs = "stream-1"): SlackAgentSessionReco
     },
   ],
   updatedAt: 1,
+});
+
+test("ordinary presentation recovery requires the exact durable Slack authority tuple", () => {
+  const exact = run({
+    id: presentationClaim.runId,
+    createdAt: 10_000,
+    sessionToken: presentationClaim.token,
+    session: {
+      teamId: presentationClaim.teamId,
+      agentId: presentationClaim.agentId,
+      channelId: presentationClaim.channelId,
+      threadTs: presentationClaim.threadTs,
+      token: presentationClaim.token,
+    },
+  });
+  assert.equal(slackAgentPresentationRequest(exact, presentationClaim)?.text, "work");
+  for (const mismatched of [
+    { ...presentationClaim, teamId: "T-other" },
+    { ...presentationClaim, agentId: "A-other" },
+    { ...presentationClaim, channelId: "D-other" },
+    { ...presentationClaim, threadTs: "10.2" },
+    { ...presentationClaim, token: "other-token" },
+    { ...presentationClaim, runId: "other-run" },
+    { ...presentationClaim, ownerUserId: "U2" },
+    { ...presentationClaim, authorityMessageTs: "10.2" },
+    { ...presentationClaim, coreThreadRef: "dm:D1:other" },
+  ]) {
+    assert.equal(slackAgentPresentationRequest(exact, mismatched), null);
+  }
 });
 
 test("a second channel participant stops only the exact binding owner and pre-event runs", () => {

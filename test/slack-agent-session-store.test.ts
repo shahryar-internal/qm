@@ -34,6 +34,18 @@ async function begin(
   });
 }
 
+async function settlePresentation(
+  store: ReturnType<typeof createSlackAgentSessionStore>,
+  runId: string,
+  triggerTs = key.threadTs,
+  owner = ownerUserId,
+  outcome: "delivered" | "cancelled_clean" = "delivered",
+): Promise<void> {
+  const claim = await store.claimPresentation({ ...key, token: token(triggerTs, owner), runId });
+  assert.ok(claim);
+  assert.equal(await store.settlePresentation(claim, outcome), true);
+}
+
 function stop(eventId: string, eventTs: string, stoppedByUserId = "U2", streamingMessageTs: string[] = []) {
   return { ...key, eventId, eventTs, stoppedByUserId, streamingMessageTs };
 }
@@ -55,7 +67,11 @@ test("a different channel participant can stop the exact session before submit a
   assert.equal(bound.accepted, true);
   assert.equal(bound.cancelled, true);
   assert.equal(await restarted.cancelled({ ...key, token: token(key.threadTs), runId: "R1" }), true);
-  assert.equal(await restarted.complete({ ...key, token: token(key.threadTs) }), true);
+  assert.equal(await restarted.complete({ ...key, token: token(key.threadTs) }), false);
+  const claim = await restarted.claimPresentation({ ...key, token: token(key.threadTs), runId: "R1" });
+  assert.ok(claim);
+  assert.equal(await restarted.settlePresentation(claim, "delivered"), false);
+  assert.equal(await restarted.settlePresentation(claim, "cancelled_clean"), true);
   assert.equal((await restarted.get(key))?.bindings[0]?.submissionState, "settled");
 });
 
@@ -107,13 +123,15 @@ test("submitted takeover can rebind the exact run after crashing before native b
   assert.equal(rebound.accepted, true);
   assert.deepEqual(rebound.binding?.runIds, ["R-recovered-bind"]);
   await restarted.finish({ ...key, token: token(key.threadTs), status: "active" });
-  await restarted.complete({ ...key, token: token(key.threadTs) });
+  await settlePresentation(restarted, "R-recovered-bind");
   assert.ok((await restarted.get(key))?.bindings[0]?.finishedAt);
   const afterCompletionCrash = await begin(restarted);
-  assert.equal(afterCompletionCrash.binding?.finishedAt, undefined);
-  assert.equal(afterCompletionCrash.binding?.submissionState, "submitted");
+  assert.equal(typeof afterCompletionCrash.binding?.finishedAt, "number");
+  assert.equal(afterCompletionCrash.binding?.submissionState, "settled");
+  assert.equal(afterCompletionCrash.binding?.presentation?.state, "settled");
   await restarted.recordStop(stop("Ev-recovered-bind", "1700000000.200000"));
   assert.equal(await restarted.cancelled({ ...key, token: token(key.threadTs), runId: "R-recovered-bind" }), true);
+  assert.equal((await restarted.get(key))?.bindings[0]?.presentation?.state, "pending");
 });
 
 test("approval generation fences delayed native completion after takeover", async () => {
@@ -141,6 +159,39 @@ test("approval generation fences delayed native completion after takeover", asyn
   assert.equal((await store.get(key))?.bindings[0]?.finishedAt, undefined);
   assert.equal(await store.complete({ ...key, token: bindingToken, approvalClaim: takeoverClaim }), true);
   assert.ok((await store.get(key))?.bindings[0]?.finishedAt);
+});
+
+test("normal run presentation ownership survives restart and fences stale settlement", async () => {
+  let now = 1_000;
+  const backing = createMemoryMap<any>();
+  const first = createSlackAgentSessionStore(backing, () => now);
+  await begin(first);
+  await first.prepareSubmission({ ...key, token: token(key.threadTs) });
+  await first.bindRun({ ...key, token: token(key.threadTs), runId: "R-presentation" });
+  const original = await first.claimPresentation({
+    ...key,
+    token: token(key.threadTs),
+    runId: "R-presentation",
+  });
+  assert.ok(original);
+  assert.equal(await first.complete({ ...key, token: token(key.threadTs) }), false);
+
+  const beforeExpiry = createSlackAgentSessionStore(backing, () => now);
+  assert.deepEqual(await beforeExpiry.claimDuePresentations({ teamId: "T1", agentId: "A1", limit: 10 }), []);
+
+  now = original.leaseExpiresAt;
+  const restarted = createSlackAgentSessionStore(backing, () => now);
+  const [takeover] = await restarted.claimDuePresentations({ teamId: "T1", agentId: "A1", limit: 10 });
+  assert.ok(takeover);
+  assert.equal(takeover.runId, "R-presentation");
+  assert.equal(takeover.generation, original.generation + 1);
+  assert.equal(await first.settlePresentation(original, "delivered"), false);
+  assert.equal(await restarted.presentationClaimActive(takeover), true);
+  assert.equal(await restarted.finish({ ...key, token: token(key.threadTs), status: "active" }), true);
+  assert.equal(await restarted.settlePresentation(takeover, "delivered"), true);
+  assert.ok((await restarted.get(key))?.bindings[0]?.finishedAt);
+  assert.equal((await restarted.get(key))?.status, "active");
+  assert.deepEqual(await restarted.claimDuePresentations({ teamId: "T1", agentId: "A1", limit: 10 }), []);
 });
 
 test("one session stop atomically latches every in-flight owner binding", async () => {
@@ -372,6 +423,34 @@ test("a pending stop and its exact binding survive more than sixteen later stop 
   assert.deepEqual(replay.event.bindingTokens, [token(key.threadTs)]);
   assert.equal(
     replay.record.bindings.find((binding) => binding.token === token(key.threadTs))?.runIds.includes("R-pending-prune"),
+    true,
+  );
+});
+
+test("an unsettled stopped presentation survives binding pruning after stop acknowledgment", async () => {
+  const store = createSlackAgentSessionStore(createMemoryMap<any>());
+  await begin(store);
+  await store.prepareSubmission({ ...key, token: token(key.threadTs) });
+  await store.bindRun({ ...key, token: token(key.threadTs), runId: "R-presentation-prune" });
+  const stopped = stop("Ev-presentation-prune", "1700000000.300000");
+  assert.equal((await store.recordStop(stopped)).event.applicable, true);
+  assert.equal(await store.acknowledgeStop({ ...key, eventId: stopped.eventId }), true);
+
+  for (let index = 0; index < 20; index += 1) {
+    const triggerTs = `18000001${String(index + 1).padStart(2, "0")}.100000`;
+    assert.equal((await begin(store, triggerTs)).accepted, true);
+    await store.finish({ ...key, token: token(triggerTs), status: "active" });
+    await store.complete({ ...key, token: token(triggerTs) });
+  }
+
+  const record = await store.get(key);
+  assert.equal(
+    record?.bindings.find((binding) => binding.token === token(key.threadTs))?.presentation?.state,
+    "pending",
+  );
+  const claims = await store.claimDuePresentations({ teamId: key.teamId, agentId: key.agentId, limit: 100 });
+  assert.equal(
+    claims.some((claim) => claim.runId === "R-presentation-prune"),
     true,
   );
 });

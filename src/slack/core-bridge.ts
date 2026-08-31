@@ -3,6 +3,7 @@ import { sleep, createInFlightThreadMap, type RunTaskView } from "./lib.ts";
 import type { SlackAgentStopInput, SlackCoreClient } from "../api/slack-core-client.ts";
 import type {
   SlackAgentBindingResult,
+  SlackAgentPresentationClaim,
   SlackAgentProviderWriteClaim,
   SlackAgentProviderWriteClaimResult,
   SlackAgentSessionKey,
@@ -42,6 +43,7 @@ export interface CoreCallHooks {
   onSurfacePosted?: () => void;
   onTasks?: (tasks: RunTaskView[]) => void;
   resumeReplay?: boolean;
+  deferDeliveryAck?: boolean;
 }
 
 export interface CoreBridge {
@@ -61,6 +63,21 @@ export interface CoreBridge {
   ): Promise<SlackAgentBindingResult>;
   prepareSlackAgentSubmission(input: SlackAgentSessionKey & { token: string }): Promise<SlackAgentBindingResult>;
   bindSlackAgentRun(input: SlackAgentSessionKey & { token: string; runId: string }): Promise<SlackAgentBindingResult>;
+  claimSlackAgentPresentation(
+    input: SlackAgentSessionKey & { token: string; runId: string },
+  ): Promise<SlackAgentPresentationClaim | null>;
+  claimSlackAgentPresentations(input: {
+    teamId: string;
+    agentId: string;
+    limit: number;
+  }): Promise<SlackAgentPresentationClaim[]>;
+  renewSlackAgentPresentation(claim: SlackAgentPresentationClaim): Promise<SlackAgentPresentationClaim | null>;
+  settleSlackAgentPresentation(
+    claim: SlackAgentPresentationClaim,
+    outcome: "delivered" | "cancelled_clean",
+  ): Promise<boolean>;
+  releaseSlackAgentPresentation(claim: SlackAgentPresentationClaim): Promise<boolean>;
+  slackAgentPresentationRun(claim: SlackAgentPresentationClaim): Promise<CoreTurnBody | null>;
   bindSlackAgentStream(
     input: SlackAgentSessionKey & { token: string; streamTs: string },
   ): Promise<SlackAgentBindingResult>;
@@ -214,6 +231,20 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
   const bindSlackAgentRun = (
     input: SlackAgentSessionKey & { token: string; runId: string },
   ): Promise<SlackAgentBindingResult> => core.bindSlackAgentRun(input);
+  const claimSlackAgentPresentation = (
+    input: SlackAgentSessionKey & { token: string; runId: string },
+  ): Promise<SlackAgentPresentationClaim | null> => core.claimSlackAgentPresentation(input);
+  const claimSlackAgentPresentations = (input: { teamId: string; agentId: string; limit: number }) =>
+    core.claimSlackAgentPresentations(input);
+  const renewSlackAgentPresentation = (claim: SlackAgentPresentationClaim) => core.renewSlackAgentPresentation(claim);
+  const settleSlackAgentPresentation = (
+    claim: SlackAgentPresentationClaim,
+    outcome: "delivered" | "cancelled_clean",
+  ): Promise<boolean> => core.settleSlackAgentPresentation(claim, outcome);
+  const releaseSlackAgentPresentation = (claim: SlackAgentPresentationClaim): Promise<boolean> =>
+    core.releaseSlackAgentPresentation(claim);
+  const slackAgentPresentationRun = (claim: SlackAgentPresentationClaim): Promise<CoreTurnBody | null> =>
+    core.slackAgentPresentationRun(claim);
   const prepareSlackAgentSubmission = (
     input: SlackAgentSessionKey & { token: string },
   ): Promise<SlackAgentBindingResult> => core.prepareSlackAgentSubmission(input);
@@ -421,7 +452,7 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
       return result;
     }
     if (result && (result.status === "ok" || result.status === "refused" || result.status === "failed")) {
-      ackRunDeliveryWithRetry(runId);
+      if (!hooks.deferDeliveryAck) ackRunDeliveryWithRetry(runId);
     } else {
       inFlightRuns.delete(runId);
     }
@@ -439,6 +470,12 @@ export function createCoreBridge(core: SlackCoreClient): CoreBridge {
     beginSlackAgentSession,
     prepareSlackAgentSubmission,
     bindSlackAgentRun,
+    claimSlackAgentPresentation,
+    claimSlackAgentPresentations,
+    renewSlackAgentPresentation,
+    settleSlackAgentPresentation,
+    releaseSlackAgentPresentation,
+    slackAgentPresentationRun,
     bindSlackAgentStream,
     slackAgentSessionCancelled,
     finishSlackAgentSession,

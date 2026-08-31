@@ -324,6 +324,7 @@ class FakeCore implements SlackCoreClient {
   private heldRunClaimed = false;
   readonly polled: string[] = [];
   readonly ackedRunDeliveries: string[] = [];
+  failNextRunDeliveryAck = false;
   blobReads = 0;
   readonly deltasOnRelease: string[] = [];
   readonly tasksOnRelease: any[] = [];
@@ -397,6 +398,30 @@ class FakeCore implements SlackCoreClient {
   }
   bindSlackAgentRun(input: Parameters<SlackCoreClient["bindSlackAgentRun"]>[0]) {
     return this.agentSessions.bindRun(input);
+  }
+  claimSlackAgentPresentation(input: Parameters<SlackCoreClient["claimSlackAgentPresentation"]>[0]) {
+    return this.agentSessions.claimPresentation(input);
+  }
+  claimSlackAgentPresentations(input: Parameters<SlackCoreClient["claimSlackAgentPresentations"]>[0]) {
+    return this.agentSessions.claimDuePresentations(input);
+  }
+  renewSlackAgentPresentation(input: Parameters<SlackCoreClient["renewSlackAgentPresentation"]>[0]) {
+    return this.agentSessions.renewPresentation(input);
+  }
+  settleSlackAgentPresentation(
+    input: Parameters<SlackCoreClient["settleSlackAgentPresentation"]>[0],
+    outcome: Parameters<SlackCoreClient["settleSlackAgentPresentation"]>[1],
+  ) {
+    return this.agentSessions.settlePresentation(input, outcome);
+  }
+  releaseSlackAgentPresentation(input: Parameters<SlackCoreClient["releaseSlackAgentPresentation"]>[0]) {
+    return this.agentSessions.releasePresentation(input);
+  }
+  async slackAgentPresentationRun(input: Parameters<SlackCoreClient["slackAgentPresentationRun"]>[0]) {
+    const request = this.runRequests.get(input.runId);
+    if (!request) return null;
+    const { surface: _surface, ...turn } = request;
+    return turn;
   }
   bindSlackAgentStream(input: Parameters<SlackCoreClient["bindSlackAgentStream"]>[0]) {
     return this.agentSessions.bindStream({
@@ -858,6 +883,10 @@ class FakeCore implements SlackCoreClient {
     this.releaseBlobGate?.();
   }
   async ackRunDelivery(runId: string): Promise<void> {
+    if (this.failNextRunDeliveryAck) {
+      this.failNextRunDeliveryAck = false;
+      throw new Error("simulated crash before run delivery acknowledgment");
+    }
     this.ackedRunDeliveries.push(runId);
   }
   async reportTurnMetrics(): Promise<void> {}
@@ -1003,6 +1032,432 @@ test("trusted Slack event identity dedupes message redelivery across plugin rest
   }
 });
 
+test("a settled ordinary Agent presentation acknowledges restart redelivery without reopening", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  const configureClient = (client: FakeSlackClient): void => {
+    (client as any).apiCall = async () => ({ ok: true });
+  };
+  const message = {
+    channel: "D1",
+    channel_type: "im",
+    user: "U1",
+    text: "complete this once",
+    ts: "299.12",
+  };
+  const first = await fixture({ core, configureClient });
+  await first.app.emitMessage(message, "Ev-settled-presentation-redelivery");
+  assert.equal(core.submitStarted, 1);
+  assert.deepEqual(core.ackedRunDeliveries, ["R-intake-1"]);
+  await first.stop();
+
+  const restartedStatusCalls: any[] = [];
+  const restarted = await fixture({
+    core,
+    configureClient: (client) => {
+      (client as any).apiCall = async (method: string, args: any) => {
+        restartedStatusCalls.push({ method, args });
+        return { ok: true };
+      };
+    },
+  });
+  try {
+    await restarted.app.emitMessage(message, "Ev-settled-presentation-redelivery");
+    assert.equal(core.submitStarted, 1);
+    assert.deepEqual(restarted.client.posts, []);
+    assert.deepEqual(restartedStatusCalls, []);
+    const record = await core.agentSessions.get({
+      teamId: "T1",
+      agentId: "A1",
+      channelId: "D1",
+      threadTs: "299.12",
+    });
+    assert.equal(record?.bindings[0]?.presentation?.state, "settled");
+    assert.equal(typeof record?.bindings[0]?.finishedAt, "number");
+  } finally {
+    await restarted.stop();
+  }
+});
+
+test("an ordinary Agent presentation resumes after a transient wait failure and restart", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.failNextWaitRun = true;
+  const message = {
+    channel: "D1",
+    channel_type: "im",
+    user: "U1",
+    text: "finish this after restart",
+    ts: "299.15",
+  };
+  const session = { teamId: "T1", agentId: "A1", channelId: "D1", threadTs: "299.15" };
+  const first = await fixture({
+    core,
+    configureClient: (client) => {
+      (client as any).apiCall = async () => ({ ok: true });
+    },
+  });
+  try {
+    await first.app.emitMessage(message, "Ev-presentation-restart");
+    const record = await core.agentSessions.get(session);
+    assert.equal(
+      record?.bindings[0]?.presentation?.state,
+      "pending",
+      JSON.stringify({ record, turns: core.turns, polled: core.polled }),
+    );
+    assert.equal(record?.bindings[0]?.finishedAt, undefined);
+    assert.deepEqual(first.client.posts, []);
+    assert.deepEqual(core.ackedRunDeliveries, []);
+  } finally {
+    await first.stop();
+  }
+
+  const statusCalls: any[] = [];
+  const restarted = await fixture({
+    core,
+    configureClient: (client) => {
+      (client as any).apiCall = async (method: string, args: any) => {
+        statusCalls.push({ method, args });
+        return { ok: true };
+      };
+    },
+  });
+  try {
+    await waitFor(() => restarted.client.posts.some((post) => post.text === "agent reply"));
+    assert.equal(restarted.client.posts.filter((post) => post.text === "agent reply").length, 1);
+    assert.equal(
+      restarted.client.posts.find((post) => post.text === "agent reply")?.metadata?.event_payload?.idempotency_key,
+      "run:R-intake-1",
+    );
+    assert.deepEqual(core.ackedRunDeliveries, ["R-intake-1"]);
+    assert.ok(statusCalls.some((call) => call.method === "agents.sessions.setStatus" && call.args.status === "active"));
+    const record = await core.agentSessions.get(session);
+    assert.equal(record?.bindings[0]?.presentation?.state, "settled");
+    assert.equal(typeof record?.bindings[0]?.finishedAt, "number");
+  } finally {
+    await restarted.stop();
+  }
+});
+
+test("an ordinary Agent attachment retries after a transient upload failure", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.result = {
+    status: "ok",
+    reply: "The export is ready.",
+    attachments: [{ name: "export.txt", mimetype: "text/plain", sizeBytes: 8, blobId: "blob-export" }],
+  };
+  const message = {
+    channel: "D1",
+    channel_type: "im",
+    user: "U1",
+    text: "prepare an export",
+    ts: "299.155",
+  };
+  const session = { teamId: "T1", agentId: "A1", channelId: "D1", threadTs: "299.155" };
+  const first = await fixture({
+    core,
+    configureClient: (client) => {
+      (client as any).apiCall = async () => ({ ok: true });
+      (client.files as any).uploadV2 = async () => {
+        throw new Error("transient Slack upload failure");
+      };
+    },
+  });
+  try {
+    await first.app.emitMessage(message, "Ev-presentation-upload-retry");
+    assert.deepEqual(core.ackedRunDeliveries, []);
+    assert.deepEqual(first.client.posts, []);
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "pending");
+  } finally {
+    await first.stop();
+  }
+
+  const restarted = await fixture({
+    core,
+    configureClient: (client) => {
+      (client as any).apiCall = async () => ({ ok: true });
+    },
+  });
+  try {
+    await waitFor(() => core.ackedRunDeliveries.includes("R-intake-1"));
+    assert.equal(restarted.client.fileUploads.length, 1);
+    assert.equal(restarted.client.posts.filter((post) => post.text === "The export is ready.").length, 1);
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "settled");
+  } finally {
+    await restarted.stop();
+  }
+});
+
+test("ordinary Agent attachment markers prevent duplicate output after an acknowledgment crash", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.failNextRunDeliveryAck = true;
+  core.result = {
+    status: "ok",
+    reply: "The export is ready.",
+    attachments: [{ name: "export.txt", mimetype: "text/plain", sizeBytes: 8, blobId: "blob-export" }],
+  };
+  const configureClient = (client: FakeSlackClient): void => {
+    (client as any).apiCall = async () => ({ ok: true });
+  };
+  const message = {
+    channel: "D1",
+    channel_type: "im",
+    user: "U1",
+    text: "prepare an export",
+    ts: "299.16",
+  };
+  const session = { teamId: "T1", agentId: "A1", channelId: "D1", threadTs: "299.16" };
+  const first = await fixture({ core, configureClient });
+  let messagesByChannel: Map<string, any[]>;
+  try {
+    await first.app.emitMessage(message, "Ev-presentation-attachment-restart");
+    assert.equal(first.client.fileUploads.length, 1);
+    assert.equal(
+      first.client.posts.filter((post) => post.metadata?.event_payload?.idempotency_key === "run:R-intake-1").length,
+      1,
+    );
+    assert.deepEqual(core.ackedRunDeliveries, []);
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "pending");
+    messagesByChannel = new Map(
+      [...first.client.messagesByChannel.entries()].map(([channel, messages]) => [channel, [...messages]]),
+    );
+  } finally {
+    await first.stop();
+  }
+
+  const restarted = await fixture({ core, configureClient, messagesByChannel: messagesByChannel! });
+  try {
+    await waitFor(() => core.ackedRunDeliveries.includes("R-intake-1"));
+    assert.deepEqual(restarted.client.fileUploads, []);
+    assert.equal(
+      restarted.client.posts.filter((post) => post.metadata?.event_payload?.idempotency_key === "run:R-intake-1")
+        .length,
+      0,
+    );
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "settled");
+  } finally {
+    await restarted.stop();
+  }
+});
+
+test("a stopped ordinary Agent presentation cleans recovered output before settlement", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.failNextRunDeliveryAck = true;
+  core.result = {
+    status: "ok",
+    reply: "The private export is ready.",
+    attachments: [{ name: "private.txt", mimetype: "text/plain", sizeBytes: 8, blobId: "blob-private" }],
+  };
+  const configureNative = (client: FakeSlackClient): void => {
+    (client as any).apiCall = async () => ({ ok: true });
+  };
+  const first = await fixture({
+    core,
+    configureClient: (client) => {
+      configureNative(client);
+      (client.files as any).uploadV2 = async (args: any) => {
+        client.fileUploads.push(args);
+        client.messagesByChannel.set(args.channel_id, [
+          ...(client.messagesByChannel.get(args.channel_id) ?? []),
+          {
+            ts: "1700000000.800001",
+            ...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
+            files: (args.file_uploads ?? []).map((file: any) => ({
+              id: "F-normal-recovered",
+              name: file.filename,
+              alt_txt: file.alt_txt,
+            })),
+          },
+        ]);
+        return { ok: true };
+      };
+    },
+  });
+  let messagesByChannel: Map<string, any[]>;
+  let resultTs = "";
+  try {
+    await first.app.emitMessage(
+      { channel: "D1", channel_type: "im", user: "U1", text: "prepare a private export", ts: "299.17" },
+      "Ev-presentation-stop-recovery",
+    );
+    resultTs = String(
+      (first.client.messagesByChannel.get("D1") ?? []).find(
+        (message) => message.metadata?.event_payload?.idempotency_key === "run:R-intake-1",
+      )?.ts ?? "",
+    );
+    assert.ok(resultTs);
+    await first.app.emitEvent(
+      "agent_session_stopped",
+      {
+        channel: "D1",
+        thread_ts: "299.17",
+        streaming_message_ts: [],
+        user: "U2",
+        event_ts: "299.18",
+      },
+      "Ev-presentation-stop-after-output",
+    );
+    assert.deepEqual(core.ackedRunDeliveries, []);
+    messagesByChannel = new Map(
+      [...first.client.messagesByChannel.entries()].map(([channel, messages]) => [channel, [...messages]]),
+    );
+  } finally {
+    await first.stop();
+  }
+
+  const restarted = await fixture({ core, configureClient: configureNative, messagesByChannel: messagesByChannel! });
+  try {
+    await waitFor(() => core.ackedRunDeliveries.includes("R-intake-1"));
+    assert.deepEqual(restarted.client.fileUploads, []);
+    assert.deepEqual(restarted.client.fileDeletes, [{ file: "F-normal-recovered" }]);
+    assert.ok(restarted.client.deletes.some((entry) => entry.channel === "D1" && entry.ts === resultTs));
+    const record = await core.agentSessions.get({
+      teamId: "T1",
+      agentId: "A1",
+      channelId: "D1",
+      threadTs: "299.17",
+    });
+    assert.equal(record?.bindings[0]?.presentation?.state, "settled");
+    assert.equal(typeof record?.bindings[0]?.finishedAt, "number");
+  } finally {
+    await restarted.stop();
+  }
+});
+
+test("a causally earlier delayed stop reopens settled ordinary output for cleanup", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.result = {
+    status: "ok",
+    reply: "The delayed-stop export is ready.",
+    attachments: [{ name: "delayed.txt", mimetype: "text/plain", sizeBytes: 8, blobId: "blob-delayed" }],
+  };
+  const configureNative = (client: FakeSlackClient): void => {
+    (client as any).apiCall = async () => ({ ok: true });
+  };
+  const first = await fixture({
+    core,
+    configureClient: (client) => {
+      configureNative(client);
+      (client.files as any).uploadV2 = async (args: any) => {
+        client.fileUploads.push(args);
+        client.messagesByChannel.set(args.channel_id, [
+          ...(client.messagesByChannel.get(args.channel_id) ?? []),
+          {
+            ts: "1700000000.810001",
+            ...(args.thread_ts ? { thread_ts: args.thread_ts } : {}),
+            files: (args.file_uploads ?? []).map((file: any) => ({
+              id: "F-delayed-stop",
+              name: file.filename,
+              alt_txt: file.alt_txt,
+            })),
+          },
+        ]);
+        return { ok: true };
+      };
+    },
+  });
+  const session = { teamId: "T1", agentId: "A1", channelId: "D1", threadTs: "299.19" };
+  let messagesByChannel: Map<string, any[]>;
+  let resultTs = "";
+  try {
+    await first.app.emitMessage(
+      { channel: "D1", channel_type: "im", user: "U1", text: "prepare delayed export", ts: "299.19" },
+      "Ev-presentation-delayed-stop",
+    );
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "settled");
+    resultTs = String(
+      (first.client.messagesByChannel.get("D1") ?? []).find(
+        (message) => message.metadata?.event_payload?.idempotency_key === "run:R-intake-1",
+      )?.ts ?? "",
+    );
+    assert.ok(resultTs);
+    await first.app.emitEvent(
+      "agent_session_stopped",
+      {
+        channel: "D1",
+        thread_ts: "299.19",
+        streaming_message_ts: [],
+        user: "U2",
+        event_ts: "299.195",
+      },
+      "Ev-presentation-delayed-stop-after-settle",
+    );
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "pending");
+    messagesByChannel = new Map(
+      [...first.client.messagesByChannel.entries()].map(([channel, messages]) => [channel, [...messages]]),
+    );
+  } finally {
+    await first.stop();
+  }
+
+  const restarted = await fixture({ core, configureClient: configureNative, messagesByChannel: messagesByChannel! });
+  try {
+    await waitFor(() => restarted.client.fileDeletes.length === 1);
+    assert.deepEqual(restarted.client.fileDeletes, [{ file: "F-delayed-stop" }]);
+    assert.ok(restarted.client.deletes.some((entry) => entry.channel === "D1" && entry.ts === resultTs));
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "settled");
+  } finally {
+    await restarted.stop();
+  }
+});
+
+test("a delayed stop cleans settled approval and personal-agent surfaces after restart", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.result = {
+    status: "ok",
+    reply: "[[ask-agent: U2 | Research this privately]]",
+    pendingApprovals: [{ requestId: "approval-delayed-stop", command: "send-email", reason: "external write" }],
+  };
+  const configureNative = (client: FakeSlackClient): void => {
+    (client as any).apiCall = async () => ({ ok: true });
+  };
+  const first = await fixture({ core, configureClient: configureNative });
+  const session = { teamId: "T1", agentId: "A1", channelId: "C1", threadTs: "299.20" };
+  let messagesByChannel: Map<string, any[]>;
+  try {
+    await first.app.emitEvent(
+      "app_mention",
+      { channel: "C1", channel_type: "channel", user: "U1", text: "<@UBOT> prepare it", ts: "299.20" },
+      "Ev-presentation-delayed-surfaces",
+    );
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "settled");
+    const keys = [...first.client.messagesByChannel.values()]
+      .flat()
+      .map((message) => message.metadata?.event_payload?.idempotency_key)
+      .filter((value): value is string => typeof value === "string");
+    assert.ok(keys.includes("run:R-intake-1:agent-request:0:status"));
+    assert.ok(keys.includes("run:R-intake-1:agent-request:0:dm"));
+    assert.ok(keys.includes("run:R-intake-1:approval-card"));
+    assert.ok(keys.includes("run:R-intake-1:approval-pointer"));
+    await first.app.emitEvent(
+      "agent_session_stopped",
+      { channel: "C1", thread_ts: "299.20", streaming_message_ts: [], user: "U2", event_ts: "299.205" },
+      "Ev-presentation-delayed-surfaces-stop",
+    );
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "pending");
+    messagesByChannel = new Map(
+      [...first.client.messagesByChannel.entries()].map(([channel, messages]) => [channel, [...messages]]),
+    );
+  } finally {
+    await first.stop();
+  }
+
+  const restarted = await fixture({ core, configureClient: configureNative, messagesByChannel: messagesByChannel! });
+  try {
+    await waitFor(() => restarted.client.deletes.length >= 4);
+    assert.ok(restarted.client.deletes.filter((entry) => entry.channel === "C1").length >= 2);
+    assert.ok(restarted.client.deletes.filter((entry) => entry.channel === "DOPEN").length >= 2);
+    assert.equal((await core.agentSessions.get(session))?.bindings[0]?.presentation?.state, "settled");
+  } finally {
+    await restarted.stop();
+  }
+});
+
 test("trusted Slack event identity reaches app mention durable intake", async () => {
   const f = await fixture();
   try {
@@ -1052,7 +1507,10 @@ test("a mid-turn message that STEERS the live run does not post the reply twice"
 test("a DM becomes one scoped live turn and one Slack reply", async () => {
   const f = await fixture();
   try {
-    await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" });
+    await f.app.emitMessage(
+      { channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" },
+      "Ev-native-status",
+    );
     assert.equal(f.core.turns.length, 1);
     assert.equal(f.core.turns[0].text, "hello agent");
     assert.equal(f.core.turns[0].trustedSlackTeamId, "T1");
@@ -1085,8 +1543,9 @@ test("a DM becomes one scoped live turn and one Slack reply", async () => {
   }
 });
 
-test("a top-level DM uses the existing app's native agent session and stream when Slack supports it", async () => {
+test("a top-level DM uses durable Agent Session status with an idempotent ordinary reply", async () => {
   const f = await fixture();
+  f.core.durableIntake = true;
   const statusCalls: any[] = [];
   const starts: any[] = [];
   const stops: any[] = [];
@@ -1098,15 +1557,29 @@ test("a top-level DM uses the existing app's native agent session and stream whe
   (f.client.chat as any).appendStream = async () => ({ ok: true });
   (f.client.chat as any).stopStream = async (args: any) => void stops.push(args);
   try {
-    await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" });
+    await f.app.emitMessage(
+      { channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" },
+      "Ev-native-status",
+    );
     assert.equal(statusCalls[0].method, "agents.sessions.setStatus");
     assert.equal(statusCalls[0].args.status, "processing");
-    assert.equal(starts[0].channel, "D1");
-    assert.equal(starts[0].thread_ts, "100.1");
-    assert.equal(stops[0].session_status, "active");
+    assert.deepEqual(
+      statusCalls.map((call) => call.args.status),
+      ["processing", "active"],
+    );
+    assert.equal(starts.length, 0);
+    assert.equal(stops.length, 0);
     assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1:100.1");
     assert.equal(f.core.turns[0].deliveryTarget, "D1:100.1");
-    assert.equal(f.client.posts.length, 0);
+    assert.deepEqual(
+      f.client.posts.map((post) => post.text),
+      ["agent reply"],
+    );
+    assert.equal(
+      f.client.posts[0]?.metadata?.event_payload?.idempotency_key,
+      "run:R-intake-1",
+      JSON.stringify({ post: f.client.posts[0], polled: f.core.polled, turns: f.core.turns }),
+    );
     assert.equal(f.core.ackPicks.length, 0);
   } finally {
     await f.stop();
@@ -1185,7 +1658,7 @@ test("Agent View message context reaches only its owning DM turn as bounded gate
   }
 });
 
-test("native approval resumes processing and streams the result into the same agent session", async () => {
+test("native approval resumes Agent Session status and posts one idempotent result", async () => {
   const f = await fixture();
   const statusCalls: any[] = [];
   const starts: any[] = [];
@@ -1227,11 +1700,9 @@ test("native approval resumes processing and streams the result into the same ag
       statusCalls.map((call) => call.args.status),
       ["processing", "suspended", "processing", "active"],
     );
-    assert.equal(starts.length, 1);
-    assert.equal(starts[0].channel, "D1");
-    assert.equal(starts[0].thread_ts, "1788030001.000000");
-    assert.match(JSON.stringify(starts[0].chunks), /approved email was sent/);
-    assert.equal(stops.at(-1)?.session_status, "active");
+    assert.equal(starts.length, 0);
+    assert.equal(stops.length, 0);
+    assert.ok(f.client.posts.some((post) => /approved email was sent/i.test(String(post.text))));
     assert.match(f.client.updates.at(-1)?.text ?? "", /Approved; ran/);
     assert.ok(f.core.turns[0]!.verifiedSlack);
     assert.deepEqual(f.core.turns[1]!.verifiedSlack, {
@@ -2310,23 +2781,31 @@ test("a blocked agent-request DM and its origin status are compensated after sto
   }
 });
 
-test("Stop during approval finalization discards the late stream and skips attachments", async () => {
+test("Stop during approval finalization deletes the late ordinary result and skips attachments", async () => {
   const f = await fixture();
-  let releaseLateStart: ((value: { ts: string }) => void) | undefined;
-  const starts: any[] = [];
+  f.core.durableIntake = true;
+  let releaseLatePost: (() => void) | undefined;
+  let resultPostStarted: (() => void) | undefined;
+  const resultPostGate = new Promise<void>((resolve) => (resultPostStarted = resolve));
+  const releaseGate = new Promise<void>((resolve) => (releaseLatePost = resolve));
+  let resultTs = "";
   (f.client as any).apiCall = async () => ({ ok: true });
-  (f.client.chat as any).startStream = async (args: any) => {
-    starts.push(args);
-    return new Promise<{ ts: string }>((resolve) => (releaseLateStart = resolve));
-  };
-  (f.client.chat as any).appendStream = async () => ({ ok: true });
-  (f.client.chat as any).stopStream = async () => ({ ok: true });
   f.core.result = {
     status: "pending_approval",
     pendingApprovals: [{ requestId: "approval-final-race", command: "send-email", reason: "external write" }],
   };
   try {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "send it", ts: "115.7" });
+    const postMessage = f.client.chat.postMessage.bind(f.client.chat);
+    (f.client.chat as any).postMessage = async (args: any) => {
+      const posted = await postMessage(args);
+      if (/approved result must stay hidden/i.test(String(args.text ?? ""))) {
+        resultTs = String(posted.ts);
+        resultPostStarted!();
+        await releaseGate;
+      }
+      return posted;
+    };
     f.core.result = {
       status: "ok",
       reply: "This approved result must stay hidden.",
@@ -2337,7 +2816,7 @@ test("Stop during approval finalization discards the late stream and skips attac
       channel: { id: "D1" },
       message: { ts: "1700000000.000001", thread_ts: "115.7" },
     });
-    await waitFor(() => !!releaseLateStart);
+    await resultPostGate;
     await f.app.emitEvent("agent_session_stopped", {
       channel: "D1",
       thread_ts: "115.7",
@@ -2345,15 +2824,15 @@ test("Stop during approval finalization discards the late stream and skips attac
       message_ts: "approval-final-in-progress",
       event_ts: "115.8",
     });
-    releaseLateStart!({ ts: "late-approval-final-stream" });
+    releaseLatePost!();
     await approval;
 
-    assert.equal(starts.length, 1);
+    assert.ok(resultTs);
     assert.equal(f.client.fileUploads.length, 0);
-    assert.ok(f.client.deletes.some((entry) => entry.ts === "late-approval-final-stream"));
+    assert.ok(f.client.deletes.some((entry) => entry.ts === resultTs));
     assert.equal(f.client.updates.at(-1)?.text, "Canceled.");
-    assert.doesNotMatch(JSON.stringify([...f.client.posts, ...f.client.updates]), /approved result/i);
   } finally {
+    releaseLatePost?.();
     await f.stop();
   }
 });
@@ -2499,7 +2978,7 @@ test("Stop during a failed native approval begin never falls through to ordinary
   }
 });
 
-test("a channel approval continuation keeps its recipient team on the same native session", async () => {
+test("a channel approval continuation keeps its exact team and channel Agent Session", async () => {
   const f = await fixture();
   const starts: any[] = [];
   (f.client as any).apiCall = async () => ({ ok: true });
@@ -2529,13 +3008,11 @@ test("a channel approval continuation keeps its recipient team on the same nativ
       action_ts: "120.2",
     });
 
-    assert.equal(starts.at(-1)?.channel, "C1");
-    assert.equal(starts.at(-1)?.thread_ts, "120.1");
-    assert.equal(starts.at(-1)?.recipient_user_id, "U1");
-    assert.equal(starts.at(-1)?.recipient_team_id, "T1");
+    assert.equal(starts.length, 0);
     assert.match(String(f.core.turns.at(-1)?.slackAgentSessionToken), /^binding:/);
     assert.equal(f.core.turns.at(-1)?.slackAgentSession?.channelId, "C1");
     assert.equal(f.core.turns.at(-1)?.slackAgentSession?.threadTs, "120.1");
+    assert.equal(f.core.turns.at(-1)?.slackAgentSession?.teamId, "T1");
     assert.equal(f.core.turns.at(-1)?.verifiedSlack.channelId, "DOPEN");
     assert.equal(f.core.turns.at(-1)?.conversation.threadRef, "ch:C1:120.1");
   } finally {
@@ -2801,8 +3278,9 @@ test("stopped approval recovery settles only after recovered and new Slack outpu
       action_ts: "1788030402.000000",
     });
     workflowCardTs = String(
-      (first.client.messagesByChannel.get("D1") ?? []).find((message) => message.metadata?.event_type === "qm_delivery")
-        ?.ts ?? "",
+      (first.client.messagesByChannel.get("D1") ?? []).find((message) =>
+        String(message.metadata?.event_payload?.idempotency_key ?? "").startsWith("qm-attachment:"),
+      )?.ts ?? "",
     );
     assert.ok(workflowCardTs);
     assert.equal(first.core.approvalSettlementAttempts, 0);
@@ -3047,8 +3525,9 @@ test("stopped approval recovery retains unresolved results before reconciling pr
     releaseUpload!();
     await approval;
     workflowCardTs = String(
-      (first.client.messagesByChannel.get("D1") ?? []).find((message) => message.metadata?.event_type === "qm_delivery")
-        ?.ts ?? "",
+      (first.client.messagesByChannel.get("D1") ?? []).find((message) =>
+        String(message.metadata?.event_payload?.idempotency_key ?? "").startsWith("qm-attachment:"),
+      )?.ts ?? "",
     );
     assert.ok(workflowCardTs);
     assert.equal(first.core.approvalSettlementAttempts, 0);
@@ -3626,9 +4105,9 @@ test("a stop event with no active run does not suppress the next turn in that th
     });
     assert.deepEqual(
       f.client.posts.map((post) => post.text),
-      [],
+      ["agent reply"],
     );
-    assert.equal(stopCalls.length, 1);
+    assert.equal(stopCalls.length, 0);
     assert.equal(f.core.turns.at(-1)?.text, "new work");
   } finally {
     await f.stop();

@@ -22,6 +22,7 @@ import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type { MetricsSink } from "../admin/metrics-sink.ts";
 import type { Run, RunStore } from "../runs/run-store.ts";
 import { isTerminal } from "../runs/run-store.ts";
+import { replayableRequest } from "../core/orchestrator/turn-helpers.ts";
 import type { TurnStream } from "../runs/turn-stream.ts";
 import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import { swallowAs } from "../util/errors.ts";
@@ -36,6 +37,7 @@ import type {
 } from "../surfaces/slack-agent-context.ts";
 import type {
   SlackAgentBindingResult,
+  SlackAgentPresentationClaim,
   SlackAgentProviderWriteClaim,
   SlackAgentProviderWriteClaimResult,
   SlackAgentSessionKey,
@@ -154,6 +156,39 @@ export function selectSlackAgentStopRuns(
   });
 }
 
+export function slackAgentPresentationRequest(
+  run: Run | null | undefined,
+  claim: SlackAgentPresentationClaim,
+): Omit<TurnRequest, "surface"> | null {
+  const request = run?.request;
+  const session = request?.slackAgentSession;
+  const verified = request?.verifiedSlack;
+  if (
+    !request ||
+    run.id !== claim.runId ||
+    request.surface !== "slack" ||
+    !!request.approval ||
+    !session ||
+    session.teamId !== claim.teamId ||
+    session.agentId !== claim.agentId ||
+    session.channelId !== claim.channelId ||
+    session.threadTs !== claim.threadTs ||
+    session.token !== claim.token ||
+    request.slackAgentSessionToken !== claim.token ||
+    request.conversation.threadRef !== claim.coreThreadRef ||
+    !verified ||
+    verified.teamId !== claim.teamId ||
+    verified.userId !== claim.ownerUserId ||
+    verified.channelId !== claim.channelId ||
+    verified.messageTs !== claim.authorityMessageTs ||
+    verified.threadTs !== claim.threadTs
+  ) {
+    return null;
+  }
+  const { surface: _surface, ...body } = replayableRequest(request);
+  return body;
+}
+
 export interface SlackCoreClient {
   externalSlackParticipants(): Promise<boolean>;
   ackEmojiOverride(): Promise<string[] | null>;
@@ -181,6 +216,21 @@ export interface SlackCoreClient {
   ): Promise<SlackAgentBindingResult>;
   prepareSlackAgentSubmission(input: SlackAgentSessionKey & { token: string }): Promise<SlackAgentBindingResult>;
   bindSlackAgentRun(input: SlackAgentSessionKey & { token: string; runId: string }): Promise<SlackAgentBindingResult>;
+  claimSlackAgentPresentation(
+    input: SlackAgentSessionKey & { token: string; runId: string },
+  ): Promise<SlackAgentPresentationClaim | null>;
+  claimSlackAgentPresentations(input: {
+    teamId: string;
+    agentId: string;
+    limit: number;
+  }): Promise<SlackAgentPresentationClaim[]>;
+  renewSlackAgentPresentation(claim: SlackAgentPresentationClaim): Promise<SlackAgentPresentationClaim | null>;
+  settleSlackAgentPresentation(
+    claim: SlackAgentPresentationClaim,
+    outcome: "delivered" | "cancelled_clean",
+  ): Promise<boolean>;
+  releaseSlackAgentPresentation(claim: SlackAgentPresentationClaim): Promise<boolean>;
+  slackAgentPresentationRun(claim: SlackAgentPresentationClaim): Promise<Omit<TurnRequest, "surface"> | null>;
   bindSlackAgentStream(
     input: SlackAgentSessionKey & { token: string; streamTs: string },
   ): Promise<SlackAgentBindingResult>;
@@ -596,6 +646,35 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
 
     bindSlackAgentRun(input) {
       return deps.slackAgentSessions.bindRun(input);
+    },
+
+    claimSlackAgentPresentation(input) {
+      return deps.slackAgentSessions.claimPresentation(input);
+    },
+
+    claimSlackAgentPresentations(input) {
+      return deps.slackAgentSessions.claimDuePresentations(input);
+    },
+
+    renewSlackAgentPresentation(claim) {
+      return deps.slackAgentSessions.renewPresentation(claim);
+    },
+
+    settleSlackAgentPresentation(claim, outcome) {
+      return deps.slackAgentSessions.settlePresentation(claim, outcome);
+    },
+
+    releaseSlackAgentPresentation(claim) {
+      return deps.slackAgentSessions.releasePresentation(claim);
+    },
+
+    async slackAgentPresentationRun(claim) {
+      if (!(await deps.slackAgentSessions.presentationClaimActive(claim))) return null;
+      const run = await deps.runs.get(claim.runId);
+      const body = slackAgentPresentationRequest(run, claim);
+      if (!body) return null;
+      if (!(await deps.slackAgentSessions.presentationClaimActive(claim))) return null;
+      return body;
     },
 
     bindSlackAgentStream(input) {
