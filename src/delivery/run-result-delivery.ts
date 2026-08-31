@@ -17,6 +17,7 @@ export function runResultDelivery(run: Run, taskList: Task[] = []): RunResultDel
   const target = run.request.deliveryTarget;
   const surface = run.request.surface;
   if (!target || !surface) return null;
+  if (surface === "slack" && run.request.approval && run.dedupKey?.startsWith("slack-approval:")) return null;
   const editRef = run.deliveryState?.editRef;
   const destination: Destination = {
     type: surface,

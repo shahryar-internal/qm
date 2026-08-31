@@ -155,8 +155,9 @@ test("admin runtime self-check externally hashes opted-in executable bytes witho
   assert.equal(provision.options.executionAuthority, "none");
   assert.equal(provision.options.env, undefined);
   assert.ok(provision.options.scratch);
-  assert.ok(calls[2]);
-  assert.deepEqual((calls[2].value as { options: unknown }).options, { destroy: true });
+  const destroy = calls[2];
+  assert.ok(destroy);
+  assert.deepEqual((destroy.value as { options: unknown }).options, { destroy: true });
   assert.ok((await built.auditLog.events()).some((event) => event.action === "runtime.tool_self_check"));
 });
 
@@ -232,9 +233,9 @@ test("admin runtime self-check rejects routed, freshness, provenance, and byte-r
         calls.some((call) => call.kind === "run"),
         false,
       );
-      const lastCall = calls.at(-1);
-      assert.ok(lastCall);
-      assert.deepEqual((lastCall.value as { options: unknown }).options, { destroy: true });
+      const destroy = calls.at(-1);
+      assert.ok(destroy);
+      assert.deepEqual((destroy.value as { options: unknown }).options, { destroy: true });
     });
   }
 });

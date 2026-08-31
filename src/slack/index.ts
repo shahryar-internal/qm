@@ -63,6 +63,7 @@ export async function startSlackPlugin(
 
   const ids: BotIdentity = {
     ownTeamId: "",
+    agentId: "",
     botUserId: "",
     ownBotId: "",
     botHandle: "",
@@ -130,8 +131,6 @@ export async function startSlackPlugin(
   const threads = createThreadTracker();
 
   const bridge = createCoreBridge(core);
-  const activeNativeAgentSessions = new Map<string, string>();
-  const stoppedAgentSessions = new Map<string, string>();
   const ackEmoji = createAckEmojiPicker(core, { candidatesOverride: ackEmojiOverride });
   const directory = createDirectory({
     core,
@@ -154,8 +153,6 @@ export async function startSlackPlugin(
     directory,
     threads,
     ids,
-    activeNativeAgentSessions,
-    stoppedAgentSessions,
   });
   const ensureHeader = createSurfaceHeaderEnsurer({
     headerFacts: (scope) => core.surfaceHeaderFacts(scope as Parameters<typeof core.surfaceHeaderFacts>[0]),
@@ -203,8 +200,6 @@ export async function startSlackPlugin(
     mirror,
     serializer,
     approvals,
-    activeNativeAgentSessions,
-    stoppedAgentSessions,
     ackEmoji,
     ackEmojiCandidates: ackEmojiOverride,
     ids,
@@ -223,6 +218,10 @@ export async function startSlackPlugin(
     directory,
     ids,
     deduper,
+    saveAgentContext: (input) => core.saveSlackAgentContext(input),
+    bindAgentThread: (input) => core.bindSlackAgentThread({ ...input, context: input.context ?? { entities: [] } }),
+    getAgentThread: (input) => core.getSlackAgentThread(input),
+    renameAgentSession: (input) => core.renameSlackAgentSession(input),
     ...(cfg.webUiPublicUrl ? { webUiPublicUrl: cfg.webUiPublicUrl } : {}),
     ensureHeader,
   });
@@ -242,12 +241,15 @@ export async function startSlackPlugin(
   try {
     auth = (await app.client.auth.test()) as any;
     ids.ownTeamId = auth.team_id ?? "";
+    ids.agentId = auth.app_id ?? auth.bot_id ?? auth.user_id ?? "";
     ids.botUserId = auth.user_id ?? "";
     ids.ownBotId = auth.bot_id ?? "";
     ids.botHandle = typeof auth.user === "string" ? auth.user : "";
     ids.ownWorkspaceUrl = typeof auth.url === "string" ? auth.url.replace(/\/+$/, "") : "";
-    if (!ids.ownTeamId || !ids.botUserId) {
-      throw new Error("auth.test returned no team_id/user_id — refusing to start (cannot classify members safely)");
+    if (!ids.ownTeamId || !ids.agentId || !ids.botUserId) {
+      throw new Error(
+        "auth.test returned no team_id/app_id/user_id — refusing to start (cannot classify members safely)",
+      );
     }
     if (!cfg.identityEmail) {
       ids.identityMode = await directory.resolveAutoIdentityMode(app.client);
@@ -258,6 +260,7 @@ export async function startSlackPlugin(
       }
     }
     await directory.getUserSnapshot(app.client);
+    await approvals.pinSubmittedContinuations();
     await app.start();
   } catch (err) {
     stopped = true;
@@ -293,6 +296,33 @@ export async function startSlackPlugin(
   const deliveriesTimer = setInterval(drainDeliveries, 60_000);
   drainDeliveries();
 
+  const drainReactionCleanups = (): void => {
+    if (stopped) return;
+    void handler
+      .drainReactionCleanups(app.client)
+      .catch((err) => console.error("[slack-plugin] reaction cleanup drain failed:", errMessage(err)));
+  };
+  const reactionCleanupTimer = setInterval(drainReactionCleanups, 30_000);
+  drainReactionCleanups();
+
+  const drainStatusIntents = (): void => {
+    if (stopped) return;
+    void handler
+      .drainStatusIntents(app.client)
+      .catch((err) => console.error("[slack-plugin] status intent drain failed:", errMessage(err)));
+  };
+  const statusIntentTimer = setInterval(drainStatusIntents, 15_000);
+  drainStatusIntents();
+
+  const drainSubmittedApprovals = (): void => {
+    if (stopped) return;
+    void approvals
+      .drainSubmittedContinuations(app.client)
+      .catch((err) => console.error("[slack-plugin] submitted approval drain failed:", errMessage(err)));
+  };
+  const submittedApprovalTimer = setInterval(drainSubmittedApprovals, 15_000);
+  drainSubmittedApprovals();
+
   const contextRequestsInFlight = new Set<string>();
 
   const serviceContextRequest = (r: SurfaceContextRequest): void => {
@@ -314,6 +344,9 @@ export async function startSlackPlugin(
       }
       stopped = true;
       clearInterval(deliveriesTimer);
+      clearInterval(reactionCleanupTimer);
+      clearInterval(statusIntentTimer);
+      clearInterval(submittedApprovalTimer);
       unsubscribeDeliveries();
       unsubscribeContextRequests();
       try {

@@ -325,7 +325,35 @@ function manifestDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "qm-doctor-fetch-"));
   writeFileSync(
     join(dir, "slack-app-manifest.yml"),
-    "oauth_config:\n  scopes:\n    bot:\n      - chat:write\n      - users:read\n",
+    [
+      "features:",
+      "  app_home:",
+      "    messages_tab_enabled: true",
+      "    messages_tab_read_only_enabled: false",
+      "  agent_view:",
+      "    agent_description: Workspace agent",
+      "    suggested_prompts:",
+      "      -",
+      "        title: Research",
+      "        message: Research this",
+      "oauth_config:",
+      "  scopes:",
+      "    bot:",
+      "      - chat:write",
+      "      - users:read",
+      "settings:",
+      "  event_subscriptions:",
+      "    bot_events:",
+      "      - message.im",
+      "      - app_home_opened",
+      "      - app_context_changed",
+      "      - assistant_thread_started",
+      "      - assistant_thread_context_changed",
+      "      - agent_session_stopped",
+      "      - agent_session_title_changed",
+      "  interactivity:",
+      "    is_enabled: true",
+    ].join("\n"),
   );
   return dir;
 }

@@ -459,12 +459,16 @@ test("a same-key REDELIVERY of a live keyed turn never steers — it dedupes to 
   const built = freshApp();
   const channel = "C17";
   const root = "1700.1";
-  const keyed = { ...mention("@bot start the task", channel, root), idempotencyKey: "slack:evt:1700" };
+  const keyed = {
+    ...mention("@bot start the task", channel, root),
+    idempotencyKey: "slack-event:T1:A1:Ev-1700",
+  };
   const first = await built.app.turn(keyed);
   const liveRunId = first.runId!;
 
   const redelivered = await built.app.turn(keyed);
   assert.equal(redelivered.runId, liveRunId, "the redelivery deduped to the existing run");
+  assert.equal(redelivered.replayed, true);
   assert.equal(
     (await built.signals.takePending(liveRunId)).length,
     0,
@@ -472,6 +476,7 @@ test("a same-key REDELIVERY of a live keyed turn never steers — it dedupes to 
   );
   const runs = await built.runs.list();
   assert.equal(runs.filter((r) => r.sessionId === `ch:${channel}:${root}`).length, 1, "one run for the message");
+  assert.equal(runs.find((run) => run.id === liveRunId)?.dedupKey, keyed.idempotencyKey);
 });
 
 test("a spawned worker turn never steers — a duplicate spawn DEDUPES at enqueue", async () => {

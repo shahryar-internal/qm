@@ -98,9 +98,14 @@ export interface StoredApproval {
 
 export interface RecoveredApprovalContext {
   requesterId: string;
+  approvalRequesterUserId?: string;
   channel: string;
   replyThreadTs?: string;
-  nativeAgentSession?: { channel: string; threadTs: string };
+  nativeAgentSession?: {
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+  };
   threadOnly: boolean;
   approvalChannel: string;
   command: string;
@@ -133,17 +138,34 @@ export function recoveredApprovalContext(
     relayInput: _relayInput,
     intakePreambleMs: _intakePreambleMs,
     clientSentAt: _clientSentAt,
+    verifiedSlack: _verifiedSlack,
+    slackAgentSessionToken: _slackAgentSessionToken,
+    slackAgentSession: _slackAgentSession,
     ...turn
   } = req;
   const origin =
     typeof req.deliveryTarget === "string" && req.deliveryTarget
       ? parseDeliveryTarget(req.deliveryTarget)
       : { channel: click.channel, ...(click.threadTs ? { threadTs: click.threadTs } : {}) };
+  const verified = req.verifiedSlack as
+    { teamId?: unknown; userId?: unknown; channelId?: unknown; threadTs?: unknown } | undefined;
+  const nativeAgentSession =
+    typeof verified?.teamId === "string" &&
+    typeof verified.userId === "string" &&
+    typeof verified.channelId === "string" &&
+    typeof verified.threadTs === "string"
+      ? {
+          teamId: verified.teamId,
+          channelId: verified.channelId,
+          threadTs: verified.threadTs,
+        }
+      : undefined;
   return {
     requesterId: req.actor.externalId,
+    ...(typeof verified?.userId === "string" ? { approvalRequesterUserId: verified.userId } : {}),
     channel: origin.channel,
     ...(origin.threadTs ? { replyThreadTs: origin.threadTs } : {}),
-    ...(origin.threadTs ? { nativeAgentSession: { channel: origin.channel, threadTs: origin.threadTs } } : {}),
+    ...(nativeAgentSession ? { nativeAgentSession } : {}),
     threadOnly: kind === "channel",
     approvalChannel: click.channel,
     command: stored.command,

@@ -3,6 +3,7 @@ import { sleep } from "./util.ts";
 import { isExternallyShared, isMpim, type ChannelMeta } from "./identity.ts";
 
 export interface SlackReplyArgs {
+  [key: string]: unknown;
   channel: string;
   text: string;
   thread_ts?: string;

@@ -322,6 +322,9 @@ export function createTurnMethods(
         origin,
         text: req.text,
         ...(req.gatewayContext ? { gatewayContext: req.gatewayContext } : {}),
+        ...(req.slackAgentSessionToken ? { slackAgentSessionToken: req.slackAgentSessionToken } : {}),
+        ...(req.slackAgentSession ? { slackAgentSession: req.slackAgentSession } : {}),
+        ...(req.verifiedSlack ? { verifiedSlack: req.verifiedSlack } : {}),
         ...(req.proactiveOpener ? { proactiveOpener: true } : {}),
         ...(req.conversationHeader ? { conversationHeader: req.conversationHeader } : {}),
         ...(req.priorTurns?.length ? { priorTurns: req.priorTurns } : {}),
@@ -375,8 +378,11 @@ export function createTurnMethods(
 
       let dedupKey: string | undefined;
       if (req.idempotencyKey) {
+        const exactSlackIntake =
+          req.surface === "slack" &&
+          (req.idempotencyKey.startsWith("slack-event:") || req.idempotencyKey.startsWith("slack-approval:"));
         dedupKey =
-          scheduled || projectVersion === undefined
+          scheduled || projectVersion === undefined || exactSlackIntake
             ? req.idempotencyKey
             : `${req.idempotencyKey}:project-${projectVersion}`;
       }
@@ -592,6 +598,7 @@ export function createTurnMethods(
       }
       if (spineRouted && !deduped) markTriggerHandled(input as OrchestratorInput);
       if (spineRouted) deps.engaged?.engage(conversation.threadRef);
+      if (deduped && req.async) return { status: "queued", runId: run.id, replayed: true };
       if (deduped && run.result && isTerminal(run.status)) return withAdminLink(run.result);
       if (req.async) return { status: "queued", runId: run.id };
       return drive(run.id);

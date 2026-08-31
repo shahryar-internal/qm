@@ -23,6 +23,7 @@ import type { SlackCoreClient } from "../api/slack-core-client.ts";
 
 export interface BotIdentity {
   ownTeamId: string;
+  agentId: string;
   botUserId: string;
   ownBotId: string;
   botHandle: string;

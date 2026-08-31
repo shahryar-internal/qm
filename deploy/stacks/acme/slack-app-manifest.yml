@@ -10,6 +10,15 @@ features:
   bot_user:
     display_name: qm
     always_online: true
+  agent_view:
+    agent_description: A workspace agent you can pin to the Slack top bar. Ask it anything; it can also act on what you're currently viewing.
+    suggested_prompts:
+      - title: Research a topic
+        message: Research this topic and return a concise, source-backed brief.
+      - title: Draft a document
+        message: Draft a polished document from this conversation and the files I provide.
+      - title: Analyze data
+        message: Analyze the available data and explain the most important findings.
 oauth_config:
   scopes:
     bot:
@@ -36,6 +45,8 @@ oauth_config:
       - reactions:read
       - pins:read
       - pins:write
+      - emoji:read
+      - assistant:write
 settings:
   event_subscriptions:
     bot_events:
@@ -45,8 +56,18 @@ settings:
       - message.groups
       - message.mpim
       - member_joined_channel
+      - member_left_channel
+      - channel_created
+      - channel_rename
+      - channel_unarchive
       - reaction_added
       - reaction_removed
+      - app_home_opened
+      - app_context_changed
+      - assistant_thread_started
+      - assistant_thread_context_changed
+      - agent_session_stopped
+      - agent_session_title_changed
   interactivity:
     is_enabled: true
   org_deploy_enabled: false
