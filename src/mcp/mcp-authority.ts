@@ -58,8 +58,22 @@ export interface McpAuthoritySignerConfig {
 }
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
-const PRINCIPAL_ID = /^[A-Za-z0-9][A-Za-z0-9@._+-]{2,127}$/;
+const CANONICAL_EMAIL =
+  /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLACK_TS = /^\d{10,12}\.\d{6}$/;
+
+function canonicalEmail(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const at = value.lastIndexOf("@");
+  return (
+    value.length <= 254 &&
+    at > 0 &&
+    at <= 64 &&
+    value === value.trim() &&
+    value === value.toLowerCase() &&
+    CANONICAL_EMAIL.test(value)
+  );
+}
 
 function codeUnitOrder(left: string, right: string): number {
   if (left < right) return -1;
@@ -104,7 +118,7 @@ function exactConfig(config: McpAuthoritySignerConfig): McpAuthoritySignerConfig
   if (
     !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{2,127}$/.test(config.issuer) ||
     !IDENTIFIER.test(config.organizationId) ||
-    !PRINCIPAL_ID.test(config.principalId) ||
+    !canonicalEmail(config.principalId) ||
     !/^T[A-Z0-9]{2,31}$/.test(config.slackTeamId) ||
     !/^U[A-Z0-9]{2,31}$/.test(config.slackUserId) ||
     !/^D[A-Z0-9]{2,31}$/.test(config.slackDmChannelId) ||
@@ -151,6 +165,7 @@ export function createMcpAuthoritySigner(
         !context ||
         context.surface !== "slack" ||
         context.conversationType !== "dm" ||
+        !canonicalEmail(context.principalId) ||
         context.principalId !== config.principalId ||
         context.slackUserId !== config.slackUserId ||
         context.slackChannelId !== config.slackDmChannelId ||
@@ -259,7 +274,7 @@ export function mcpAuthoritySignerConfigFromEnv(env: NodeJS.ProcessEnv): McpAuth
   ] as const;
   if (names.every((name) => !env[name])) return undefined;
   if (names.some((name) => !env[name])) throw new Error("QM MCP authority signer configuration is incomplete");
-  return {
+  return exactConfig({
     issuer: env.QM_MCP_AUTHORITY_ISSUER!,
     organizationId: env.QM_MCP_AUTHORITY_ORGANIZATION_ID!,
     principalId: env.QM_MCP_AUTHORITY_PRINCIPAL_ID!,
@@ -271,5 +286,5 @@ export function mcpAuthoritySignerConfigFromEnv(env: NodeJS.ProcessEnv): McpAuth
       ? { previousPublicKeys: env.QM_MCP_AUTHORITY_ED25519_PREVIOUS_PUBLIC_KEYS.split(",") }
       : {}),
     ttlSeconds: Number(env.QM_MCP_AUTHORITY_TTL_SECONDS),
-  };
+  });
 }

@@ -12,7 +12,7 @@ them; a partial configuration fails startup:
 ```text
 QM_MCP_AUTHORITY_ISSUER=qm:prod
 QM_MCP_AUTHORITY_ORGANIZATION_ID=<exact Command Center organization id>
-QM_MCP_AUTHORITY_PRINCIPAL_ID=<exact Command Center founder principal id>
+QM_MCP_AUTHORITY_PRINCIPAL_ID=<exact canonical lowercase founder email>
 QM_MCP_AUTHORITY_SLACK_TEAM_ID=<exact T... workspace id>
 QM_MCP_AUTHORITY_SLACK_USER_ID=<exact U... founder id>
 QM_MCP_AUTHORITY_SLACK_DM_CHANNEL_ID=<exact D... personal-DM channel id>
@@ -22,9 +22,11 @@ QM_MCP_AUTHORITY_TTL_SECONDS=30
 ```
 
 Provision the matching public key in Command Center as base64 DER/SPKI. Keep
-the private key only in QM's secret store. The configured principal is the
-Command Center principal placed in the signed envelope; the configured Slack
-user is independently checked against the trusted human actor on every turn.
+the private key only in QM's secret store. The configured principal is a
+trimmed, lowercase email address placed in the signed envelope; the configured
+Slack user is independently checked against the trusted human actor on every
+turn. Slack-id identity mode remains available to every other QM product path
+but cannot satisfy this analytics authority contract.
 The authority issuer and public key are matched exactly by Command Center.
 During rotation, place no more than three prior public keys in the optional
 overlap setting until every delivery sealed by them has drained, then remove

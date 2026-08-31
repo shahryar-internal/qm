@@ -152,6 +152,10 @@ test("founder-DM signer binds canonical body and rejects every other user, team,
   assert.equal(payload.exp, 1_788_120_029);
   for (const changed of [
     { principalId: "attacker@example.com" },
+    { principalId: "U123" },
+    { principalId: "Founder@example.com" },
+    { principalId: " founder@example.com" },
+    { principalId: undefined },
     { slackUserId: "U999" },
     { slackTeamId: "T999" },
     { slackChannelId: "D999" },
@@ -184,6 +188,47 @@ test("authority environment loading is default-off and rejects partial configura
   assert.equal(mcpAuthoritySignerConfigFromEnv({}), undefined);
   assert.throws(() => mcpAuthoritySignerConfigFromEnv({ QM_MCP_AUTHORITY_ISSUER: "qm:test" }));
   assert.throws(() => createMcpAuthoritySigner({ ...signerConfig, ttlSeconds: 1 }));
+});
+
+test("signer configuration requires the same canonical email identity carried in authority payloads", () => {
+  for (const principalId of [
+    "U123ABC",
+    "Founder@example.com",
+    " founder@example.com",
+    "founder@example.com ",
+    "founder@example",
+    "founder..name@example.com",
+    "founder@example..com",
+  ]) {
+    assert.throws(() => createMcpAuthoritySigner({ ...signerConfig, principalId }), /signer configuration is invalid/);
+    assert.throws(
+      () =>
+        mcpAuthoritySignerConfigFromEnv({
+          QM_MCP_AUTHORITY_ISSUER: signerConfig.issuer,
+          QM_MCP_AUTHORITY_ORGANIZATION_ID: signerConfig.organizationId,
+          QM_MCP_AUTHORITY_PRINCIPAL_ID: principalId,
+          QM_MCP_AUTHORITY_SLACK_TEAM_ID: signerConfig.slackTeamId,
+          QM_MCP_AUTHORITY_SLACK_USER_ID: signerConfig.slackUserId,
+          QM_MCP_AUTHORITY_SLACK_DM_CHANNEL_ID: signerConfig.slackDmChannelId,
+          QM_MCP_AUTHORITY_ED25519_PRIVATE_KEY: signerConfig.privateKey,
+          QM_MCP_AUTHORITY_TTL_SECONDS: String(signerConfig.ttlSeconds),
+        }),
+      /signer configuration is invalid/,
+    );
+  }
+  const canonical = mcpAuthoritySignerConfigFromEnv({
+    QM_MCP_AUTHORITY_ISSUER: signerConfig.issuer,
+    QM_MCP_AUTHORITY_ORGANIZATION_ID: signerConfig.organizationId,
+    QM_MCP_AUTHORITY_PRINCIPAL_ID: signerConfig.principalId,
+    QM_MCP_AUTHORITY_SLACK_TEAM_ID: signerConfig.slackTeamId,
+    QM_MCP_AUTHORITY_SLACK_USER_ID: signerConfig.slackUserId,
+    QM_MCP_AUTHORITY_SLACK_DM_CHANNEL_ID: signerConfig.slackDmChannelId,
+    QM_MCP_AUTHORITY_ED25519_PRIVATE_KEY: signerConfig.privateKey,
+    QM_MCP_AUTHORITY_TTL_SECONDS: String(signerConfig.ttlSeconds),
+  });
+  assert.equal(canonical?.principalId, "founder@example.com");
+  assert.equal(canonical?.slackUserId, "U123");
+  assert.notEqual(canonical?.principalId, canonical?.slackUserId);
 });
 
 test("native analytics parser rejects remote blocks and QM renders bounded escaped Slack blocks", () => {
