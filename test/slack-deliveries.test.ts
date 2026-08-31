@@ -12,6 +12,7 @@ async function deliver(
   destination: Record<string, unknown> = {},
   deliveryFields: Record<string, unknown> = {},
   analyticsNativeCard?: (delivery: unknown) => unknown,
+  priorMessages: Record<string, unknown>[] = [],
 ) {
   const delivery = {
     id: "D1",
@@ -27,12 +28,23 @@ async function deliver(
   const posts: Record<string, unknown>[] = [];
   const mirrors: Array<{ ts?: string; text: string }> = [];
   const marks: Array<{ channel: string; ts: string }> = [];
+  const reads: Record<string, unknown>[] = [];
   const core = {
     claimDeliveries: async (type: string) => queues.get(type)?.splice(0) ?? [],
     ackDelivery: async (id: string) => void acknowledgements.push(id),
     ...(analyticsNativeCard ? { analyticsNativeCard } : {}),
   };
   const client = {
+    conversations: {
+      replies: async (args: Record<string, unknown>) => {
+        reads.push(args);
+        return { messages: priorMessages };
+      },
+      history: async (args: Record<string, unknown>) => {
+        reads.push(args);
+        return { messages: priorMessages };
+      },
+    },
     files: {
       uploadV2: async (args: Record<string, unknown>) => {
         uploads.push(args);
@@ -62,7 +74,7 @@ async function deliver(
   });
 
   await poller.pollDeliveries(client);
-  return { acknowledgements, uploads, posts, mirrors, marks };
+  return { acknowledgements, uploads, posts, mirrors, marks, reads };
 }
 
 test("Slack delivery composes text and mixed attachments into one message", async () => {
@@ -107,8 +119,14 @@ const analyticsCard = {
 };
 
 test("Slack delivery renders only a core-verified sealed analytics card at the current destination", async () => {
-  const { posts } = await deliver({}, { trustedAnalyticsCard: "sealed" }, () => analyticsCard);
+  const { posts, reads } = await deliver(
+    {},
+    { trustedAnalyticsCard: "sealed", idempotencyKey: "mcp-card:receipt", createdAt: 10_000 },
+    () => analyticsCard,
+  );
 
+  assert.equal(reads.length, 1, "native cards read before posting after a restart or lost ack");
+  assert.equal(reads[0]!.oldest, "5");
   assert.equal(posts.length, 1);
   assert.equal(posts[0]!.channel, "C1");
   assert.equal(posts[0]!.thread_ts, "100.200");
@@ -117,6 +135,23 @@ test("Slack delivery renders only a core-verified sealed analytics card at the c
   assert.match(blocks, /Analytics · UC Online/);
   assert.doesNotMatch(blocks, /<@here>/);
   assert.match(blocks, /&lt;@here&gt; &amp; 12 active/);
+});
+
+test("a persisted native-card idempotency key converges after Slack succeeded but core ack was lost", async () => {
+  const prior = {
+    ts: "already-posted",
+    metadata: { event_type: "qm_delivery", event_payload: { idempotency_key: "mcp-card:receipt" } },
+  };
+  const result = await deliver(
+    {},
+    { trustedAnalyticsCard: "sealed", idempotencyKey: "mcp-card:receipt", createdAt: 10_000 },
+    () => analyticsCard,
+    [prior],
+  );
+
+  assert.equal(result.reads.length, 1);
+  assert.equal(result.posts.length, 0);
+  assert.deepEqual(result.acknowledgements, ["D1"]);
 });
 
 test("caller-authored destination cards cannot render and unverifiable persisted cards remain unacknowledged", async () => {

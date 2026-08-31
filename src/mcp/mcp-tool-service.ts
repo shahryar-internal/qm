@@ -302,8 +302,7 @@ export function createMcpToolService(opts: {
       if (def.nativeRenderer && !def.requestAuthority) {
         throw new Error(`MCP native renderer requires request authority: ${def.remoteName}`);
       }
-      const authority = def.requestAuthority ? opts.authoritySigner?.sign(def.remoteName, args, context) : undefined;
-      if (def.requestAuthority && !authority) {
+      if (def.requestAuthority && !opts.authoritySigner) {
         throw new Error(`MCP request authority is unavailable: ${def.remoteName}`);
       }
       const client = clientFor(server);
@@ -315,24 +314,22 @@ export function createMcpToolService(opts: {
       if (!remote || !contractMatches(def, server, allowed, remote)) {
         throw new Error(`MCP tool contract changed: ${def.remoteName}`);
       }
-      const result = await client.callTool(
-        def.remoteName,
-        args,
-        async () => {
-          const current = await opts.servers.get(def.serverId);
-          const currentAllowed = current?.allowedTools.filter((tool) => tool.name === def.remoteName) ?? [];
-          if (
-            !current ||
-            !current.enabled ||
-            current.credentialState === "reentry-required" ||
-            currentAllowed.length !== 1 ||
-            !contractMatches(def, current, currentAllowed[0]!, remote)
-          ) {
-            throw new Error(`MCP tool contract changed: ${def.remoteName}`);
-          }
-        },
-        authority?.token,
-      );
+      let authority: ReturnType<McpAuthoritySigner["sign"]> | undefined;
+      const result = await client.callTool(def.remoteName, args, async () => {
+        const current = await opts.servers.get(def.serverId);
+        const currentAllowed = current?.allowedTools.filter((tool) => tool.name === def.remoteName) ?? [];
+        if (
+          !current ||
+          !current.enabled ||
+          current.credentialState === "reentry-required" ||
+          currentAllowed.length !== 1 ||
+          !contractMatches(def, current, currentAllowed[0]!, remote)
+        ) {
+          throw new Error(`MCP tool contract changed: ${def.remoteName}`);
+        }
+        authority = def.requestAuthority ? opts.authoritySigner!.sign(def.remoteName, args, context) : undefined;
+        return authority?.token;
+      });
       const text = mcpResultText(result) || JSON.stringify(result.structuredContent ?? "") || "";
       const boundedText = text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated]` : text;
       if (!def.nativeRenderer) {
@@ -345,7 +342,11 @@ export function createMcpToolService(opts: {
       record("call", `${def.serverId}/${def.remoteName}`, "ok", principalId);
       return {
         text: boundedText,
-        trustedAnalyticsCard: opts.authoritySigner!.sealAnalyticsCard(delivery.unsignedCard, authority.payload),
+        trustedAnalyticsCard: opts.authoritySigner!.sealAnalyticsCard(
+          delivery.unsignedCard,
+          authority.payload,
+          context!.deliveryTarget,
+        ),
         nativeCardIdempotencyKey: delivery.idempotencyKey,
       };
     } catch (error) {

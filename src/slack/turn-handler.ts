@@ -408,6 +408,7 @@ export function createTurnHandler(deps: {
 
     const turn: Omit<CoreTurnBody, "approval"> = {
       trustedSlackTeamId: ids.ownTeamId,
+      trustedSlackUserId: inc.userId,
       actor,
       conversation: {
         kind: conversationKind,

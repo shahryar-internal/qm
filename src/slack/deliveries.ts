@@ -236,7 +236,7 @@ export function createDeliveryPoller(deps: {
                 ...(footerBlocks ? { blocks: footerBlocks } : {}),
               },
               d.idempotencyKey ?? d.id,
-              runId
+              runId || nativeCard
                 ? {
                     verifyFirst: true,
                     ...(typeof d.createdAt === "number" ? { verifyOldest: String((d.createdAt - 5_000) / 1000) } : {}),

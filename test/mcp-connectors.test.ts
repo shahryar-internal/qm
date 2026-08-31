@@ -6,6 +6,7 @@ import {
   createPinnedMcpLookup,
   createMcpClient,
   isPublicMcpAddress,
+  mcpRemoteAddressMatchesPins,
   mcpResultText,
   validateMcpHttpsUrl,
   type McpFetch,
@@ -457,6 +458,11 @@ test("MCP URL, DNS, and redirect validation fail before a usable response", asyn
   }
   assert.equal(isPublicMcpAddress("8.8.8.8"), true);
   assert.equal(isPublicMcpAddress("2001:4860:4860::8888"), true);
+  assert.equal(mcpRemoteAddressMatchesPins("8.8.8.8", ["8.8.8.8", "1.1.1.1"]), true);
+  assert.equal(mcpRemoteAddressMatchesPins("::ffff:8.8.8.8", ["8.8.8.8"]), true);
+  assert.equal(mcpRemoteAddressMatchesPins("2001:4860:4860:0000:0000:0000:0000:8888", ["2001:4860:4860::8888"]), true);
+  assert.equal(mcpRemoteAddressMatchesPins("1.1.1.1", ["8.8.8.8"]), false);
+  assert.equal(mcpRemoteAddressMatchesPins("127.0.0.1", ["127.0.0.1"]), false);
   let fetchCalls = 0;
   const privateClient = createMcpClient({
     url: "https://mcp.example.com/mcp",
@@ -470,6 +476,7 @@ test("MCP URL, DNS, and redirect validation fail before a usable response", asyn
   await assert.rejects(() => privateClient.listTools(), /public addresses/);
   assert.equal(fetchCalls, 0);
   let pinnedAddress: string | undefined;
+  let pinnedAddresses: readonly string[] | undefined;
   const pinnedClient = createMcpClient({
     url: "https://mcp.example.com:443/mcp",
     auth: { mode: "none" },
@@ -477,6 +484,7 @@ test("MCP URL, DNS, and redirect validation fail before a usable response", asyn
     fetchImpl: async (url, init) => {
       assert.equal(url, "https://mcp.example.com/mcp");
       pinnedAddress = init.resolvedAddress;
+      pinnedAddresses = init.resolvedAddresses;
       const request = JSON.parse(init.body) as { id: number };
       return jsonResponse({ jsonrpc: "2.0", id: request.id, result: { tools: [] } }, 200, "application/json", {
         url,
@@ -485,6 +493,7 @@ test("MCP URL, DNS, and redirect validation fail before a usable response", asyn
   });
   assert.deepEqual(await pinnedClient.listTools(), []);
   assert.equal(pinnedAddress, "8.8.8.8");
+  assert.deepEqual(pinnedAddresses, ["8.8.8.8"]);
   for (const response of [
     jsonResponse({}, 302),
     jsonResponse({}, 200, "application/json", { redirected: true, url: "https://evil.example/mcp" }),

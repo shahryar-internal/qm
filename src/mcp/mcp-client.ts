@@ -36,6 +36,7 @@ export type McpFetch = (
     body: string;
     redirect: "manual";
     resolvedAddress?: string;
+    resolvedAddresses?: readonly string[];
     maxResponseBytes: number;
     timeoutMs: number;
   },
@@ -46,7 +47,14 @@ export type McpResolveHost = (hostname: string) => Promise<string[]>;
 const realFetch: McpFetch = (url, init) =>
   new Promise((resolve, reject) => {
     const target = new URL(url);
-    if (!init.resolvedAddress) return reject(new Error("MCP request requires a pinned public address"));
+    if (
+      !init.resolvedAddress ||
+      !init.resolvedAddresses?.length ||
+      !init.resolvedAddresses.includes(init.resolvedAddress) ||
+      init.resolvedAddresses.some((address) => !isPublicMcpAddress(address))
+    ) {
+      return reject(new Error("MCP request requires an all-public DNS pin"));
+    }
     let pinnedLookup: LookupFunction;
     try {
       pinnedLookup = createPinnedMcpLookup(init.resolvedAddress);
@@ -61,8 +69,17 @@ const realFetch: McpFetch = (url, init) =>
         servername: target.hostname,
         family: isIP(init.resolvedAddress),
         lookup: pinnedLookup,
+        agent: false,
       },
       (response) => {
+        const remoteAddress = response.socket.remoteAddress;
+        if (!remoteAddress || !mcpRemoteAddressMatchesPins(remoteAddress, init.resolvedAddresses!)) {
+          clearTimeout(deadline);
+          response.destroy();
+          req.destroy();
+          reject(new Error("MCP connection remote address did not match its DNS pin"));
+          return;
+        }
         const chunks: Buffer[] = [];
         let size = 0;
         let exceeded = false;
@@ -160,6 +177,19 @@ export function isPublicMcpAddress(address: string): boolean {
   if (family === 4) return publicIpv4(address);
   if (family === 6) return publicIpv6(address);
   return false;
+}
+
+function comparableAddress(address: string): string {
+  const normalized = address.toLowerCase().split("%")[0] ?? "";
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized);
+  if (mapped?.[1]) return mapped[1];
+  if (isIP(normalized) === 6) return new URL(`https://[${normalized}]/`).hostname.slice(1, -1);
+  return normalized;
+}
+
+export function mcpRemoteAddressMatchesPins(remoteAddress: string, pins: readonly string[]): boolean {
+  const remote = comparableAddress(remoteAddress);
+  return isPublicMcpAddress(remote) && pins.some((pin) => comparableAddress(pin) === remote);
 }
 
 export function validateMcpHttpsUrl(value: string, field = "MCP URL"): URL {
@@ -680,8 +710,7 @@ export interface McpClient {
   callTool(
     name: string,
     args: Record<string, unknown>,
-    beforeDispatch?: () => Promise<void>,
-    authorityToken?: string,
+    beforeDispatch?: () => Promise<string | undefined>,
   ): Promise<McpToolResult>;
 }
 
@@ -757,29 +786,45 @@ export function createMcpClient(opts: {
 
   async function request(
     url: string,
-    init: Omit<Parameters<McpFetch>[1], "redirect" | "resolvedAddress" | "maxResponseBytes" | "timeoutMs">,
+    init: Omit<
+      Parameters<McpFetch>[1],
+      "redirect" | "resolvedAddress" | "resolvedAddresses" | "maxResponseBytes" | "timeoutMs"
+    >,
     maximumChars: number,
-    beforeDispatch?: () => Promise<void>,
+    beforeDispatch?: () => Promise<string | undefined>,
   ): Promise<McpHttpResponse> {
     const deadlineAt = Date.now() + requestTimeoutMs;
     const parsed = validateMcpHttpsUrl(url);
     const target = parsed.toString();
     let resolvedAddress: string | undefined;
+    let resolvedAddresses: string[] | undefined;
     if (resolveHost) {
       const addresses = await withinDeadline(resolveHost(parsed.hostname), deadlineAt);
       if (!addresses.length || addresses.some((address) => !isPublicMcpAddress(address))) {
         throw new Error(`MCP endpoint ${parsed.hostname} did not resolve to public addresses`);
       }
-      resolvedAddress = addresses[0];
+      resolvedAddresses = [...new Set(addresses)];
+      resolvedAddress = resolvedAddresses[0];
     }
-    if (beforeDispatch) await withinDeadline(beforeDispatch(), deadlineAt);
+    const authorityToken = beforeDispatch ? await withinDeadline(beforeDispatch(), deadlineAt) : undefined;
+    if (
+      authorityToken !== undefined &&
+      (!/^[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{80,128}$/.test(authorityToken) || authorityToken.length > 6_144)
+    ) {
+      throw new Error("MCP authority token is invalid");
+    }
     const response = await withinDeadline(
       fetchImpl(target, {
         ...init,
+        headers: {
+          ...init.headers,
+          ...(authorityToken ? { "x-risely-qm-authority": authorityToken } : {}),
+        },
         redirect: "manual",
         maxResponseBytes: maximumChars * 4,
         timeoutMs: Math.max(1, deadlineAt - Date.now()),
         ...(resolvedAddress ? { resolvedAddress } : {}),
+        ...(resolvedAddresses ? { resolvedAddresses } : {}),
       }),
       deadlineAt,
     );
@@ -872,8 +917,7 @@ export function createMcpClient(opts: {
   async function rpc(
     method: string,
     params: Record<string, unknown>,
-    beforeDispatch?: () => Promise<void>,
-    authorityToken?: string,
+    beforeDispatch?: () => Promise<string | undefined>,
   ): Promise<unknown> {
     const id = ++rpcId;
     const headers = await authHeaders();
@@ -883,7 +927,6 @@ export function createMcpClient(opts: {
         method: "POST",
         headers: {
           ...headers,
-          ...(authorityToken ? { "x-risely-qm-authority": authorityToken } : {}),
           "content-type": "application/json",
           accept: MCP_ACCEPT,
         },
@@ -949,14 +992,8 @@ export function createMcpClient(opts: {
       }
       return out;
     },
-    async callTool(name, args, beforeDispatch, authorityToken) {
-      if (
-        authorityToken !== undefined &&
-        (!/^[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{80,128}$/.test(authorityToken) || authorityToken.length > 6_144)
-      ) {
-        throw new Error("MCP authority token is invalid");
-      }
-      const result = await rpc("tools/call", { name, arguments: args }, beforeDispatch, authorityToken);
+    async callTool(name, args, beforeDispatch) {
+      const result = await rpc("tools/call", { name, arguments: args }, beforeDispatch);
       if (!result || typeof result !== "object" || Array.isArray(result)) {
         throw new Error(`mcp tool ${name} returned an invalid result`);
       }

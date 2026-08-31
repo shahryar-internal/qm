@@ -6,6 +6,7 @@ import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts"
 import {
   createMcpAuthoritySigner,
   mcpAuthoritySignerConfigFromEnv,
+  type McpAuthoritySigner,
   type McpAuthorityPayload,
   type McpHumanCallContext,
 } from "../src/mcp/mcp-authority.ts";
@@ -21,7 +22,7 @@ const keys = generateKeyPairSync("ed25519");
 const signerConfig = {
   issuer: "qm:test",
   organizationId: "org-founder",
-  principalId: "founder-principal",
+  principalId: "founder@example.com",
   slackTeamId: "T123",
   slackUserId: "U123",
   slackDmChannelId: "D123",
@@ -31,12 +32,13 @@ const signerConfig = {
 const context: McpHumanCallContext = {
   surface: "slack",
   conversationType: "dm",
-  principalId: "U123",
+  principalId: "founder@example.com",
   slackTeamId: "T123",
   slackUserId: "U123",
   slackChannelId: "D123",
   slackMessageTs: "1788119999.000001",
   slackThreadTs: "1788119999.000001",
+  deliveryTarget: "D123",
 };
 const inputSchema = {
   type: "object",
@@ -119,7 +121,12 @@ function delivery(authority: McpAuthorityPayload, over: Record<string, unknown> 
   };
 }
 
-async function serviceWith(fetchImpl: McpFetch, withSigner = true) {
+async function serviceWith(
+  fetchImpl: McpFetch,
+  withSigner = true,
+  authoritySigner: McpAuthoritySigner = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000),
+  serverInput: McpServer = server,
+) {
   const store = createMcpServerStore(
     createMemoryMap(),
     deriveConnectorKey("mcp-authority-test-key", "mcp-server-secrets"),
@@ -128,10 +135,10 @@ async function serviceWith(fetchImpl: McpFetch, withSigner = true) {
     servers: store,
     fetchImpl,
     audit: createAuditLog(),
-    ...(withSigner ? { authoritySigner: createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000) } : {}),
+    ...(withSigner ? { authoritySigner } : {}),
     refreshIntervalMs: 3_600_000,
   });
-  await store.put(server);
+  await store.put(serverInput);
   await service.refresh();
   return service;
 }
@@ -144,12 +151,14 @@ test("founder-DM signer binds canonical body and rejects every other user, team,
   assert.equal(payload.iat, 1_788_119_999);
   assert.equal(payload.exp, 1_788_120_029);
   for (const changed of [
-    { principalId: "U999", slackUserId: "U999" },
+    { principalId: "attacker@example.com" },
+    { slackUserId: "U999" },
     { slackTeamId: "T999" },
     { slackChannelId: "D999" },
     { conversationType: "group" },
     { surface: "web" },
     { slackThreadTs: "bad" },
+    { deliveryTarget: "D999" },
   ]) {
     assert.throws(() => signer.sign("analytics_query", {}, { ...context, ...changed } as McpHumanCallContext));
   }
@@ -211,21 +220,21 @@ test("sealed analytics deliveries bind exact target, reject tampering, and survi
     authority,
   );
   assert.ok(parsed);
-  const token = oldSigner.sealAnalyticsCard(parsed.unsignedCard, authority);
-  const verified = oldSigner.verifyAnalyticsCard(token, "D123:1788119999.000001");
+  const token = oldSigner.sealAnalyticsCard(parsed.unsignedCard, authority, "D123");
+  const verified = oldSigner.verifyAnalyticsCard(token, "D123");
   assert.equal(
     verified?.fallbackText,
     "Notify &lt;!channel&gt; &lt;@​U123&gt; &lt;https:​//evil.example|open&gt; &amp; review",
   );
   assert.doesNotMatch(toSlackMrkdwn(verified!.fallbackText), /<!(?:channel|here|everyone)>|<@U|<https:/);
-  assert.equal(oldSigner.verifyAnalyticsCard(token, "D999:1788119999.000001"), null);
+  assert.equal(oldSigner.verifyAnalyticsCard(token, "D123:1788119999.000001"), null);
 
   const [encoded, signature] = token.split(".");
   assert.ok(encoded && signature);
   const changed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
   changed.card.findings[0].text = "Invented finding";
   const tampered = `${Buffer.from(JSON.stringify(changed)).toString("base64url")}.${signature}`;
-  assert.equal(oldSigner.verifyAnalyticsCard(tampered, "D123:1788119999.000001"), null);
+  assert.equal(oldSigner.verifyAnalyticsCard(tampered, "D123"), null);
 
   const nextKeys = generateKeyPairSync("ed25519");
   const rotatingSigner = createMcpAuthoritySigner({
@@ -233,12 +242,12 @@ test("sealed analytics deliveries bind exact target, reject tampering, and survi
     privateKey: nextKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
     previousPublicKeys: [keys.publicKey.export({ format: "der", type: "spki" }).toString("base64")],
   });
-  assert.equal(rotatingSigner.verifyAnalyticsCard(token, "D123:1788119999.000001")?.receiptId, "a".repeat(64));
+  assert.equal(rotatingSigner.verifyAnalyticsCard(token, "D123")?.receiptId, "a".repeat(64));
   const noOverlap = createMcpAuthoritySigner({
     ...signerConfig,
     privateKey: nextKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
   });
-  assert.equal(noOverlap.verifyAnalyticsCard(token, "D123:1788119999.000001"), null);
+  assert.equal(noOverlap.verifyAnalyticsCard(token, "D123"), null);
 });
 
 test("tool service injects authority only on tools/call and accepts one exact authority-bound native card", async () => {
@@ -260,19 +269,88 @@ test("tool service injects authority only on tools/call and accepts one exact au
     "analytics_analytics_query",
     { question: "How is UC Online doing?" },
     context,
-    "U123",
+    "founder@example.com",
   );
   assert.equal(result.text, JSON.stringify({ answer: 12 }));
   assert.ok(result.trustedAnalyticsCard);
   assert.equal(
-    createMcpAuthoritySigner(signerConfig).verifyAnalyticsCard(result.trustedAnalyticsCard, "D123:1788119999.000001")
-      ?.renderer,
+    createMcpAuthoritySigner(signerConfig).verifyAnalyticsCard(result.trustedAnalyticsCard, "D123")?.renderer,
     "qm.analytics.card.v1",
   );
   assert.equal(result.nativeCardIdempotencyKey, `mcp-card:${"a".repeat(64)}`);
   assert.ok(seen.filter((entry) => entry.method === "tools/list").every((entry) => !entry.authority));
   assert.equal(seen.filter((entry) => entry.method === "tools/call").length, 1);
   assert.ok(seen.find((entry) => entry.method === "tools/call")?.authority);
+  service.close();
+});
+
+test("cold discovery delay cannot age the authority envelope before tools/call dispatch", async () => {
+  const initialClock = 1_788_119_900_000;
+  let clock = initialClock;
+  let signCount = 0;
+  const events: string[] = [];
+  const baseSigner = createMcpAuthoritySigner(signerConfig, () => clock);
+  const observedSigner: McpAuthoritySigner = {
+    ...baseSigner,
+    sign(tool, body, callContext) {
+      signCount += 1;
+      events.push("sign");
+      return baseSigner.sign(tool, body, callContext);
+    },
+  };
+  const fetchImpl: McpFetch = async (url, init) => {
+    if (url === "https://auth.example.com/oauth/token") {
+      events.push("oauth");
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        text: async () => JSON.stringify({ access_token: "oauth-token", token_type: "Bearer", expires_in: 3_600 }),
+      };
+    }
+    const request = JSON.parse(init.body) as { id: number; method: string };
+    if (request.method === "tools/list") {
+      events.push("list");
+      assert.equal(signCount, 0, "the envelope must not exist during cold discovery or contract revalidation");
+      clock += 45_000;
+      return response(request.id, { tools: [remoteTool] });
+    }
+    events.push("call");
+    assert.equal(init.headers.authorization, "Bearer oauth-token");
+    assert.equal(signCount, 1);
+    const authority = decodeAuthority(init.headers["x-risely-qm-authority"]!);
+    assert.equal(authority.iat, Math.floor(clock / 1_000));
+    assert.equal(authority.exp - authority.iat, signerConfig.ttlSeconds);
+    assert.ok(Math.floor(initialClock / 1_000) + signerConfig.ttlSeconds <= Math.floor(clock / 1_000));
+    assert.ok(authority.exp > Math.floor(clock / 1_000));
+    return response(request.id, {
+      content: [{ type: "text", text: "fresh" }],
+      structuredContent: delivery(authority),
+    });
+  };
+  const service = await serviceWith(fetchImpl, true, observedSigner, {
+    ...server,
+    auth: "client-credentials",
+    clientId: "qm-analytics",
+    clientSecret: "secret",
+    tokenUrl: "https://auth.example.com/oauth/token",
+    audience: "https://analytics.example.com/api/mcp/analytics/mcp",
+    tokenAuthMethod: "client_secret_basic",
+    tokenAudienceParameter: "audience",
+    scopes: ["analytics:read"],
+    credentialState: "ready",
+  });
+  const result = await service.callWithContext(
+    "analytics_analytics_query",
+    { question: "How is UC Online doing?" },
+    context,
+    "founder@example.com",
+  );
+  assert.equal(result.text, "fresh");
+  assert.ok(events.indexOf("oauth") < events.indexOf("sign"));
+  assert.ok(events.lastIndexOf("list") < events.indexOf("sign"));
+  assert.equal(events.at(-2), "sign");
+  assert.equal(events.at(-1), "call");
   service.close();
 });
 
@@ -285,7 +363,12 @@ test("missing signer and tampered native-card authority fail closed", async () =
   }, false);
   await assert.rejects(
     () =>
-      noSigner.callWithContext("analytics_analytics_query", { question: "How is UC Online doing?" }, context, "U123"),
+      noSigner.callWithContext(
+        "analytics_analytics_query",
+        { question: "How is UC Online doing?" },
+        context,
+        "founder@example.com",
+      ),
     /authority is unavailable/,
   );
   assert.equal(calls, 0);
@@ -314,7 +397,12 @@ test("missing signer and tampered native-card authority fail closed", async () =
   });
   await assert.rejects(
     () =>
-      tampered.callWithContext("analytics_analytics_query", { question: "How is UC Online doing?" }, context, "U123"),
+      tampered.callWithContext(
+        "analytics_analytics_query",
+        { question: "How is UC Online doing?" },
+        context,
+        "founder@example.com",
+      ),
     /native renderer result is invalid/,
   );
   tampered.close();

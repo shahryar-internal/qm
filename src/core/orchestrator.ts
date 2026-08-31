@@ -2085,10 +2085,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               conversationType: "dm",
               principalId: actor.id,
               slackTeamId: input.trustedSlackTeamId ?? "",
-              slackUserId: actor.id,
+              slackUserId: input.trustedSlackUserId ?? "",
               slackChannelId,
               slackMessageTs: messageTs,
               slackThreadTs,
+              deliveryTarget: defaultDestination.target,
             };
             return { mcpCallContext };
           })(),

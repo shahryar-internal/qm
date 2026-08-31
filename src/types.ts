@@ -415,6 +415,7 @@ export type TurnOrigin =
 export interface TurnRequest {
   surface: string;
   trustedSlackTeamId?: string;
+  trustedSlackUserId?: string;
   scopeVersion?: string;
   deliveryTarget?: string;
   deliveryCandidates?: { target: string; label: string }[];

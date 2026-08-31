@@ -13,6 +13,7 @@ export interface McpHumanCallContext {
   slackChannelId: string;
   slackMessageTs: string;
   slackThreadTs: string;
+  deliveryTarget: string;
 }
 
 export interface McpAuthorityPayload {
@@ -40,7 +41,7 @@ export interface McpAuthorityEnvelope {
 
 export interface McpAuthoritySigner {
   sign(tool: string, body: Record<string, unknown>, context: McpHumanCallContext | undefined): McpAuthorityEnvelope;
-  sealAnalyticsCard(card: QmAnalyticsNativeCard, authority: McpAuthorityPayload): TrustedAnalyticsCard;
+  sealAnalyticsCard(card: QmAnalyticsNativeCard, authority: McpAuthorityPayload, target: string): TrustedAnalyticsCard;
   verifyAnalyticsCard(token: unknown, target: string): QmAnalyticsNativeCard | null;
 }
 
@@ -57,6 +58,7 @@ export interface McpAuthoritySignerConfig {
 }
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
+const PRINCIPAL_ID = /^[A-Za-z0-9][A-Za-z0-9@._+-]{2,127}$/;
 const SLACK_TS = /^\d{10,12}\.\d{6}$/;
 
 function codeUnitOrder(left: string, right: string): number {
@@ -102,7 +104,7 @@ function exactConfig(config: McpAuthoritySignerConfig): McpAuthoritySignerConfig
   if (
     !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{2,127}$/.test(config.issuer) ||
     !IDENTIFIER.test(config.organizationId) ||
-    !IDENTIFIER.test(config.principalId) ||
+    !PRINCIPAL_ID.test(config.principalId) ||
     !/^T[A-Z0-9]{2,31}$/.test(config.slackTeamId) ||
     !/^U[A-Z0-9]{2,31}$/.test(config.slackUserId) ||
     !/^D[A-Z0-9]{2,31}$/.test(config.slackDmChannelId) ||
@@ -149,12 +151,14 @@ export function createMcpAuthoritySigner(
         !context ||
         context.surface !== "slack" ||
         context.conversationType !== "dm" ||
-        context.principalId !== config.slackUserId ||
+        context.principalId !== config.principalId ||
         context.slackUserId !== config.slackUserId ||
         context.slackChannelId !== config.slackDmChannelId ||
         context.slackTeamId !== config.slackTeamId ||
         !SLACK_TS.test(context.slackMessageTs) ||
-        !SLACK_TS.test(context.slackThreadTs)
+        !SLACK_TS.test(context.slackThreadTs) ||
+        (context.deliveryTarget !== config.slackDmChannelId &&
+          context.deliveryTarget !== `${config.slackDmChannelId}:${context.slackThreadTs}`)
       ) {
         throw new Error("MCP founder DM authority denied");
       }
@@ -182,7 +186,10 @@ export function createMcpAuthoritySigner(
         token: `${encoded}.${sign(null, Buffer.from(encoded, "ascii"), key).toString("base64url")}`,
       };
     },
-    sealAnalyticsCard(card, authority) {
+    sealAnalyticsCard(card, authority, target) {
+      if (target !== authority.slackChannelId && target !== `${authority.slackChannelId}:${authority.slackThreadTs}`) {
+        throw new Error("QM analytics card delivery target is invalid");
+      }
       const accepted = parseAnalyticsNativeDelivery(
         { version: 1, delivery: { ...card, authority: cardAuthority(authority) } },
         authority,
@@ -190,7 +197,7 @@ export function createMcpAuthoritySigner(
       if (!accepted) throw new Error("QM analytics card delivery is invalid");
       const payload = {
         version: 1,
-        target: `${authority.slackChannelId}:${authority.slackThreadTs}`,
+        target,
         authority,
         card: accepted.unsignedCard,
       };
@@ -222,7 +229,8 @@ export function createMcpAuthoritySigner(
         if (
           authority.version !== 1 ||
           authority.tool !== "analytics_query" ||
-          payload.target !== `${authority.slackChannelId}:${authority.slackThreadTs}`
+          (payload.target !== authority.slackChannelId &&
+            payload.target !== `${authority.slackChannelId}:${authority.slackThreadTs}`)
         ) {
           return null;
         }
