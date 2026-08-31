@@ -2,8 +2,6 @@ import { createHash, createPrivateKey, createPublicKey, randomBytes, sign, verif
 import type { QmAnalyticsNativeCard, TrustedAnalyticsCard } from "../types.ts";
 import { parseAnalyticsNativeDelivery } from "./mcp-native-card.ts";
 
-export const MCP_AUTHORITY_HEADER = "x-risely-qm-authority";
-
 export interface McpHumanCallContext {
   surface: "slack";
   conversationType: "dm";
@@ -34,7 +32,7 @@ export interface McpAuthorityPayload {
   exp: number;
 }
 
-export interface McpAuthorityEnvelope {
+interface McpAuthorityEnvelope {
   token: string;
   payload: McpAuthorityPayload;
 }

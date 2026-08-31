@@ -11,7 +11,7 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 export type McpServerAuthMode = "none" | "bearer" | "client-credentials";
 export type McpTokenAuthMethod = "client_secret_basic" | "client_secret_post";
 export type McpTokenAudienceParameter = "audience" | "resource";
-export type McpCredentialState = "none" | "ready" | "reentry-required";
+type McpCredentialState = "none" | "ready" | "reentry-required";
 
 export interface McpAllowedTool {
   name: string;

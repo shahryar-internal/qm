@@ -225,7 +225,7 @@ function linkedValue(value: string, href: string | undefined): string {
   return safe ? `<${safe}|${label}>` : label;
 }
 
-export function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string, unknown>> {
+function workflowArtifactBlocks(card: WorkflowArtifactCard): Array<Record<string, unknown>> {
   const toneIcon = {
     neutral: ":white_circle:",
     info: ":large_blue_circle:",

@@ -544,6 +544,27 @@ test("child specs keep an operator-set PUBLIC_WEB_URL so Slack playground links 
   assert.equal(core.env.PUBLIC_WEB_URL, "https://tunnel.example");
 });
 
+test("child specs replace an empty operator PUBLIC_WEB_URL with the local portal", () => {
+  const inputs: SpecInputs = {
+    worktree: "/tmp/worktree",
+    ports: slotPorts("pool1"),
+    baseEnv: { PUBLIC_WEB_URL: "" },
+    coreEnv: {},
+    watch: false,
+    webUiBasePath: "/",
+    sessionStore: "memory",
+    runStore: "memory",
+    databaseUrl: "",
+    adminGrantsSeed: "",
+    coreSigningSecret: "",
+    portalSessionSecret: "secret",
+    portalDevPrincipal: "U1",
+    sandboxEnv: {},
+  };
+  const core = buildChildSpecs(inputs).find((spec) => spec.name === "core")!;
+  assert.equal(core.env.PUBLIC_WEB_URL, `http://localhost:${inputs.ports.portal}`);
+});
+
 test("formatAge renders the bash-compatible shapes", () => {
   assert.equal(formatAge(42), "42s");
   assert.equal(formatAge(150), "2m");

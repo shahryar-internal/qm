@@ -145,9 +145,7 @@ export {
   renderTaskList,
   type TaskListPresenter,
   createTaskListPresenter,
-  type NativeAgentSessionStatus,
   type NativeAgentPresenter,
-  supportsNativeAgentPresentation,
   setNativeAgentSessionStatus,
   createNativeAgentPresenter,
 } from "./presenters.ts";

@@ -57,13 +57,13 @@ export interface McpToolDescriptor {
   nativeRenderer?: McpAllowedTool["nativeRenderer"];
 }
 
-export interface McpToolCallResult {
+interface McpToolCallResult {
   text: string;
   trustedAnalyticsCard?: TrustedAnalyticsCard;
   nativeCardIdempotencyKey?: string;
 }
 
-export interface McpProbedTool {
+interface McpProbedTool {
   name: string;
   readOnlyHint: boolean;
   destructiveHint: boolean;

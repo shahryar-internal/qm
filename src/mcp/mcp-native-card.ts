@@ -39,7 +39,7 @@ function boundedLine(value: unknown, maximum: number): value is string {
   return boundedText(value, maximum) && !/[\r\n]/.test(value);
 }
 
-export function analyticsNativeCardFallbackText(value: string): string {
+function analyticsNativeCardFallbackText(value: string): string {
   return value
     .replace(/\b(https?|mailto):/gi, "$1:\u200b")
     .replace(/&/g, "&amp;")

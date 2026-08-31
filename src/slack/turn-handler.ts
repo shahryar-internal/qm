@@ -105,7 +105,7 @@ export interface SlackReactionEvent {
   event_ts?: string;
 }
 
-export interface SlackAgentSessionStoppedEvent {
+interface SlackAgentSessionStoppedEvent {
   channel_id?: string;
   channel?: string;
   thread_ts?: string;

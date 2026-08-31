@@ -146,7 +146,7 @@ export interface RunTaskView {
   status: RunTaskStatus;
 }
 
-export type NativeAgentSessionStatus = "active" | "processing" | "suspended" | "closed";
+type NativeAgentSessionStatus = "active" | "processing" | "suspended" | "closed";
 
 export interface NativeAgentPresenter {
   begin(): Promise<boolean>;
@@ -165,7 +165,7 @@ export function setNativeAgentSessionStatus(client: any, args: Record<string, un
   return Promise.reject(new Error("Slack client does not support agent session status"));
 }
 
-export function supportsNativeAgentPresentation(client: any): boolean {
+function supportsNativeAgentPresentation(client: any): boolean {
   return Boolean(
     (client?.agents?.sessions?.setStatus || client?.apiCall) &&
     client?.chat?.startStream &&
