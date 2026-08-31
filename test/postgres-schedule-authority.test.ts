@@ -1037,7 +1037,7 @@ test(
 
 test("current authority rejects the exact signed receipt expiry boundary", { skip }, async (t) => {
   t.mock.method(Date, "now", () => Date.parse("2020-08-31T20:00:00.000Z"));
-  const { claim, maps } = await fixture("receipt-expiry", "2020-09-30", Date.parse("2020-09-01T16:00:00.000Z"), 250);
+  const { claim, maps } = await fixture("receipt-expiry", "2020-09-30", Date.parse("2020-09-01T16:00:00.000Z"), 2_000);
   const authority = createPostgresScheduleAuthority({ connectionString: TEST_URL!, signer });
   const runtime = createPostgresRunStore(TEST_URL!);
   try {

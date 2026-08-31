@@ -492,7 +492,7 @@ export function createTurnHandler(deps: {
           if (candidates) turn.deliveryCandidates = candidates;
           turn.gatewayContext = {
             ...turn.gatewayContext,
-            details: { ...(turn.gatewayContext?.details ?? {}), thread_ts: inc.ts },
+            details: { ...turn.gatewayContext?.details, thread_ts: inc.ts },
           };
         }
       } else {
