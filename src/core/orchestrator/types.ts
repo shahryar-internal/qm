@@ -12,6 +12,7 @@ import type { TurnOrigin } from "../turn-origin.ts";
 import type { IdentityService } from "../../identity/identity-service.ts";
 import type { ResolutionService } from "../../resolution/resolution-service.ts";
 import type { OrgBranding, ScopedConfigStore } from "../../resolution/config-store.ts";
+import type { UserModelCredentialStore } from "../../model/user-model-credential-store.ts";
 import type { ManagedGroupDirectory } from "../../resolution/scope-membership.ts";
 import type { DirectoryStore } from "../../directory/directory-store.ts";
 import type { EnvironmentStore } from "../../environments/environment-store.ts";
@@ -56,7 +57,6 @@ import type { OAuthClientResolver } from "../../connectors/oauth.ts";
 import type { SkillBundleStore } from "../../skills/skill-bundle-store.ts";
 import type { BrokeredLayerTool, DeploymentLayerRuntime } from "../../deployment/load-layer.ts";
 import type { FileArtifactStore } from "../../files/file-artifact-store.ts";
-import type { MiniappStore } from "../../miniapps/miniapp.ts";
 import type { DeployService } from "../../deploy/deploy-service.ts";
 import type { AclStore } from "../../acl/acl-store.ts";
 import type { ChannelPolicyStore } from "../../surface-cache/channel-policy-store.ts";
@@ -99,6 +99,9 @@ export interface OrchestratorDeps {
   identity: IdentityService;
   resolution: ResolutionService;
   config?: ScopedConfigStore;
+  /** The deployment's fallback harness (wiring's config.harness) — used when no org runtime selection exists. */
+  defaultHarness?: string;
+  userModelCredentials?: UserModelCredentialStore;
   brandingDefault?: OrgBranding;
   resolveBaseModelId?: () => string | undefined;
   sessionTapeMode?: "shadow" | "serve";
@@ -124,7 +127,6 @@ export interface OrchestratorDeps {
   capabilitySecret?: string;
   apiBaseUrl?: string;
   publicWebUrl?: string;
-  miniapps?: MiniappStore;
   /** The public base for an inbound webhook URL (PUBLIC_WEB_URL ?? api url) — what the webhook
    *  tool hands the user to point the sender at; matches the HTTP webhook route's base exactly. */
   webhookPublicUrl?: string;

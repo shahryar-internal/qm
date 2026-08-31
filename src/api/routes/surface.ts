@@ -1063,6 +1063,8 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
   const forcedRuntime = deps.runtimeChoiceOverride;
   const harnessId = forcedRuntime?.harnessId ?? deps.harnessId ?? "pi";
   const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : null;
+  const configuredKeys = deps.providerKeys ?? managedKeys;
+  const providerStatus = harnessId === "pi" && managedKeys ? managedKeys : configuredKeys;
   const catalog = managedKeys?.openrouter
     ? await selectableModelCatalog(deps.modelCredentialFetch)
     : builtInModelCatalog();
@@ -1085,7 +1087,9 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
     webuiModels: configuredPicker.length ? configuredPicker : allowed,
     baseModel: resolvedBase,
     harnessId,
-    ...(managedKeys ? { modelProviderConfigured: Object.values(managedKeys).some(Boolean) } : {}),
+    ...(providerStatus && {
+      modelProviderConfigured: Object.values(providerStatus).some(Boolean) || Boolean(deps.harnessCarriedModelAuth),
+    }),
     externalSlackParticipants,
     ...(Object.keys(resolvedBranding).length ? { branding: resolvedBranding } : {}),
   });

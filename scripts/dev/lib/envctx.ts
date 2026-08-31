@@ -9,6 +9,7 @@ import {
   DEV_GEMINI_MODEL,
   devGeminiProviderFromEnv,
 } from "../../../src/model/dev-gemini-provider.ts";
+import { codexAuthFileForEnv, readCodexOAuthAuthFile } from "../../../src/harness/codex-auth-file.ts";
 
 export interface AssembledEnv {
   env: Record<string, string>;
@@ -16,6 +17,7 @@ export interface AssembledEnv {
   anthropicKeySource: string;
   openaiKeySource: string;
   geminiKeySource: string;
+  codexAuthSource: string;
   harness: "pi" | "mock" | "opencode" | "codex" | "claude";
   liveEnvFile: string;
   warnings: string[];
@@ -110,6 +112,7 @@ export async function assembleEnv(opts: {
   for (const [k, v] of Object.entries(liveEnv)) {
     if (!env[k]) env[k] = v;
   }
+  const wtEnv = readEnvFile(join(opts.worktree, ".env"));
 
   let anthropicKeySource = "";
   if (opts.callerEnv.ANTHROPIC_API_KEY) anthropicKeySource = "your shell export";
@@ -122,7 +125,6 @@ export async function assembleEnv(opts: {
       anthropicKeySource = liveEnvFile;
     }
   }
-  const wtEnv = readEnvFile(join(opts.worktree, ".env"));
   if (liveEnv.GEMINI_API_KEY?.trim() || wtEnv.GEMINI_API_KEY?.trim()) {
     throw new Error("GEMINI_API_KEY must be supplied through the invoking process environment, not dev.env or .env");
   }
@@ -142,6 +144,15 @@ export async function assembleEnv(opts: {
 
   const coreEnv: Record<string, string> = {};
   let geminiKeySource = "";
+  if (!env.CODEX_AUTH_FILE && wtEnv.CODEX_AUTH_FILE) env.CODEX_AUTH_FILE = wtEnv.CODEX_AUTH_FILE;
+  let codexAuthSource = "";
+  const codexAuthCandidate = codexAuthFileForEnv({ ...env, ...opts.callerEnv }, true);
+  const codexOAuthConfigured = Boolean(codexAuthCandidate && readCodexOAuthAuthFile(codexAuthCandidate));
+  if (codexOAuthConfigured && codexAuthCandidate) {
+    env.CODEX_AUTH_FILE = codexAuthCandidate;
+    codexAuthSource = codexAuthCandidate;
+  }
+
   let harness: "pi" | "mock" | "opencode" | "codex" | "claude";
   if (geminiApiKey && env.HARNESS?.trim() && env.HARNESS.trim() !== "pi") {
     throw new Error("GEMINI_API_KEY requires HARNESS=pi in a dev instance");
@@ -149,9 +160,9 @@ export async function assembleEnv(opts: {
   if (opts.callerEnv.HARNESS === "codex" || opts.callerEnv.HARNESS === "claude") {
     harness = opts.callerEnv.HARNESS;
     env.HARNESS = harness;
-    if (harness === "codex" && !env.OPENAI_API_KEY) {
+    if (harness === "codex" && !env.OPENAI_API_KEY && !codexOAuthConfigured) {
       throw new Error(
-        "HARNESS=codex needs OPENAI_API_KEY (its CLI cannot do browser OAuth in a container) -- export it, or add it to the live env file or the worktree .env",
+        "HARNESS=codex needs OPENAI_API_KEY or a readable ChatGPT OAuth auth.json via CODEX_AUTH_FILE (or ~/.codex/auth.json)",
       );
     }
   } else if (geminiApiKey) {
@@ -202,6 +213,7 @@ export async function assembleEnv(opts: {
     anthropicKeySource,
     openaiKeySource,
     geminiKeySource,
+    codexAuthSource,
     harness,
     liveEnvFile,
     warnings,

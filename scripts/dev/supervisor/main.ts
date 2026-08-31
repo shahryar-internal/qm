@@ -331,7 +331,9 @@ async function assembleAndPrepare(spec: BootSpec, transientGeminiApiKey?: string
   else if (assembled.geminiKeySource) {
     harnessDetail = `live pi turns (gemini key from ${assembled.geminiKeySource})`;
   } else if (assembled.harness === "codex") {
-    harnessDetail = `live codex turns (openai key from ${assembled.openaiKeySource || "the environment"})`;
+    harnessDetail = assembled.codexAuthSource
+      ? "live codex turns (ChatGPT OAuth auth.json)"
+      : `live codex turns (openai key from ${assembled.openaiKeySource || "the environment"})`;
   } else if (assembled.harness === "claude") harnessDetail = "live claude turns (native CLI authentication)";
   phase("env", "ok", harnessDetail);
 
