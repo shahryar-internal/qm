@@ -14,7 +14,7 @@ import {
 import type { McpAllowedTool, McpServer, McpServerStore } from "./mcp-server-store.ts";
 import type { McpAuthoritySigner, McpHumanCallContext } from "./mcp-authority.ts";
 import { parseAnalyticsNativeDelivery } from "./mcp-native-card.ts";
-import type { QmAnalyticsNativeCard } from "../types.ts";
+import type { TrustedAnalyticsCard } from "../types.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const MAX_TOOLS_PER_SERVER = 64;
@@ -59,7 +59,7 @@ export interface McpToolDescriptor {
 
 export interface McpToolCallResult {
   text: string;
-  nativeCard?: QmAnalyticsNativeCard;
+  trustedAnalyticsCard?: TrustedAnalyticsCard;
   nativeCardIdempotencyKey?: string;
 }
 
@@ -345,7 +345,7 @@ export function createMcpToolService(opts: {
       record("call", `${def.serverId}/${def.remoteName}`, "ok", principalId);
       return {
         text: boundedText,
-        nativeCard: delivery.card,
+        trustedAnalyticsCard: opts.authoritySigner!.sealAnalyticsCard(delivery.unsignedCard, authority.payload),
         nativeCardIdempotencyKey: delivery.idempotencyKey,
       };
     } catch (error) {

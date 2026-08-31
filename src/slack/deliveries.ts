@@ -83,6 +83,8 @@ export function createDeliveryPoller(deps: {
           try {
             const postClient = d.destination.identity ? clientForIdentity(d.destination.identity) : client;
             const { channel, threadTs } = parseDeliveryTarget(d.destination.target);
+            const nativeCard = d.trustedAnalyticsCard ? core.analyticsNativeCard?.(d) : undefined;
+            if (d.trustedAnalyticsCard && !nativeCard) throw new Error("analytics card delivery verification failed");
             if (d.destination.react) {
               const { failed } = await applyReactions(client, channel, d.destination.react.messageTs, [
                 d.destination.react.emoji,
@@ -103,7 +105,10 @@ export function createDeliveryPoller(deps: {
               }
               return undefined;
             }
-            const text = toSlackMrkdwn(runId ? cleanAgentReplyForSlack(d.text).text : stripSlackDirectives(d.text));
+            const sourceText = nativeCard?.fallbackText ?? d.text;
+            const text = toSlackMrkdwn(
+              runId ? cleanAgentReplyForSlack(sourceText).text : stripSlackDirectives(sourceText),
+            );
             const replayAttachments = async (root?: string): Promise<void> => {
               if (!d.attachments?.length) return;
               try {
@@ -132,9 +137,7 @@ export function createDeliveryPoller(deps: {
                     : []),
                 ]
               : undefined;
-            const nativeCardBlocks = d.destination.nativeCard
-              ? analyticsNativeCardBlocks(d.destination.nativeCard)
-              : undefined;
+            const nativeCardBlocks = nativeCard ? analyticsNativeCardBlocks(nativeCard) : undefined;
             if (!text.trim()) {
               if (taskList) {
                 let preserved = false;

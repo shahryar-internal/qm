@@ -173,7 +173,11 @@ test("MCP native cards are consumed by the current surface and never returned as
     mcp: {
       toolDefs: () => [],
       async callWithContext() {
-        return { text: "model-safe result", nativeCard: card, nativeCardIdempotencyKey: `mcp-card:${card.receiptId}` };
+        return {
+          text: "model-safe result",
+          trustedAnalyticsCard: "sealed-card" as never,
+          nativeCardIdempotencyKey: `mcp-card:${card.receiptId}`,
+        };
       },
     } as never,
     surface: {
@@ -184,5 +188,5 @@ test("MCP native cards are consumed by the current surface and never returned as
     } as never,
   });
   assert.equal(await ctx.callMcpTool("analytics", {}), "model-safe result");
-  assert.deepEqual(posted, [card, `mcp-card:${card.receiptId}`]);
+  assert.deepEqual(posted, ["sealed-card", `mcp-card:${card.receiptId}`]);
 });

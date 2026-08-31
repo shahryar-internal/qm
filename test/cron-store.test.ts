@@ -386,6 +386,21 @@ test("setDestination(undefined) removes the destination field", async () => {
   assert.equal("destination" in ((await store.get(cron.id)) ?? {}), false);
 });
 
+test("cron destinations never persist caller-authored analytics cards", async () => {
+  const store = createCronStore();
+  const forged = {
+    type: "slack",
+    target: "C1",
+    nativeCard: { renderer: "qm.analytics.card.v1", heading: "Invented" },
+  } as never;
+  const cron = await store.create({ ...base, schedule: { everyMs: 1000 }, destination: forged });
+  assert.equal(JSON.stringify(cron.destination).includes("nativeCard"), false);
+  await store.update(cron.id, { destination: forged });
+  assert.equal(JSON.stringify((await store.get(cron.id))?.destination).includes("nativeCard"), false);
+  await store.setDestination(cron.id, forged);
+  assert.equal(JSON.stringify((await store.get(cron.id))?.destination).includes("nativeCard"), false);
+});
+
 test("create dedups a byte-identical retry: same input inserts once and returns the same id", async () => {
   const store = createCronStore();
   const input = {

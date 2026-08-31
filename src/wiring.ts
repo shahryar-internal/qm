@@ -644,10 +644,13 @@ export function buildApp(
     : createMemoryService(workspace);
   const mcpSecretKey = deriveConnectorKey(config.connectorSecretKey ?? randomBytes(32), "mcp-server-secrets");
   const mcpServers = createMcpServerStore(artifactMap<StoredMcpServer>("mcp_servers"), mcpSecretKey);
+  const mcpAuthoritySigner = config.mcpAuthoritySigner
+    ? createMcpAuthoritySigner(config.mcpAuthoritySigner)
+    : undefined;
   const mcpToolService = createMcpToolService({
     servers: mcpServers,
     audit: auditLog,
-    ...(config.mcpAuthoritySigner ? { authoritySigner: createMcpAuthoritySigner(config.mcpAuthoritySigner) } : {}),
+    ...(mcpAuthoritySigner ? { authoritySigner: mcpAuthoritySigner } : {}),
   });
   const mcpTools = () => mcpToolService.toolDefs();
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
@@ -1333,6 +1336,7 @@ export function buildApp(
     runs,
     turnStream,
     tasks,
+    ...(mcpAuthoritySigner ? { analyticsCardVerifier: mcpAuthoritySigner } : {}),
     ackPicks: ackEmojiPicks,
     ackModelId: () => auxiliaryModelForProvider("anthropic"),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),

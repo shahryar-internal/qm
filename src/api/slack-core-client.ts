@@ -27,6 +27,8 @@ import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import { swallowAs } from "../util/errors.ts";
 import { resolveRuntimeChoiceDurable, type RuntimeChoice } from "../harness/harness-router.ts";
 import { modelDisplayName, resolveModel } from "../model/pi-models.ts";
+import type { McpAuthoritySigner } from "../mcp/mcp-authority.ts";
+import type { QmAnalyticsNativeCard } from "../types.ts";
 
 interface SlackRunHooks {
   onDelta?(delta: string): void;
@@ -81,6 +83,7 @@ export interface SlackCoreClient {
   getApproval(requestId: string): Promise<StoredApprovalView | null>;
   pushDirectory(body: DirectoryPush): Promise<void>;
   claimDeliveries(type: string, claimMs: number): Promise<Delivery[]>;
+  analyticsNativeCard?(delivery: Delivery): QmAnalyticsNativeCard | null;
   ackDelivery(id: string, body?: { recipientThreadRef?: string; slackApiMs?: number }): Promise<void>;
   onDeliveryEnqueued(listener: () => void): () => void;
   pendingContextRequests(): Promise<SurfaceContextRequest[]>;
@@ -118,6 +121,7 @@ export interface SlackCoreClientDeps {
   ackPicks?: AckEmojiPickStore;
   ackModelId?: () => string | undefined;
   brandingDefault?: OrgBranding;
+  analyticsCardVerifier?: Pick<McpAuthoritySigner, "verifyAnalyticsCard">;
 }
 
 const RUN_FALLBACK_POLL_MS = 1_000;
@@ -348,6 +352,13 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
 
     claimDeliveries(type, claimMs) {
       return deps.app.pendingDeliveries(type, claimMs);
+    },
+
+    analyticsNativeCard(delivery) {
+      return (
+        deps.analyticsCardVerifier?.verifyAnalyticsCard(delivery.trustedAnalyticsCard, delivery.destination.target) ??
+        null
+      );
     },
 
     async ackDelivery(id, body) {

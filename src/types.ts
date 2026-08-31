@@ -178,7 +178,6 @@ export interface Destination {
   delete?: { messageTs: string };
   identity?: string;
   debugFooter?: string;
-  nativeCard?: QmAnalyticsNativeCard;
 }
 
 export interface QmAnalyticsNativeCard {
@@ -199,6 +198,8 @@ export interface QmAnalyticsNativeCard {
   nextStep: string;
   proposedActions: string[];
 }
+
+export type TrustedAnalyticsCard = string & { readonly __trustedAnalyticsCard: unique symbol };
 
 export interface CandidateDestination extends Destination {
   key: string;
@@ -288,6 +289,7 @@ export interface Delivery {
   text: string;
   attachments?: OutgoingAttachment[];
   provenance?: DeliveryProvenance;
+  trustedAnalyticsCard?: TrustedAnalyticsCard;
   idempotencyKey: string;
   createdAt: number;
   deliveredAt: number | null;

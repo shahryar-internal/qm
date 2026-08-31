@@ -17,6 +17,7 @@ import {
   type CronScheduleAuthorityInput,
   type QmScheduleDefinition,
 } from "./schedule-authority.ts";
+import { sanitizeDestination } from "../delivery/destination.ts";
 
 export interface CreateCronInput extends CreateTriggerInput {
   schedule: Cron["schedule"];
@@ -212,7 +213,7 @@ export function createCronStore(
       }
       if (patch.enabled !== undefined) fields.enabled = patch.enabled;
       if (patch.archived !== undefined) fields.archived = patch.archived;
-      if (patch.destination !== undefined) fields.destination = patch.destination;
+      if (patch.destination !== undefined) fields.destination = sanitizeDestination(patch.destination);
       if (patch.archived === true) fields.enabled = false;
       if (patch.members !== undefined) fields.members = patch.members;
       if (patch.runAs !== undefined) fields.runAs = patch.runAs;
@@ -272,7 +273,7 @@ export function createCronStore(
       await updateBacking(backing, id, (cron) => {
         const next = { ...cron };
         if (destination === undefined) delete next.destination;
-        else next.destination = destination;
+        else next.destination = sanitizeDestination(destination);
         return reconfigureAuthority(next, undefined, true, false);
       });
     },

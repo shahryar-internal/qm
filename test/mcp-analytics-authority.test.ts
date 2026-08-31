@@ -15,6 +15,7 @@ import type { McpFetch } from "../src/mcp/mcp-client.ts";
 import { parseAnalyticsNativeDelivery } from "../src/mcp/mcp-native-card.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { analyticsNativeCardBlocks } from "../src/slack/native-cards.ts";
+import { toSlackMrkdwn } from "../src/slack/mrkdwn.ts";
 
 const keys = generateKeyPairSync("ed25519");
 const signerConfig = {
@@ -200,6 +201,46 @@ test("native analytics parser rejects remote blocks and QM renders bounded escap
   assert.match(rendered, /&lt;@here&gt; &amp; 12 active/);
 });
 
+test("sealed analytics deliveries bind exact target, reject tampering, and survive an explicit key overlap", () => {
+  const oldSigner = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
+  const authority = decodeAuthority(
+    oldSigner.sign("analytics_query", { question: "How is UC Online doing?" }, context).token,
+  );
+  const parsed = parseAnalyticsNativeDelivery(
+    delivery(authority, { fallbackText: "Notify <!channel> <@U123> <https://evil.example|open> & review" }),
+    authority,
+  );
+  assert.ok(parsed);
+  const token = oldSigner.sealAnalyticsCard(parsed.unsignedCard, authority);
+  const verified = oldSigner.verifyAnalyticsCard(token, "D123:1788119999.000001");
+  assert.equal(
+    verified?.fallbackText,
+    "Notify &lt;!channel&gt; &lt;@​U123&gt; &lt;https:​//evil.example|open&gt; &amp; review",
+  );
+  assert.doesNotMatch(toSlackMrkdwn(verified!.fallbackText), /<!(?:channel|here|everyone)>|<@U|<https:/);
+  assert.equal(oldSigner.verifyAnalyticsCard(token, "D999:1788119999.000001"), null);
+
+  const [encoded, signature] = token.split(".");
+  assert.ok(encoded && signature);
+  const changed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  changed.card.findings[0].text = "Invented finding";
+  const tampered = `${Buffer.from(JSON.stringify(changed)).toString("base64url")}.${signature}`;
+  assert.equal(oldSigner.verifyAnalyticsCard(tampered, "D123:1788119999.000001"), null);
+
+  const nextKeys = generateKeyPairSync("ed25519");
+  const rotatingSigner = createMcpAuthoritySigner({
+    ...signerConfig,
+    privateKey: nextKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    previousPublicKeys: [keys.publicKey.export({ format: "der", type: "spki" }).toString("base64")],
+  });
+  assert.equal(rotatingSigner.verifyAnalyticsCard(token, "D123:1788119999.000001")?.receiptId, "a".repeat(64));
+  const noOverlap = createMcpAuthoritySigner({
+    ...signerConfig,
+    privateKey: nextKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+  });
+  assert.equal(noOverlap.verifyAnalyticsCard(token, "D123:1788119999.000001"), null);
+});
+
 test("tool service injects authority only on tools/call and accepts one exact authority-bound native card", async () => {
   const seen: Array<{ method: string; authority?: string }> = [];
   const fetchImpl: McpFetch = async (_url, init) => {
@@ -222,7 +263,12 @@ test("tool service injects authority only on tools/call and accepts one exact au
     "U123",
   );
   assert.equal(result.text, JSON.stringify({ answer: 12 }));
-  assert.equal(result.nativeCard?.renderer, "qm.analytics.card.v1");
+  assert.ok(result.trustedAnalyticsCard);
+  assert.equal(
+    createMcpAuthoritySigner(signerConfig).verifyAnalyticsCard(result.trustedAnalyticsCard, "D123:1788119999.000001")
+      ?.renderer,
+    "qm.analytics.card.v1",
+  );
   assert.equal(result.nativeCardIdempotencyKey, `mcp-card:${"a".repeat(64)}`);
   assert.ok(seen.filter((entry) => entry.method === "tools/list").every((entry) => !entry.authority));
   assert.equal(seen.filter((entry) => entry.method === "tools/call").length, 1);

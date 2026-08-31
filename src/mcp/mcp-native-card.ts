@@ -3,6 +3,7 @@ import type { QmAnalyticsNativeCard } from "../types.ts";
 
 interface ParsedAnalyticsDelivery {
   card: QmAnalyticsNativeCard;
+  unsignedCard: QmAnalyticsNativeCard;
   idempotencyKey: string;
 }
 
@@ -38,8 +39,13 @@ function boundedLine(value: unknown, maximum: number): value is string {
   return boundedText(value, maximum) && !/[\r\n]/.test(value);
 }
 
-function safeFallback(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/@/g, "@\u200b");
+export function analyticsNativeCardFallbackText(value: string): string {
+  return value
+    .replace(/\b(https?|mailto):/gi, "$1:\u200b")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/@/g, "@\u200b");
 }
 
 function exactAuthority(value: unknown, authority: McpAuthorityPayload): boolean {
@@ -134,7 +140,7 @@ export function parseAnalyticsNativeDelivery(
     version: 1,
     renderer: "qm.analytics.card.v1",
     receiptId: delivery.receiptId,
-    fallbackText: safeFallback(delivery.fallbackText),
+    fallbackText: analyticsNativeCardFallbackText(delivery.fallbackText),
     heading: delivery.heading,
     question: delivery.question,
     findings,
@@ -142,5 +148,9 @@ export function parseAnalyticsNativeDelivery(
     nextStep: delivery.nextStep,
     proposedActions: [...delivery.proposedActions] as string[],
   };
-  return { card, idempotencyKey: `mcp-card:${card.receiptId}` };
+  return {
+    card,
+    unsignedCard: { ...card, fallbackText: delivery.fallbackText },
+    idempotencyKey: `mcp-card:${card.receiptId}`,
+  };
 }

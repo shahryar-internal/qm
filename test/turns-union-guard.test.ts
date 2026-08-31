@@ -88,6 +88,41 @@ test("POST /v1/turns strips unattendedGrants from the external body", async () =
   );
 });
 
+test("POST /v1/turns strips analytics cards from typed and legacy automation destinations", async () => {
+  const forgedCard = { renderer: "qm.analytics.card.v1", heading: "Invented PostHog result" };
+  for (const [index, provenance] of [
+    { origin: { kind: "automation", destination: { type: "slack", target: "D1:100.000001", nativeCard: forgedCard } } },
+    { triggered: true, triggerDestination: { type: "slack", target: "D1:100.000001", nativeCard: forgedCard } },
+  ].entries()) {
+    const body = JSON.stringify({
+      surface: "cron",
+      actor: { externalId: "internal:owner" },
+      conversation: {
+        kind: "channel",
+        channelRef: "D1",
+        threadRef: `t-card-guard-${index}`,
+        audience: [{ externalId: "internal:owner" }],
+      },
+      text: "x",
+      ...provenance,
+      async: true,
+    });
+    const response = await fetch(`${base}/v1/turns`, {
+      method: "POST",
+      headers: { ...signedHeaders(SECRET, "POST", "/v1/turns", body), "content-type": "application/json" },
+      body,
+    });
+    assert.equal(response.status, 202);
+    const { runId } = (await response.json()) as { runId: string };
+    const request = (await built.runs.get(runId))?.request;
+    assert.equal(JSON.stringify(request).includes("nativeCard"), false);
+    assert.deepEqual(request?.origin, {
+      kind: "automation",
+      destination: { type: "slack", target: "D1:100.000001" },
+    });
+  }
+});
+
 test("POST /v1/turns strips nested owner-keychain union from typed automation origin", async () => {
   const body = JSON.stringify({
     surface: "cron",

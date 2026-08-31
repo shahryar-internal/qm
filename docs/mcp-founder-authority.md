@@ -17,6 +17,7 @@ QM_MCP_AUTHORITY_SLACK_TEAM_ID=<exact T... workspace id>
 QM_MCP_AUTHORITY_SLACK_USER_ID=<exact U... founder id>
 QM_MCP_AUTHORITY_SLACK_DM_CHANNEL_ID=<exact D... personal-DM channel id>
 QM_MCP_AUTHORITY_ED25519_PRIVATE_KEY=<base64 DER/PKCS8 Ed25519 private key>
+QM_MCP_AUTHORITY_ED25519_PREVIOUS_PUBLIC_KEYS=<comma-separated base64 DER/SPKI public keys during rotation>
 QM_MCP_AUTHORITY_TTL_SECONDS=30
 ```
 
@@ -25,9 +26,10 @@ the private key only in QM's secret store. The configured principal is the
 Command Center principal placed in the signed envelope; the configured Slack
 user is independently checked against the trusted human actor on every turn.
 The authority issuer and public key are matched exactly by Command Center.
-This version has one unidentified signing key, so rotate it by disabling the
-connector, replacing both key halves, and re-enabling after a signed smoke
-test; do not create an implicit overlapping key ring.
+During rotation, place no more than three prior public keys in the optional
+overlap setting until every delivery sealed by them has drained, then remove
+them. New authority and delivery signatures always use the current private
+key.
 
 The QM MCP server record must pin the only allowed remote tool with these
 closed contract fields in addition to its exact reviewed input schema:
@@ -60,8 +62,10 @@ The analytics server returns a closed `qm.analytics.card.v1` object in MCP
 structured content. QM validates every field and the exact signed authority
 echo, rejects remote Block Kit or action payloads, constructs Block Kit
 locally, and queues it only to the current Slack destination with a receipt-
-derived idempotency key. The model sees only the bounded text result; it cannot
-choose a card destination or author Slack blocks.
+choose a card destination or author Slack blocks. The accepted card is sealed
+by QM, stored outside the public destination object, and verified again against
+the exact Slack target before rendering. Failed verification remains pending
+for retry instead of being acknowledged as delivered.
 
 Activation still requires independent review, the paired Command Center
 successor and database migrations, exact issuer/key/identity agreement, a
