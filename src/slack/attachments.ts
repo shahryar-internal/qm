@@ -231,7 +231,7 @@ function neutralizeSlackFallbackText(value: string): string {
     .replace(/</g, "‹")
     .replace(/>/g, "›")
     .replace(/@/g, "@\u200b")
-    .replace(/\b((?:https?|ftp):)\/\//gi, "$1\u200b//")
+    .replace(/\b([a-z][a-z0-9+.-]{1,31}:)\/\//gi, "$1\u200b//")
     .replace(/\b((?:mailto|tel):)/gi, "$1\u200b")
     .replace(/\bwww\./gi, (value) => `${value.slice(0, -1)}.\u200b`)
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, (value) => value.replace(".", ".\u200b"))

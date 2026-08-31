@@ -538,7 +538,7 @@ test("workflow fallback text cannot trigger Slack controls, mentions, or automat
       version: 1,
       renderer: "qm.card.v1",
       fallbackText:
-        "<!channel> <@U123> <#C123|ops> @here @alice https://evil.example/path www.evil.test evil.test alice@example.test <https://evil.example|open>",
+        "<!channel> <@U123> <#C123|ops> @here @alice https://evil.example/path slack://channel?id=C1 www.evil.test evil.test alice@example.test <https://evil.example|open>",
       payload: { heading: "Safe card" },
     }),
   );
@@ -559,7 +559,7 @@ test("workflow fallback text cannot trigger Slack controls, mentions, or automat
   assert.equal(posts[0].unfurl_media, false);
   assert.doesNotMatch(posts[0].text, /<[@#!]|<(?:https?|mailto):/i);
   assert.doesNotMatch(posts[0].text, /@(?!\u200b)/u);
-  assert.doesNotMatch(posts[0].text, /\b(?:https?|ftp):\/\//i);
+  assert.doesNotMatch(posts[0].text, /\b[a-z][a-z0-9+.-]{1,31}:\/\//i);
   assert.doesNotMatch(posts[0].text, /\bwww\.(?!\u200b)/i);
   assert.doesNotMatch(posts[0].text, /\b[a-z0-9-]+\.(?:com|example|test)\b/i);
 });
