@@ -11,14 +11,27 @@ import {
   type McpRemoteTool,
   type McpResolveHost,
 } from "./mcp-client.ts";
-import type { McpAllowedTool, McpServer, McpServerStore } from "./mcp-server-store.ts";
+import {
+  mcpCallerInputSchema,
+  notionAuthorityServerContract,
+  type McpAllowedTool,
+  type McpServer,
+  type McpServerStore,
+} from "./mcp-server-store.ts";
 import type { McpAuthoritySigner, McpHumanCallContext } from "./mcp-authority.ts";
 import { parseAnalyticsNativeDelivery } from "./mcp-native-card.ts";
 import type { TrustedAnalyticsCard } from "../types.ts";
+import { NOTION_READ_AUTHORITY, type NotionAuthoritySigner } from "./notion-authority.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const MAX_TOOLS_PER_SERVER = 64;
 const MAX_RESULT_CHARS = 60_000;
+const NOTION_DISCOVERY_ANNOTATIONS = Object.freeze({
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+});
 const RESERVED_TOOL_NAMES = new Set([
   "execute",
   "credential_exec",
@@ -109,12 +122,28 @@ function trustedReadOnly(server: McpServer, allowed: McpAllowedTool, remote: Mcp
 }
 
 function safetyMatches(allowed: McpAllowedTool, remote: McpRemoteTool): boolean {
+  if (allowed.requestAuthority === NOTION_READ_AUTHORITY) {
+    return isDeepStrictEqual(remote.annotations, NOTION_DISCOVERY_ANNOTATIONS);
+  }
   return !allowed.readOnly || (remote.readOnlyHint && !remote.destructiveHint);
 }
 
 function exactRemote(tools: McpRemoteTool[], name: string): McpRemoteTool | null {
   const matches = tools.filter((tool) => tool.name === name);
   return matches.length === 1 ? matches[0]! : null;
+}
+
+function notionDiscoveryContract(server: McpServer, tools: McpRemoteTool[]): boolean {
+  const authorityTools = server.allowedTools.filter((tool) => tool.requestAuthority === NOTION_READ_AUTHORITY);
+  if (authorityTools.length === 0) return true;
+  return (
+    notionAuthorityServerContract(server) &&
+    tools.length === authorityTools.length &&
+    authorityTools.every((allowed) => {
+      const remote = exactRemote(tools, allowed.name);
+      return !!remote && safetyMatches(allowed, remote) && isDeepStrictEqual(allowed.inputSchema, remote.inputSchema);
+    })
+  );
 }
 
 function canonical(value: unknown): string {
@@ -150,7 +179,7 @@ function contractMatches(def: McpToolDescriptor, server: McpServer, allowed: Mcp
     def.requestAuthority === allowed.requestAuthority &&
     def.nativeRenderer === allowed.nativeRenderer &&
     !!allowed.inputSchema &&
-    isDeepStrictEqual(def.inputSchema, allowed.inputSchema) &&
+    isDeepStrictEqual(def.inputSchema, mcpCallerInputSchema(allowed)) &&
     isDeepStrictEqual(allowed.inputSchema, remote.inputSchema)
   );
 }
@@ -163,6 +192,7 @@ export function createMcpToolService(opts: {
   now?: () => number;
   refreshIntervalMs?: number;
   authoritySigner?: McpAuthoritySigner;
+  notionAuthoritySigner?: NotionAuthoritySigner;
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
   const clients = new Map<string, { client: McpClient; serverContractSha256: string }>();
@@ -199,7 +229,11 @@ export function createMcpToolService(opts: {
   async function refresh(): Promise<void> {
     const generation = ++refreshGeneration;
     const servers = (await opts.servers.list()).filter(
-      (server) => server.enabled && server.allowedTools.length > 0 && server.credentialState !== "reentry-required",
+      (server) =>
+        server.enabled &&
+        server.allowedTools.length > 0 &&
+        server.credentialState !== "reentry-required" &&
+        notionAuthorityServerContract(server),
     );
     const next: McpToolDescriptor[] = [];
     for (const server of servers) {
@@ -209,13 +243,19 @@ export function createMcpToolService(opts: {
           record("list", server.id, "error: discovered tool count exceeds limit");
           continue;
         }
+        if (!notionDiscoveryContract(server, discovered)) {
+          record("list", server.id, "error: Notion discovery contract mismatch");
+          continue;
+        }
         const candidate: McpToolDescriptor[] = [];
         let missing = 0;
         for (const allowed of server.allowedTools) {
           const remote = exactRemote(discovered, allowed.name);
+          const callerInputSchema = mcpCallerInputSchema(allowed);
           if (
             !remote ||
             !allowed.inputSchema ||
+            !callerInputSchema ||
             !safetyMatches(allowed, remote) ||
             !isDeepStrictEqual(allowed.inputSchema, remote.inputSchema)
           ) {
@@ -229,7 +269,7 @@ export function createMcpToolService(opts: {
             label: allowed.label,
             status: allowed.status,
             description: allowed.status,
-            inputSchema: allowed.inputSchema,
+            inputSchema: callerInputSchema,
             readOnly: trustedReadOnly(server, allowed, remote),
             remoteReadOnlyHint: remote.readOnlyHint,
             remoteDestructiveHint: remote.destructiveHint,
@@ -285,7 +325,12 @@ export function createMcpToolService(opts: {
     const def = snapshot.find((tool) => tool.name === name);
     if (!def) throw new Error(`unknown MCP tool: ${name}`);
     const server = await opts.servers.get(def.serverId);
-    if (!server || !server.enabled || server.credentialState === "reentry-required") {
+    if (
+      !server ||
+      !server.enabled ||
+      server.credentialState === "reentry-required" ||
+      !notionAuthorityServerContract(server)
+    ) {
       throw new Error(`MCP server ${def.serverId} is not available`);
     }
     const allowedMatches = server.allowedTools.filter((tool) => tool.name === def.remoteName);
@@ -294,20 +339,27 @@ export function createMcpToolService(opts: {
       throw new Error(`MCP tool contract changed: ${def.remoteName}`);
     }
     const allowed = allowedMatches[0]!;
-    if (!validateMcpToolArguments(allowed.inputSchema, args)) {
+    if (!validateMcpToolArguments(def.inputSchema, args)) {
       record("call", `${def.serverId}/${def.remoteName}`, "error: invalid arguments", principalId);
       throw new Error(`MCP tool arguments do not match the pinned contract: ${def.remoteName}`);
     }
+    let notionAuthorityToken: string | undefined;
     try {
       if (def.nativeRenderer && !def.requestAuthority) {
         throw new Error(`MCP native renderer requires request authority: ${def.remoteName}`);
       }
-      if (def.requestAuthority && !opts.authoritySigner) {
+      if (def.requestAuthority === "qm.ed25519.founder-dm.v1" && !opts.authoritySigner) {
+        throw new Error(`MCP request authority is unavailable: ${def.remoteName}`);
+      }
+      if (def.requestAuthority === NOTION_READ_AUTHORITY && !opts.notionAuthoritySigner) {
         throw new Error(`MCP request authority is unavailable: ${def.remoteName}`);
       }
       const client = clientFor(server);
       const discovered = await client.listTools();
       if (discovered.length > MAX_TOOLS_PER_SERVER) {
+        throw new Error(`MCP tool contract changed: ${def.remoteName}`);
+      }
+      if (!notionDiscoveryContract(server, discovered)) {
         throw new Error(`MCP tool contract changed: ${def.remoteName}`);
       }
       const remote = exactRemote(discovered, def.remoteName);
@@ -322,13 +374,25 @@ export function createMcpToolService(opts: {
           !current ||
           !current.enabled ||
           current.credentialState === "reentry-required" ||
+          !notionAuthorityServerContract(current) ||
           currentAllowed.length !== 1 ||
           !contractMatches(def, current, currentAllowed[0]!, remote)
         ) {
           throw new Error(`MCP tool contract changed: ${def.remoteName}`);
         }
-        authority = def.requestAuthority ? opts.authoritySigner!.sign(def.remoteName, args, context) : undefined;
-        return authority?.token;
+        if (def.requestAuthority === "qm.ed25519.founder-dm.v1") {
+          authority = opts.authoritySigner!.sign(def.remoteName, args, context);
+          return { authorityHeader: authority.token };
+        }
+        if (def.requestAuthority === NOTION_READ_AUTHORITY) {
+          const notionAuthority = opts.notionAuthoritySigner!.sign(def.remoteName, args, context);
+          notionAuthorityToken = notionAuthority.token;
+          if (!validateMcpToolArguments(currentAllowed[0]!.inputSchema, notionAuthority.dispatchArguments)) {
+            throw new Error(`MCP injected arguments do not match the pinned contract: ${def.remoteName}`);
+          }
+          return { arguments: notionAuthority.dispatchArguments };
+        }
+        return undefined;
       });
       const text = mcpResultText(result) || JSON.stringify(result.structuredContent ?? "") || "";
       const boundedText = text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated]` : text;
@@ -351,6 +415,7 @@ export function createMcpToolService(opts: {
       };
     } catch (error) {
       record("call", `${def.serverId}/${def.remoteName}`, "error", principalId);
+      if (notionAuthorityToken) return Promise.reject(new Error(`MCP Notion read failed: ${def.remoteName}`));
       throw error;
     }
   }
@@ -365,6 +430,7 @@ export function createMcpToolService(opts: {
     async probe(server) {
       const tools = await clientFor(server).listTools();
       if (tools.length > MAX_TOOLS_PER_SERVER) throw new Error("MCP discovered tool count exceeds limit");
+      if (!notionDiscoveryContract(server, tools)) throw new Error("MCP Notion discovery contract mismatch");
       return tools.map((tool) => ({
         name: tool.name,
         readOnlyHint: tool.readOnlyHint,

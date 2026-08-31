@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { validateMcpHttpsUrl } from "../../../mcp/mcp-client.ts";
 import {
   isValidMcpServerId,
+  notionAuthorityServerContract,
   parseMcpAllowedTools,
   type McpServer,
   type McpServerAuthMode,
@@ -270,6 +271,12 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     updatedAt: Date.now(),
     updatedBy: authorized.id,
   };
+  if (!notionAuthorityServerContract(server)) {
+    return sendJson(ctx.res, 400, {
+      error: "contract_mismatch",
+      message: "Notion authority requires the dedicated read-only client-credentials MCP contract",
+    });
+  }
   if (!ctx.deps.mcpToolService) return sendJson(ctx.res, 503, { error: "unavailable" });
   let discovered;
   try {

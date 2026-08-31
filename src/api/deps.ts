@@ -53,6 +53,7 @@ import type { UiStateStore } from "../surfaces/ui-state.ts";
 import type { RateLimiter } from "../ratelimit/rate-limiter.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { SlackInstallationStore, SlackSocketAppIdReader } from "../surfaces/slack-installation.ts";
+import type { NotionAuthorityPublicState } from "../mcp/notion-authority.ts";
 
 export interface ServerDeps {
   production?: boolean;
@@ -92,6 +93,7 @@ export interface ServerDeps {
   userModelCredentials?: UserModelCredentialStore;
   mcpServers?: McpServerStore;
   mcpToolService?: McpToolService;
+  notionAuthorityPublic?: NotionAuthorityPublicState;
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;

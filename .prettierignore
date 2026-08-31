@@ -5,4 +5,5 @@ src/resolution/protocols/
 data/
 .ci-instance/
 test/live-slack/out/
+test/fixtures/command-center-notion-m2m-tools-list.json
 deploy/stacks/.generated/

@@ -27,6 +27,7 @@ import {
 import { isStrongSigningSecret } from "./auth/source-auth.ts";
 import { DEV_GEMINI_MODEL, devGeminiProviderFromEnv, type DevGeminiProvider } from "./model/dev-gemini-provider.ts";
 import { mcpAuthoritySignerConfigFromEnv, type McpAuthoritySignerConfig } from "./mcp/mcp-authority.ts";
+import { notionAuthoritySignerConfigFromEnv, type NotionAuthoritySignerConfig } from "./mcp/notion-authority.ts";
 
 export interface Config {
   production: boolean;
@@ -170,6 +171,7 @@ export interface Config {
   awsDeploy: AwsDeployEnv;
   flyDeploy: FlyDeployEnv;
   mcpAuthoritySigner?: McpAuthoritySignerConfig;
+  notionAuthoritySigner?: NotionAuthoritySignerConfig;
 }
 
 export function configuredModelForHarness(config: Config, harness: string): string | undefined {
@@ -895,6 +897,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     (turnWallClockMs > 0 ? 2 * turnWallClockMs : CONFIG_DEFAULTS.runMaxAgeMs);
   const slack = slackPluginConfigFromEnv(env);
   const mcpAuthoritySigner = mcpAuthoritySignerConfigFromEnv(env);
+  const notionAuthoritySigner = notionAuthoritySignerConfigFromEnv(env, publicApiUrl);
   return {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
@@ -902,6 +905,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir,
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
     ...(mcpAuthoritySigner ? { mcpAuthoritySigner } : {}),
+    ...(notionAuthoritySigner ? { notionAuthoritySigner } : {}),
     sessionStore: env.SESSION_STORE === "postgres" ? "postgres" : "memory",
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     ...(env.DATABASE_CA_CERT ? { databaseCaCert: env.DATABASE_CA_CERT } : {}),

@@ -1,0 +1,78 @@
+{
+  "tools": [
+    {
+      "name": "notion_search",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workflow": {
+            "type": "string",
+            "enum": [
+              "meeting_brief",
+              "post_meeting_notes",
+              "proposal",
+              "research",
+              "marketing_draft",
+              "general"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "authorityEnvelope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          }
+        },
+        "required": ["workflow", "query", "authorityEnvelope"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "notion_read_page",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workflow": {
+            "type": "string",
+            "enum": [
+              "meeting_brief",
+              "post_meeting_notes",
+              "proposal",
+              "research",
+              "marketing_draft",
+              "general"
+            ]
+          },
+          "pageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "authorityEnvelope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          }
+        },
+        "required": ["workflow", "pageId", "authorityEnvelope"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

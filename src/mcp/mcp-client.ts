@@ -5,6 +5,7 @@ import { isIP, type LookupFunction } from "node:net";
 const TOKEN_SKEW_MS = 60_000;
 const MCP_ACCEPT = "application/json, text/event-stream";
 const MAX_MCP_RESPONSE_CHARS = 1_000_000;
+const MAX_MCP_REQUEST_CHARS = 1_000_000;
 const MAX_TOKEN_RESPONSE_CHARS = 65_536;
 const MCP_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_INPUT_SCHEMA_CHARS = 100_000;
@@ -685,6 +686,7 @@ export interface McpRemoteTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations: Record<string, unknown>;
   readOnlyHint: boolean;
   destructiveHint: boolean;
 }
@@ -710,8 +712,13 @@ export interface McpClient {
   callTool(
     name: string,
     args: Record<string, unknown>,
-    beforeDispatch?: () => Promise<string | undefined>,
+    beforeDispatch?: () => Promise<McpCallDispatch | undefined>,
   ): Promise<McpToolResult>;
+}
+
+interface McpCallDispatch {
+  authorityHeader?: string;
+  arguments?: Record<string, unknown>;
 }
 
 interface CachedToken {
@@ -791,7 +798,7 @@ export function createMcpClient(opts: {
       "redirect" | "resolvedAddress" | "resolvedAddresses" | "maxResponseBytes" | "timeoutMs"
     >,
     maximumChars: number,
-    beforeDispatch?: () => Promise<string | undefined>,
+    prepareDispatch?: () => Promise<Readonly<{ authorityToken?: string; body?: string }> | undefined>,
   ): Promise<McpHttpResponse> {
     const deadlineAt = Date.now() + requestTimeoutMs;
     const parsed = validateMcpHttpsUrl(url);
@@ -806,16 +813,20 @@ export function createMcpClient(opts: {
       resolvedAddresses = [...new Set(addresses)];
       resolvedAddress = resolvedAddresses[0];
     }
-    const authorityToken = beforeDispatch ? await withinDeadline(beforeDispatch(), deadlineAt) : undefined;
+    const prepared = prepareDispatch ? await withinDeadline(prepareDispatch(), deadlineAt) : undefined;
+    const authorityToken = prepared?.authorityToken;
     if (
       authorityToken !== undefined &&
       (!/^[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{80,128}$/.test(authorityToken) || authorityToken.length > 6_144)
     ) {
       throw new Error("MCP authority token is invalid");
     }
+    const body = prepared?.body ?? init.body;
+    if (body.length > MAX_MCP_REQUEST_CHARS) throw new Error("MCP request exceeded the size limit");
     const response = await withinDeadline(
       fetchImpl(target, {
         ...init,
+        body,
         headers: {
           ...init.headers,
           ...(authorityToken ? { "x-risely-qm-authority": authorityToken } : {}),
@@ -917,10 +928,12 @@ export function createMcpClient(opts: {
   async function rpc(
     method: string,
     params: Record<string, unknown>,
-    beforeDispatch?: () => Promise<string | undefined>,
+    beforeDispatch?: () => Promise<McpCallDispatch | undefined>,
   ): Promise<unknown> {
     const id = ++rpcId;
     const headers = await authHeaders();
+    const baseBody = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    let sensitiveValues: readonly string[] = [];
     const res = await request(
       `${base}/mcp`,
       {
@@ -930,18 +943,52 @@ export function createMcpClient(opts: {
           "content-type": "application/json",
           accept: MCP_ACCEPT,
         },
-        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        body: baseBody,
       },
       MAX_MCP_RESPONSE_CHARS,
-      beforeDispatch,
+      beforeDispatch
+        ? async () => {
+            const dispatch = await beforeDispatch();
+            if (!dispatch) return undefined;
+            if (
+              (dispatch.authorityHeader !== undefined && typeof dispatch.authorityHeader !== "string") ||
+              (dispatch.arguments !== undefined &&
+                (!dispatch.arguments || typeof dispatch.arguments !== "object" || Array.isArray(dispatch.arguments))) ||
+              (dispatch.arguments !== undefined && method !== "tools/call")
+            ) {
+              throw new Error("MCP dispatch authority is invalid");
+            }
+            const embedded = dispatch.arguments?.authorityEnvelope;
+            sensitiveValues = [
+              ...(dispatch.authorityHeader ? [dispatch.authorityHeader] : []),
+              ...(typeof embedded === "string" && embedded ? [embedded] : []),
+            ];
+            return {
+              ...(dispatch.authorityHeader ? { authorityToken: dispatch.authorityHeader } : {}),
+              ...(dispatch.arguments
+                ? {
+                    body: JSON.stringify({
+                      jsonrpc: "2.0",
+                      id,
+                      method,
+                      params: { ...params, arguments: dispatch.arguments },
+                    }),
+                  }
+                : {}),
+            };
+          }
+        : undefined,
     );
     if (!res.ok) throw new Error(`mcp ${method} failed (HTTP ${res.status})`);
     const responseText = await boundedText(res, MAX_MCP_RESPONSE_CHARS);
     const bearer = headers.authorization?.replace(/^Bearer /, "");
-    if (bearer && responseText.includes(bearer)) throw new Error(`mcp ${method} returned credential material`);
+    const credentials = [...(bearer ? [bearer] : []), ...sensitiveValues];
+    if (credentials.some((credential) => responseText.includes(credential))) {
+      throw new Error(`mcp ${method} returned credential material`);
+    }
     const parsed = parseMcpEnvelope(responseText, res.headers?.get("content-type"), id);
     if (!parsed) throw new Error(`mcp ${method} returned an invalid response envelope`);
-    if (bearer && containsSensitiveString(parsed, [bearer])) {
+    if (credentials.length && containsSensitiveString(parsed, credentials)) {
       throw new Error(`mcp ${method} returned credential material`);
     }
     if (parsed.error) throw new Error(`mcp ${method} error: ${parsed.error.message ?? "unknown"}`);
@@ -986,6 +1033,7 @@ export function createMcpClient(opts: {
           name: t.name,
           description: typeof t.description === "string" ? t.description : "",
           inputSchema,
+          annotations,
           readOnlyHint: annotations.readOnlyHint === true,
           destructiveHint: annotations.destructiveHint !== false,
         });

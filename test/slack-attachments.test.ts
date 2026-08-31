@@ -508,6 +508,8 @@ test("uploadAttachments renders a valid workflow artifact as Block Kit instead o
     }),
   );
   const normalized = validateWorkflowArtifactCard(payload, "https://workflow-artifact.invalid/");
+  const firstSection = normalized.sections?.[0];
+  assert.ok(firstSection);
 
   const result = await uploadAttachments(
     client,
@@ -526,7 +528,7 @@ test("uploadAttachments renders a valid workflow artifact as Block Kit instead o
   assert.equal(posts[0].blocks[2].text.text, workflowArtifactSlackMrkdwn(normalized.summary!));
   assert.equal(
     posts[0].blocks[3].text.text,
-    workflowArtifactSlackSectionText(normalized.sections![0], "https://workflow-artifact.invalid/"),
+    workflowArtifactSlackSectionText(firstSection, "https://workflow-artifact.invalid/"),
   );
   assert.equal(
     posts[0].blocks[4].elements[0].text,

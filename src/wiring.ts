@@ -115,6 +115,7 @@ import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts
 import { createMcpServerStore, type McpServerStore, type StoredMcpServer } from "./mcp/mcp-server-store.ts";
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
 import { createMcpAuthoritySigner } from "./mcp/mcp-authority.ts";
+import { createNotionAuthoritySigner, type NotionAuthorityPublicState } from "./mcp/notion-authority.ts";
 import {
   createLocalBlobTransferStore,
   createS3BlobTransferStore,
@@ -373,6 +374,7 @@ export interface BuiltApp {
   refreshCustomProviders: () => Promise<void>;
   mcpServers: McpServerStore;
   mcpToolService: McpToolService;
+  notionAuthorityPublic?: NotionAuthorityPublicState;
   acl: AclStore;
   skills: SkillStore;
   skillBundles: SkillBundleStore;
@@ -674,10 +676,14 @@ export function buildApp(
   const mcpAuthoritySigner = config.mcpAuthoritySigner
     ? createMcpAuthoritySigner(config.mcpAuthoritySigner)
     : undefined;
+  const notionAuthoritySigner = config.notionAuthoritySigner
+    ? createNotionAuthoritySigner(config.notionAuthoritySigner)
+    : undefined;
   const mcpToolService = createMcpToolService({
     servers: mcpServers,
     audit: auditLog,
     ...(mcpAuthoritySigner ? { authoritySigner: mcpAuthoritySigner } : {}),
+    ...(notionAuthoritySigner ? { notionAuthoritySigner } : {}),
   });
   const mcpTools = () => mcpToolService.toolDefs();
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();
@@ -1752,6 +1758,7 @@ export function buildApp(
     refreshCustomProviders,
     mcpServers,
     mcpToolService,
+    ...(notionAuthoritySigner ? { notionAuthorityPublic: notionAuthoritySigner.publicState() } : {}),
     acl,
     skills,
     skillBundles,
@@ -1835,6 +1842,7 @@ export function serverDeps(
     refreshCustomProviders: built.refreshCustomProviders,
     mcpServers: built.mcpServers,
     mcpToolService: built.mcpToolService,
+    ...(built.notionAuthorityPublic ? { notionAuthorityPublic: built.notionAuthorityPublic } : {}),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     harnessId: config.harness,
     connectorTokens: built.connectorTokens,

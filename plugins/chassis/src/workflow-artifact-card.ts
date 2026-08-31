@@ -14,7 +14,7 @@ const MAX_SECTION_ITEMS = 32;
 const MAX_LINKS = 16;
 const MAX_HREF = 2_048;
 const MAX_HEADING = 150;
-export const WORKFLOW_ARTIFACT_SLACK_TEXT_MAX = 3_000;
+const WORKFLOW_ARTIFACT_SLACK_TEXT_MAX = 3_000;
 const MAX_ARTIFACT_BYTES = 128 * 1024;
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const RENDERER_NAME = /^[a-z0-9](?:[a-z0-9._/-]{0,62}[a-z0-9])?$/;
@@ -183,7 +183,7 @@ export function workflowArtifactSlackMrkdwn(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function workflowArtifactSlackHref(href: string, baseUrl: string): string | undefined {
+function workflowArtifactSlackHref(href: string, baseUrl: string): string | undefined {
   if (new URL(href).origin === new URL(baseUrl).origin) return undefined;
   return href.replace(/\|/g, "%7C").replace(/</g, "%3C").replace(/>/g, "%3E");
 }
@@ -211,7 +211,7 @@ export function workflowArtifactSlackLinksText(links: WorkflowArtifactLinks, bas
     .join(" · ");
 }
 
-export function workflowArtifactSlackTextFits(value: string): boolean {
+function workflowArtifactSlackTextFits(value: string): boolean {
   return value.length <= WORKFLOW_ARTIFACT_SLACK_TEXT_MAX;
 }
 

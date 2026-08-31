@@ -26,9 +26,11 @@ import { deploymentLayerRoutes } from "./deployment-layer.ts";
 import { egressAuditRoutes } from "./egress-audit.ts";
 import { authBrokerRoutes } from "./auth-broker.ts";
 import { userModelAuthRoutes } from "./user-model-auth.ts";
+import { notionAuthorityRoutes } from "./notion-authority.ts";
 
 export const rawRoutes: ReadonlyArray<Route<BaseCtx>> = [
   { method: "GET", path: "/healthz", auth: "public", handle: ({ res }) => sendJson(res, 200, { ok: true }) },
+  ...notionAuthorityRoutes,
   {
     match: (m, p) => (m === "GET" || m === "POST") && p.startsWith(GIT_HTTP_BROKER_PREFIX),
     auth: { aud: "credential-broker" },

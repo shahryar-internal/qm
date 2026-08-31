@@ -7,6 +7,7 @@ import {
 } from "../connectors/connector-client-store.ts";
 import { parseMcpInputSchema } from "./mcp-client.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
+import { NOTION_READ_AUTHORITY } from "./notion-authority.ts";
 
 export type McpServerAuthMode = "none" | "bearer" | "client-credentials";
 export type McpTokenAuthMethod = "client_secret_basic" | "client_secret_post";
@@ -19,7 +20,7 @@ export interface McpAllowedTool {
   status: string;
   readOnly: boolean;
   inputSchema: Record<string, unknown>;
-  requestAuthority?: "qm.ed25519.founder-dm.v1";
+  requestAuthority?: "qm.ed25519.founder-dm.v1" | typeof NOTION_READ_AUTHORITY;
   nativeRenderer?: "qm.analytics.card.v1";
 }
 
@@ -57,6 +58,84 @@ export interface StoredMcpServer extends Omit<
 
 const ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const NOTION_M2M_PATH = "/api/mcp/notion/mcp";
+const NOTION_M2M_SCOPE = "notion:read";
+const NOTION_M2M_TOOL_NAMES = Object.freeze(["notion_search", "notion_read_page"] as const);
+const NOTION_WORKFLOW_SCHEMA = {
+  type: "string",
+  enum: ["meeting_brief", "post_meeting_notes", "proposal", "research", "marketing_draft", "general"],
+};
+const NOTION_AUTHORITY_ENVELOPE_SCHEMA = { type: "string", minLength: 1, maxLength: 16_384 };
+const NOTION_TOOL_SCHEMAS: Readonly<Record<(typeof NOTION_M2M_TOOL_NAMES)[number], Record<string, unknown>>> = {
+  notion_search: {
+    type: "object",
+    properties: {
+      workflow: NOTION_WORKFLOW_SCHEMA,
+      query: { type: "string", minLength: 1, maxLength: 1_000 },
+      authorityEnvelope: NOTION_AUTHORITY_ENVELOPE_SCHEMA,
+    },
+    required: ["workflow", "query", "authorityEnvelope"],
+    additionalProperties: false,
+  },
+  notion_read_page: {
+    type: "object",
+    properties: {
+      workflow: NOTION_WORKFLOW_SCHEMA,
+      pageId: { type: "string", minLength: 1, maxLength: 128 },
+      authorityEnvelope: NOTION_AUTHORITY_ENVELOPE_SCHEMA,
+    },
+    required: ["workflow", "pageId", "authorityEnvelope"],
+    additionalProperties: false,
+  },
+};
+
+export function notionAuthorityServerContract(server: McpServer): boolean {
+  const authorityTools = server.allowedTools.filter((tool) => tool.requestAuthority === NOTION_READ_AUTHORITY);
+  if (authorityTools.length === 0) return true;
+  let endpoint: URL;
+  try {
+    endpoint = new URL(server.url);
+  } catch {
+    return false;
+  }
+  return (
+    server.auth === "client-credentials" &&
+    server.readOnly === true &&
+    server.url === endpoint.href &&
+    endpoint.protocol === "https:" &&
+    !endpoint.username &&
+    !endpoint.password &&
+    !endpoint.search &&
+    !endpoint.hash &&
+    endpoint.pathname === NOTION_M2M_PATH &&
+    server.audience === server.url &&
+    server.tokenAudienceParameter === "audience" &&
+    server.scopes.length === 1 &&
+    server.scopes[0] === NOTION_M2M_SCOPE &&
+    server.allowedTools.length === NOTION_M2M_TOOL_NAMES.length &&
+    authorityTools.length === NOTION_M2M_TOOL_NAMES.length &&
+    NOTION_M2M_TOOL_NAMES.every(
+      (name) =>
+        authorityTools.filter(
+          (tool) => tool.name === name && tool.readOnly === true && tool.nativeRenderer === undefined,
+        ).length === 1,
+    )
+  );
+}
+
+function notionAuthoritySchema(name: string, schema: Record<string, unknown>): boolean {
+  if (name !== "notion_search" && name !== "notion_read_page") return false;
+  return canonical(schema) === canonical(NOTION_TOOL_SCHEMAS[name]);
+}
+
+export function mcpCallerInputSchema(tool: McpAllowedTool): Record<string, unknown> | null {
+  if (tool.requestAuthority !== NOTION_READ_AUTHORITY) return tool.inputSchema;
+  if (!notionAuthoritySchema(tool.name, tool.inputSchema)) return null;
+  const properties = { ...(tool.inputSchema.properties as Record<string, unknown>) };
+  delete properties.authorityEnvelope;
+  const required = (tool.inputSchema.required as unknown[]).filter((field) => field !== "authorityEnvelope");
+  return parseMcpInputSchema({ ...tool.inputSchema, properties, required });
+}
 
 export function isValidMcpServerId(id: string): boolean {
   return ID_PATTERN.test(id);
@@ -72,6 +151,7 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
     if (!entry || typeof entry !== "object" || Array.isArray(entry))
       throw new Error("allowedTools entries are invalid");
     const record = entry as Record<string, unknown>;
+    const inputSchema = parseMcpInputSchema(record.inputSchema);
     const allowedKeys = ["inputSchema", "label", "name", "nativeRenderer", "readOnly", "requestAuthority", "status"];
     if (
       Object.keys(record).some((key) => !allowedKeys.includes(key)) ||
@@ -89,10 +169,23 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       record.status.length > 120 ||
       /[\u0000-\u001f\u007f]/.test(record.status) ||
       typeof record.readOnly !== "boolean" ||
-      (record.requestAuthority !== undefined && record.requestAuthority !== "qm.ed25519.founder-dm.v1") ||
+      (record.requestAuthority !== undefined &&
+        record.requestAuthority !== "qm.ed25519.founder-dm.v1" &&
+        record.requestAuthority !== NOTION_READ_AUTHORITY) ||
       (record.nativeRenderer !== undefined && record.nativeRenderer !== "qm.analytics.card.v1") ||
       ((record.requestAuthority !== undefined || record.nativeRenderer !== undefined) && record.readOnly !== true) ||
-      !parseMcpInputSchema(record.inputSchema)
+      !inputSchema ||
+      (record.requestAuthority === NOTION_READ_AUTHORITY &&
+        (record.nativeRenderer !== undefined ||
+          !mcpCallerInputSchema({
+            name: record.name,
+            label: record.label,
+            status: record.status,
+            readOnly: record.readOnly,
+            inputSchema,
+            requestAuthority: NOTION_READ_AUTHORITY,
+          }))) ||
+      (record.nativeRenderer === "qm.analytics.card.v1" && record.requestAuthority !== "qm.ed25519.founder-dm.v1")
     ) {
       throw new Error("allowedTools entries require exact name, label, status, and readOnly fields");
     }
@@ -105,8 +198,9 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       label: record.label,
       status: record.status,
       readOnly: record.readOnly,
-      inputSchema: parseMcpInputSchema(record.inputSchema)!,
+      inputSchema,
       ...(record.requestAuthority === "qm.ed25519.founder-dm.v1" ? { requestAuthority: record.requestAuthority } : {}),
+      ...(record.requestAuthority === NOTION_READ_AUTHORITY ? { requestAuthority: record.requestAuthority } : {}),
       ...(record.nativeRenderer === "qm.analytics.card.v1" ? { nativeRenderer: record.nativeRenderer } : {}),
     };
   });
