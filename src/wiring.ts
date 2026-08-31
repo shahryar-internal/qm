@@ -309,6 +309,12 @@ import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
 import { errMessage, swallowAs } from "./util/errors.ts";
 import { sleep } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
+import { createSlackAgentContextStore } from "./surfaces/slack-agent-context.ts";
+import { createSlackAgentSessionStore } from "./surfaces/slack-agent-session.ts";
+import { createSlackAgentStatusIntentStore } from "./surfaces/slack-agent-status-intent.ts";
+import { createSlackReactionDesireStore } from "./surfaces/slack-reaction-desire.ts";
+import { createSlackReactionCleanupStore } from "./surfaces/slack-reaction-cleanup.ts";
+import { createSlackApprovalAuthorityStore } from "./surfaces/slack-approval-authority.ts";
 
 export interface Runtime {
   start(): void;
@@ -551,6 +557,16 @@ export function buildApp(
     config.orgId,
     artifactMap("slack_installation"),
     config.connectorSecretKey ?? randomBytes(32),
+  );
+  const slackAgentContexts = createSlackAgentContextStore(artifactMap("slack_agent_contexts"));
+  const slackAgentSessions = createSlackAgentSessionStore(artifactMap("slack_agent_sessions"));
+  const slackAgentStatusIntents = createSlackAgentStatusIntentStore(artifactMap("slack_agent_status_intents"));
+  const slackReactionDesires = createSlackReactionDesireStore(artifactMap("slack_reaction_desires"));
+  const slackReactionCleanups = createSlackReactionCleanupStore(artifactMap("slack_reaction_cleanups"));
+  const slackApprovalAuthorities = createSlackApprovalAuthorityStore(
+    artifactMap("slack_approval_authorities"),
+    Date.now,
+    artifactMap("slack_approval_continuations"),
   );
   const deploymentLayer = config.deploymentLayerDir
     ? loadDeploymentLayer(config.deploymentLayerDir)
@@ -1417,6 +1433,12 @@ export function buildApp(
     turnStream,
     tasks,
     ...(mcpAuthoritySigner ? { analyticsCardVerifier: mcpAuthoritySigner } : {}),
+    slackAgentContexts,
+    slackAgentSessions,
+    slackAgentStatusIntents,
+    slackReactionDesires,
+    slackReactionCleanups,
+    slackApprovalAuthorities,
     ackPicks: ackEmojiPicks,
     ackModelId: () => auxiliaryModelForProvider("anthropic"),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),

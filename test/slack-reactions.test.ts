@@ -94,6 +94,25 @@ test("applyReactions calls reactions.add per normalized emoji on the triggering 
   assert.deepEqual(calls[0], { channel: "C1", timestamp: "111.222", name: "eyes" });
 });
 
+test("applyReactions compensates a reaction that lands after cancellation", async () => {
+  let release: (() => void) | undefined;
+  let cancelled = false;
+  const removed: any[] = [];
+  const client = {
+    reactions: {
+      add: async () => new Promise<void>((resolve) => (release = resolve)),
+      remove: async (args: any) => void removed.push(args),
+    },
+  };
+  const applying = applyReactions(client, "C1", "111.222", ["eyes"], { isCancelled: async () => cancelled });
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  release();
+  const result = await applying;
+  assert.deepEqual(result.added, []);
+  assert.deepEqual(removed, [{ channel: "C1", timestamp: "111.222", name: "eyes" }]);
+});
+
 test("applyReactions treats already_reacted as success and collects other failures", async () => {
   const realSetTimeout = global.setTimeout;
   (global as { setTimeout: unknown }).setTimeout = ((fn: () => void) => {

@@ -415,6 +415,56 @@ test("uploadAttachments waits for the file's channel share to commit before reso
   assert.ok(infoCalls >= 3, `expected polling until the share committed, got ${infoCalls}`);
 });
 
+test("uploadAttachments reconciles a prior exact upload marker across paginated thread history", async () => {
+  let uploadCalls = 0;
+  let replyCalls = 0;
+  const client = {
+    conversations: {
+      replies: async (args: Record<string, unknown>) => {
+        replyCalls += 1;
+        assert.equal(args.channel, "C1");
+        assert.equal(args.ts, "123.45");
+        assert.equal(args.oldest, "120");
+        if (!args.cursor) return { messages: [], response_metadata: { next_cursor: "page-2" } };
+        assert.equal(args.cursor, "page-2");
+        return {
+          messages: [
+            {
+              files: [
+                {
+                  alt_txt: "x.txt\nqm-attachment:2e4a772d849fffc5039eafccb5da9c0c871555083ebac8dd5b6d50d94417a422",
+                },
+              ],
+            },
+          ],
+          response_metadata: { next_cursor: "" },
+        };
+      },
+      history: async () => ({ messages: [] }),
+    },
+    files: {
+      uploadV2: async () => {
+        uploadCalls += 1;
+      },
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+
+  const result = await uploadAttachments(
+    client,
+    "C1",
+    "123.45",
+    [{ name: "x.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B1" }],
+    async () => Buffer.from("data"),
+    undefined,
+    { idempotencyKey: "run:R1:attachments", verifyOldest: "120" },
+  );
+
+  assert.equal(replyCalls, 2);
+  assert.equal(uploadCalls, 0);
+  assert.deepEqual(result, { uploaded: true });
+});
+
 test("uploadAttachments renders a valid workflow artifact as Block Kit instead of raw JSON", async () => {
   const posts: any[] = [];
   const uploads: any[] = [];
@@ -536,7 +586,134 @@ test("uploadAttachments deletes files whose Slack upload finishes after cancella
   assert.deepEqual(deletes, [{ file: "F-late" }]);
 });
 
-test("uploadAttachments falls back to a normal file for malformed workflow artifacts", async () => {
+test("uploadAttachments deletes recovered and new mixed outputs when cancellation races a restarted upload", async () => {
+  let cancelled = false;
+  let releaseUpload: ((value: { files: Array<{ id: string }> }) => void) | undefined;
+  let uploadAttempts = 0;
+  const messages: any[] = [];
+  const deletedCards: any[] = [];
+  const deletedFiles: any[] = [];
+  const client = {
+    conversations: {
+      replies: async () => ({ messages, response_metadata: { next_cursor: "" } }),
+      history: async () => ({ messages: [], response_metadata: { next_cursor: "" } }),
+    },
+    chat: {
+      postMessage: async (args: any) => {
+        const posted = { ...args, ts: "persisted-card-ts" };
+        messages.push(posted);
+        return posted;
+      },
+      delete: async (args: any) => void deletedCards.push(args),
+    },
+    files: {
+      uploadV2: async (args: any) => {
+        uploadAttempts += 1;
+        if (uploadAttempts === 1) {
+          messages.push({
+            ts: "persisted-file-ts",
+            files: [{ id: "F-recovered", alt_txt: args.file_uploads[0].alt_txt }],
+          });
+          throw new Error("simulated crash after mixed output post");
+        }
+        return new Promise<{ files: Array<{ id: string }> }>((resolve) => (releaseUpload = resolve));
+      },
+      info: async () => ({ file: { shares: {} } }),
+      delete: async (args: any) => void deletedFiles.push(args),
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Persistent card",
+      payload: { heading: "Persistent card", sections: [] },
+    }),
+  );
+  const attachments = [
+    {
+      name: "persistent.workflow.json",
+      mimetype: WORKFLOW_ARTIFACT_MIME,
+      sizeBytes: artifact.length,
+      blobId: "B-card",
+    },
+    { name: "recovered.txt", mimetype: "text/plain", sizeBytes: 9, blobId: "B-recovered" },
+    { name: "new.txt", mimetype: "text/plain", sizeBytes: 3, blobId: "B-new" },
+  ];
+  const fetchBlob = async (blobId: string) => (blobId === "B-card" ? artifact : Buffer.from(blobId));
+  const opts = {
+    idempotencyKey: "run:R-mixed:attachments",
+    verifyOldest: "170",
+    isCancelled: () => cancelled,
+  };
+
+  await assert.rejects(
+    uploadAttachments(client, "C1", "170.1", attachments, fetchBlob, undefined, opts),
+    /simulated crash after mixed output post/,
+  );
+  assert.equal(messages.length, 2);
+
+  const retried = uploadAttachments(client, "C1", "170.1", attachments, fetchBlob, undefined, opts);
+  while (!releaseUpload) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  releaseUpload({ files: [{ id: "F-retried" }] });
+
+  assert.deepEqual(await retried, { uploaded: false });
+  assert.equal(messages.length, 2);
+  assert.deepEqual(deletedCards, [{ channel: "C1", ts: "persisted-card-ts" }]);
+  assert.deepEqual(deletedFiles, [{ file: "F-recovered" }, { file: "F-retried" }]);
+});
+
+test("uploadAttachments accepts exact already-deleted cleanup outcomes as idempotent success", async () => {
+  let cancelled = false;
+  const client = {
+    chat: {
+      postMessage: async () => ({ ts: "terminal-card-ts" }),
+      delete: async () => {
+        throw { data: { error: "message_not_found" } };
+      },
+    },
+    files: {
+      uploadV2: async () => {
+        cancelled = true;
+        return { files: [{ id: "F-terminal" }] };
+      },
+      info: async () => ({ file: { shares: {} } }),
+      delete: async () => {
+        throw { data: { error: "already_deleted" } };
+      },
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Terminal cleanup",
+      payload: { heading: "Terminal cleanup", sections: [] },
+    }),
+  );
+  const result = await uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [
+      {
+        name: "terminal.workflow.json",
+        mimetype: WORKFLOW_ARTIFACT_MIME,
+        sizeBytes: artifact.length,
+        blobId: "B-card",
+      },
+      { name: "terminal.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B-file" },
+    ],
+    async (blobId) => (blobId === "B-card" ? artifact : Buffer.from("file")),
+    undefined,
+    { isCancelled: () => cancelled },
+  );
+
+  assert.deepEqual(result, { uploaded: false });
+});
+
+test("uploadAttachments fails closed instead of uploading malformed private workflow JSON", async () => {
   const posts: any[] = [];
   const uploads: any[] = [];
   const client = {
@@ -546,16 +723,18 @@ test("uploadAttachments falls back to a normal file for malformed workflow artif
       info: async () => ({ file: { shares: {} } }),
     },
   };
-  await uploadAttachments(
-    client,
-    "D1",
-    undefined,
-    [{ name: "broken.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: 1, blobId: "B1" }],
-    async () => Buffer.from("{"),
+  await assert.rejects(
+    uploadAttachments(
+      client,
+      "D1",
+      undefined,
+      [{ name: "broken.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: 1, blobId: "B1" }],
+      async () => Buffer.from("{"),
+    ),
+    /could not be rendered safely/,
   );
   assert.equal(posts.length, 0);
-  assert.equal(uploads.length, 1);
-  assert.equal(uploads[0].file_uploads[0].filename, "broken.workflow.json");
+  assert.equal(uploads.length, 0);
 });
 
 test("uploadFailureNote blames files:write only for permission-class errors", () => {

@@ -581,7 +581,15 @@ export function createAppHelpers(deps: AppDeps, app: App) {
         const orphanRun = signal.text?.trim() ? sourceRun : null;
         if (orphanRun) {
           try {
-            const { displayText: _d, attachments: _a, approval: _ap, ...base } = orphanRun.request;
+            const {
+              displayText: _d,
+              attachments: _a,
+              approval: _ap,
+              verifiedSlack: _verifiedSlack,
+              slackAgentSessionToken: _slackAgentSessionToken,
+              slackAgentSession: _slackAgentSession,
+              ...base
+            } = orphanRun.request;
             const { run: fresh } = await deps.runs.enqueue({
               sessionId: orphanRun.sessionId,
               request: { ...base, text: signal.text! },
@@ -599,7 +607,13 @@ export function createAppHelpers(deps: AppDeps, app: App) {
         continue;
       }
       try {
-        const replayed = await app.turn({ ...signal.request, async: true });
+        const {
+          verifiedSlack: _verifiedSlack,
+          slackAgentSessionToken: _slackAgentSessionToken,
+          slackAgentSession: _slackAgentSession,
+          ...signalRequest
+        } = signal.request;
+        const replayed = await app.turn({ ...signalRequest, async: true });
         drained.push({ signal, ...(replayed.runId ? { replayRunId: replayed.runId } : {}) });
       } catch (err) {
         swallow(`signals: orphaned-signal replay for run ${runId}`, err);

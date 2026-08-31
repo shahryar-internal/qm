@@ -8,7 +8,15 @@
     "plugins/chassis/src/source-auth-sign.ts": ["exports"],
     "src/cron/postgres-schedule-authority.ts": ["types"],
     "src/cron/schedule-authority.ts": ["exports", "types"],
-    "src/slack/lib.ts": ["exports", "types"]
+    "src/mcp/mcp-server-store.ts": ["types"],
+    "src/mcp/mcp-tool-service.ts": ["types"],
+    "src/slack/lib.ts": ["exports", "types"],
+    "src/slack/presenters.ts": ["exports"],
+    "src/slack/turn-handler.ts": ["types"],
+    "src/surfaces/slack-agent-session.ts": ["types"],
+    "src/surfaces/slack-agent-status-intent.ts": ["types"],
+    "src/surfaces/slack-approval-authority.ts": ["types"],
+    "src/surfaces/slack-reaction-cleanup.ts": ["types"]
   },
   "workspaces": {
     ".": {

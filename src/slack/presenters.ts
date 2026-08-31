@@ -1,6 +1,7 @@
 import { sleep } from "./util.ts";
 import { slackSectionBlocks } from "./mrkdwn.ts";
 import { botIdentityArgs } from "./delivery.ts";
+import type { SlackAgentProviderWriteClaim } from "../surfaces/slack-agent-session.ts";
 
 export const DEFAULT_ACK_REACTIONS = ["eyes", "mag", "hourglass_flowing_sand", "telescope", "saluting_face"] as const;
 
@@ -146,7 +147,7 @@ export interface RunTaskView {
   status: RunTaskStatus;
 }
 
-type NativeAgentSessionStatus = "active" | "processing" | "suspended" | "closed";
+export type NativeAgentSessionStatus = "active" | "processing" | "suspended" | "closed";
 
 export interface NativeAgentPresenter {
   begin(): Promise<boolean>;
@@ -157,15 +158,81 @@ export interface NativeAgentPresenter {
   suspend(): Promise<void>;
 }
 
-export function setNativeAgentSessionStatus(client: any, args: Record<string, unknown>): Promise<unknown> {
-  if (typeof client?.agents?.sessions?.setStatus === "function") {
-    return client.agents.sessions.setStatus(args);
-  }
-  if (typeof client?.apiCall === "function") return client.apiCall("agents.sessions.setStatus", args);
-  return Promise.reject(new Error("Slack client does not support agent session status"));
+export interface NativeAgentStatusIntentRequest {
+  phase: "begin_processing" | "begin_cancelled" | "begin_failed" | "finish";
+  status: NativeAgentSessionStatus;
+  createSession?: {
+    initiatorUserId: string;
+    title: string;
+  };
 }
 
-function supportsNativeAgentPresentation(client: any): boolean {
+export class SlackAgentWriteDeferredError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(retryAfterMs: number, cause: unknown) {
+    super(`Slack requested retry after ${retryAfterMs}ms`, { cause });
+    this.name = "SlackAgentWriteDeferredError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function retryableSlackAgentError(error: unknown): { retry: boolean; delayMs: number } {
+  const value = error as {
+    code?: string;
+    retryAfter?: number;
+    statusCode?: number;
+    data?: { error?: string; retry_after?: number };
+  };
+  const status = value.statusCode ?? 0;
+  const reason = value.data?.error ?? "";
+  const rateLimited = value.code === "slack_webapi_rate_limited_error" || reason === "ratelimited";
+  const transient =
+    status >= 500 || ["internal_error", "fatal_error", "request_timeout", "service_unavailable"].includes(reason);
+  const seconds = value.retryAfter ?? value.data?.retry_after ?? 0;
+  const delayMs = Number.isFinite(seconds) ? Math.max(0, seconds * 1_000) : 0;
+  return { retry: rateLimited || transient, delayMs };
+}
+
+export async function retrySlackAgentWrite<T>(
+  operation: () => Promise<T>,
+  sleeper: (ms: number) => Promise<void> = sleep,
+): Promise<T> {
+  let failure: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      failure = error;
+      const retry = retryableSlackAgentError(error);
+      if (!retry.retry) throw error;
+      const delayMs = retry.delayMs || 100 * (attempt + 1);
+      if (attempt === 2 || delayMs > 2_000) throw new SlackAgentWriteDeferredError(delayMs, error);
+      await sleeper(delayMs);
+    }
+  }
+  throw failure;
+}
+
+export function setNativeAgentSessionStatus(client: any, args: Record<string, unknown>): Promise<unknown> {
+  return retrySlackAgentWrite(async () => {
+    if (typeof client?.agents?.sessions?.setStatus === "function") {
+      return client.agents.sessions.setStatus(args);
+    }
+    if (typeof client?.apiCall === "function") return client.apiCall("agents.sessions.setStatus", args);
+    throw new Error("Slack client does not support agent session status");
+  });
+}
+
+export function stopNativeAgentStream(client: any, args: Record<string, unknown>): Promise<unknown> {
+  return retrySlackAgentWrite(async () => {
+    if (typeof client?.chat?.stopStream !== "function")
+      throw new Error("Slack client does not support agent stream stop");
+    return client.chat.stopStream(args);
+  });
+}
+
+export function supportsNativeAgentPresentation(client: any): boolean {
   return Boolean(
     (client?.agents?.sessions?.setStatus || client?.apiCall) &&
     client?.chat?.startStream &&
@@ -215,30 +282,71 @@ export function createNativeAgentPresenter(deps: {
   threadTs: string;
   initiatorUserId: string;
   recipientTeamId?: string;
+  createSession?: boolean;
+  resumeStreamTs?: string;
   title: string;
   sanitize(text: string): string;
-  checkpoint(ts: string): Promise<void>;
+  checkpoint(ts: string): Promise<void | boolean>;
   onSurfacePosted(): void;
-  isCancelled?(): boolean;
+  writeStatusIntent(input: NativeAgentStatusIntentRequest): Promise<unknown>;
+  isCancelled?(): boolean | Promise<boolean>;
+  alreadyStopped?(ts: string): boolean | Promise<boolean>;
+  beforeProviderWrite?(method: string): Promise<SlackAgentProviderWriteClaim | undefined>;
+  onProviderDeferred?(
+    method: string,
+    error: SlackAgentWriteDeferredError,
+    claim: SlackAgentProviderWriteClaim | undefined,
+  ): Promise<void>;
+  onProviderWriteSucceeded?(method: string, claim: SlackAgentProviderWriteClaim | undefined): Promise<void>;
+  onProviderWriteFailed?(
+    method: string,
+    error: unknown,
+    claim: SlackAgentProviderWriteClaim | undefined,
+  ): Promise<void>;
+  resolveStatus?(status: NativeAgentSessionStatus): Promise<NativeAgentSessionStatus>;
+  onStatus?(status: NativeAgentSessionStatus): Promise<void>;
   onError?(error: unknown): void;
 }): NativeAgentPresenter {
   const { client } = deps;
-  let streamTs: string | undefined;
+  let streamTs = deps.resumeStreamTs;
+  const resumedStream = !!deps.resumeStreamTs;
   let rawText = "";
   let emittedText = "";
   let tasks: RunTaskView[] = [];
   let taskSnapshot = "";
+  let planStarted = false;
   let failure: unknown;
   let chain = Promise.resolve();
   let finished = false;
-  const isCancelled = (): boolean => deps.isCancelled?.() === true;
+  const isCancelled = async (): Promise<boolean> => {
+    try {
+      return (await deps.isCancelled?.()) === true;
+    } catch {
+      return true;
+    }
+  };
+  const providerWrite = async <T>(method: string, op: () => Promise<T>): Promise<T> => {
+    const claim = await deps.beforeProviderWrite?.(method);
+    let value: T;
+    try {
+      value = await op();
+    } catch (error) {
+      if (error instanceof SlackAgentWriteDeferredError) await deps.onProviderDeferred?.(method, error, claim);
+      else await deps.onProviderWriteFailed?.(method, error, claim);
+      throw error;
+    }
+    await deps.onProviderWriteSucceeded?.(method, claim);
+    return value;
+  };
+  const writeStop = async (args: Record<string, unknown>): Promise<unknown> => {
+    const status = args.session_status;
+    if (!status || !["active", "processing", "suspended", "closed"].includes(String(status))) {
+      throw new Error("Slack Agent stream stop is missing its terminal status intent");
+    }
+    await deps.writeStatusIntent({ phase: "finish", status: status as NativeAgentSessionStatus });
+    return providerWrite("chat.stopStream", () => stopNativeAgentStream(client, args));
+  };
 
-  const statusArgs = (status: NativeAgentSessionStatus): Record<string, unknown> => ({
-    channel_id: deps.channel,
-    thread_ts: deps.threadTs,
-    status,
-    ...botIdentityArgs(),
-  });
   const startArgs = (): Record<string, unknown> => ({
     channel: deps.channel,
     thread_ts: deps.threadTs,
@@ -253,7 +361,7 @@ export function createNativeAgentPresenter(deps: {
   });
   const enqueue = (op: () => Promise<void>): void => {
     chain = chain.then(async () => {
-      if (failure || finished || isCancelled()) return;
+      if (failure || finished || (await isCancelled())) return;
       try {
         await op();
       } catch (error) {
@@ -267,14 +375,23 @@ export function createNativeAgentPresenter(deps: {
     if (failure) throw failure;
   };
   const discardCancelledStream = async (): Promise<void> => {
-    if (!streamTs || !isCancelled()) return;
+    if (!streamTs || !(await isCancelled())) return;
     const ts = streamTs;
     streamTs = undefined;
-    await client.chat.stopStream({ channel: deps.channel, ts, session_status: "active" }).catch(() => undefined);
+    let stopError: unknown;
+    if (!(await deps.alreadyStopped?.(ts))) {
+      try {
+        await writeStop({ channel: deps.channel, ts, session_status: "active" });
+      } catch (error) {
+        const reason = String((error as { data?: { error?: unknown } })?.data?.error ?? "");
+        if (reason !== "stopped_by_user" && reason !== "message_not_in_streaming_state") stopError = error;
+      }
+    }
     await client.chat.delete?.({ channel: deps.channel, ts }).catch(() => undefined);
+    if (stopError) throw stopError;
   };
   const start = async (chunks: Array<Record<string, unknown>>): Promise<void> => {
-    if (isCancelled()) return;
+    if (await isCancelled()) return;
     const response = (await client.chat.startStream({ ...startArgs(), chunks })) as {
       ts?: unknown;
       message?: { ts?: unknown };
@@ -282,24 +399,29 @@ export function createNativeAgentPresenter(deps: {
     const ts = response?.ts ?? response?.message?.ts;
     if (!ts) throw new Error("Slack started a stream without returning its message timestamp");
     streamTs = String(ts);
-    if (isCancelled()) {
-      await discardCancelledStream();
-      return;
-    }
+    let cancelledAtCheckpoint: boolean;
     try {
-      await deps.checkpoint(streamTs);
+      cancelledAtCheckpoint = (await deps.checkpoint(streamTs)) === true;
     } catch (error) {
-      await client.chat
-        .stopStream({ channel: deps.channel, ts: streamTs, session_status: "active" })
-        .catch(() => undefined);
+      let statusError: unknown;
+      try {
+        await writeStop({ channel: deps.channel, ts: streamTs, session_status: "active" });
+      } catch (writeError) {
+        statusError = writeError;
+      }
       await client.chat.delete?.({ channel: deps.channel, ts: streamTs }).catch(() => undefined);
       streamTs = undefined;
+      if (statusError) throw statusError;
       throw error;
+    }
+    if (cancelledAtCheckpoint || (await isCancelled())) {
+      await discardCancelledStream();
+      return;
     }
     deps.onSurfacePosted();
   };
   const append = async (chunks: Array<Record<string, unknown>>): Promise<void> => {
-    if (!chunks.length || isCancelled()) return;
+    if (!chunks.length || (await isCancelled())) return;
     if (!streamTs) await start(chunks);
     else {
       await client.chat.appendStream({ channel: deps.channel, ts: streamTs, chunks });
@@ -324,21 +446,50 @@ export function createNativeAgentPresenter(deps: {
     emittedText = next;
     enqueue(() => appendMarkdown(delta));
   };
-  const setStatus = (status: NativeAgentSessionStatus): Promise<unknown> =>
-    setNativeAgentSessionStatus(client, statusArgs(status));
+  const resolvedStatus = async (status: NativeAgentSessionStatus): Promise<NativeAgentSessionStatus> =>
+    (await deps.resolveStatus?.(status)) ?? status;
+  const setStatus = async (status: NativeAgentSessionStatus): Promise<unknown> => {
+    const response = await deps.writeStatusIntent({ phase: "finish", status: await resolvedStatus(status) });
+    await deps.onStatus?.(status);
+    return response;
+  };
 
   return {
     async begin() {
       if (!supportsNativeAgentPresentation(client)) return false;
+      let processingStarted = false;
       try {
-        await setNativeAgentSessionStatus(client, {
-          ...statusArgs("processing"),
-          initiator_user_id: deps.initiatorUserId,
-          title: deps.title.replace(/\s+/g, " ").trim().slice(0, 200) || "New request",
+        if (await isCancelled()) return false;
+        const processingStatus = await resolvedStatus("processing");
+        await deps.writeStatusIntent({
+          phase: "begin_processing",
+          status: processingStatus,
+          ...(deps.createSession !== false
+            ? {
+                createSession: {
+                  initiatorUserId: deps.initiatorUserId,
+                  title: deps.title.replace(/\s+/g, " ").trim().slice(0, 200) || "New request",
+                },
+              }
+            : {}),
         });
+        processingStarted = true;
+        if (await isCancelled()) {
+          await deps.writeStatusIntent({ phase: "begin_cancelled", status: "active" });
+          return false;
+        }
+        await deps.onStatus?.("processing");
         return true;
       } catch (error) {
+        if (processingStarted) {
+          try {
+            await deps.writeStatusIntent({ phase: "begin_failed", status: "active" });
+          } catch (statusError) {
+            if (!(statusError instanceof SlackAgentWriteDeferredError)) throw statusError;
+          }
+        }
         deps.onError?.(error);
+        if (error instanceof SlackAgentWriteDeferredError) throw error;
         return false;
       }
     },
@@ -352,27 +503,60 @@ export function createNativeAgentPresenter(deps: {
       const next = JSON.stringify(tasks);
       if (!tasks.length || next === taskSnapshot) return;
       taskSnapshot = next;
-      enqueue(() => append(tasks.slice(0, 20).map(nativeTaskChunk)));
+      const chunks = tasks.slice(0, 20).map(nativeTaskChunk);
+      if (!planStarted) {
+        planStarted = true;
+        const title = deps.title
+          .replace(/[\r\n\t]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 256);
+        chunks.unshift({ type: "plan_update", title: title || "Working plan" });
+      }
+      enqueue(() => append(chunks));
       await chain;
     },
     async finish(text, status = "active") {
       if (finished) return streamTs;
       const finalText = text.trim();
       try {
-        if (isCancelled()) {
+        if (await isCancelled()) {
           finished = true;
           return streamTs;
         }
+        if (resumedStream && streamTs) {
+          const resumedTs = streamTs;
+          const terminalStatus = await resolvedStatus(status);
+          const alreadyStopped = (await deps.alreadyStopped?.(resumedTs)) === true;
+          if (!alreadyStopped) {
+            try {
+              await writeStop({ channel: deps.channel, ts: resumedTs, session_status: terminalStatus });
+            } catch (error) {
+              const reason = String((error as { data?: { error?: unknown } })?.data?.error ?? "");
+              if (reason !== "stopped_by_user" && reason !== "message_not_in_streaming_state") throw error;
+            }
+          } else {
+            await setStatus(status);
+          }
+          if (finalText && client.chat.update) {
+            await providerWrite("chat.update", () =>
+              client.chat.update({ channel: deps.channel, ts: resumedTs, text: finalText, ...botIdentityArgs() }),
+            );
+          }
+          if (!alreadyStopped) await deps.onStatus?.(status);
+          finished = true;
+          return resumedTs;
+        }
         flushText(true);
         await drain();
-        if (isCancelled()) {
+        if (await isCancelled()) {
           finished = true;
           return streamTs;
         }
         if (!streamTs && finalText) {
           emittedText = finalText;
           await appendMarkdown(finalText);
-          if (isCancelled()) {
+          if (await isCancelled()) {
             finished = true;
             return streamTs;
           }
@@ -382,33 +566,37 @@ export function createNativeAgentPresenter(deps: {
           finished = true;
           return undefined;
         }
+        const terminalStatus = await resolvedStatus(status);
         if (finalText.startsWith(emittedText)) {
           const suffix = finalText.slice(emittedText.length);
           if (suffix) await appendMarkdown(suffix);
-          if (isCancelled()) {
+          if (await isCancelled()) {
             await discardCancelledStream();
             finished = true;
             return streamTs;
           }
-          await client.chat.stopStream({
+          await writeStop({
             channel: deps.channel,
             ts: streamTs,
-            session_status: status,
+            session_status: terminalStatus,
           });
         } else {
-          await client.chat.stopStream({ channel: deps.channel, ts: streamTs, session_status: status });
+          await writeStop({ channel: deps.channel, ts: streamTs, session_status: terminalStatus });
           if (finalText && client.chat.update) {
             await client.chat.update({ channel: deps.channel, ts: streamTs, text: finalText, ...botIdentityArgs() });
           }
         }
-        if (isCancelled()) await discardCancelledStream();
+        await deps.onStatus?.(status);
+        if (await isCancelled()) await discardCancelledStream();
         finished = true;
         return streamTs;
       } catch (error) {
+        if (resumedStream) {
+          await setStatus(status).catch(() => undefined);
+          throw error;
+        }
         if (streamTs) {
-          await client.chat
-            .stopStream({ channel: deps.channel, ts: streamTs, session_status: status })
-            .catch(() => undefined);
+          await writeStop({ channel: deps.channel, ts: streamTs, session_status: status }).catch(() => undefined);
           await client.chat.delete?.({ channel: deps.channel, ts: streamTs }).catch(() => undefined);
           streamTs = undefined;
         }

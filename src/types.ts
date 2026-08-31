@@ -1,5 +1,16 @@
 import type { ResolvedSecurityPolicy } from "./security/security-posture.ts";
 
+export interface VerifiedSlackTurn {
+  teamId: string;
+  userId: string;
+  channelId: string;
+  messageTs: string;
+  threadTs: string;
+  threaded: boolean;
+  liveHuman: true;
+  actionTs?: string;
+}
+
 export type PrincipalType = "internal" | "guest";
 
 export interface Principal {
@@ -372,6 +383,7 @@ export type IncomingAttachment = BlobAttachment & {
 export type OutgoingAttachment = BlobAttachment & {
   artifactId?: string;
   artifactViewerId?: string;
+  renderOnly?: true;
 };
 
 export interface AttachmentMeta {
@@ -442,6 +454,15 @@ export interface TurnRequest {
   ownerKeychainUnion?: boolean;
   unprompted?: boolean;
   liveActor?: boolean;
+  verifiedSlack?: VerifiedSlackTurn;
+  slackAgentSessionToken?: string;
+  slackAgentSession?: {
+    teamId: string;
+    agentId: string;
+    channelId: string;
+    threadTs: string;
+    token: string;
+  };
   botActor?: boolean;
   conversationHeader?: string;
   priorTurns?: ConversationTurn[];
@@ -535,6 +556,7 @@ export interface TurnResult {
   adminUrl?: string;
   runId?: string;
   steered?: true;
+  replayed?: true;
   stopped?: boolean;
   pendingApprovals?: PendingApproval[];
   attachments?: OutgoingAttachment[];

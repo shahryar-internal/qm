@@ -41,6 +41,9 @@ async function postTurn(ctx: ApiCtx): Promise<void> {
     unattendedGrants: _unattendedGrants,
     trustedSlackTeamId: _trustedSlackTeamId,
     trustedSlackUserId: _trustedSlackUserId,
+    verifiedSlack: _verifiedSlack,
+    slackAgentSessionToken: _slackAgentSessionToken,
+    slackAgentSession: _slackAgentSession,
     ...safeBody
   } = body;
   const publicBody = safeBody.triggerDestination

@@ -14,6 +14,7 @@ import { messageWithForwardedContent } from "./forwards.ts";
 import type { BotIdentity, Directory } from "./directory.ts";
 import type { Mirror } from "./mirror.ts";
 import type { SlackReactionEvent, TurnHandler } from "./turn-handler.ts";
+import type { SlackAgentContextEntity } from "../surfaces/slack-agent-context.ts";
 
 export function registerSlackEvents(
   app: {
@@ -34,12 +35,103 @@ export function registerSlackEvents(
       kind: "dm" | "channel",
       ensureOpts?: { pinNew?: boolean },
     ) => void;
+    saveAgentContext(input: {
+      teamId: string;
+      ownerUserId: string;
+      context: unknown;
+      source: "message" | "app_home" | "app_context" | "assistant_thread";
+      eventTs: string;
+    }): Promise<SlackAgentContextEntity[]>;
+    bindAgentThread(input: {
+      teamId: string;
+      ownerUserId: string;
+      channelId: string;
+      threadTs: string;
+      context: unknown;
+      source: "message" | "app_home" | "app_context" | "assistant_thread";
+      eventTs: string;
+    }): Promise<{ entities: SlackAgentContextEntity[] } | null>;
+    getAgentThread(input: { teamId: string; ownerUserId: string; channelId: string; threadTs: string }): Promise<{
+      entities: SlackAgentContextEntity[];
+      source: "message" | "app_home" | "app_context" | "assistant_thread";
+    } | null>;
+    renameAgentSession(input: {
+      teamId: string;
+      agentId: string;
+      channelId: string;
+      threadTs: string;
+      changedByUserId: string;
+      title: string;
+      eventTs: string;
+    }): Promise<boolean>;
   },
 ): void {
   const { handler, mirror, directory, ids, deduper } = deps;
   const { dispatch, handleReactionEvent, handleAgentSessionStopped, botHasStakeInThread } = handler;
   const { mirrorMessageEvent, pushSurfaceEvents } = mirror;
   const { syncForUnseenGroup, forceDirectorySync } = directory;
+  const teamId = (body: any): string => String(body?.team_id ?? ids.ownTeamId ?? "");
+  const intakeIdempotencyKey = (body: any): string | undefined => {
+    const workspace = teamId(body);
+    const eventId = typeof body?.event_id === "string" ? body.event_id : "";
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(workspace) || !/^[A-Za-z0-9_-]{1,256}$/.test(eventId)) return undefined;
+    return `slack-event:${workspace}:${ids.agentId}:${eventId}`;
+  };
+  const legacyContext = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { entities: [] };
+    const context = value as { channel_id?: unknown; team_id?: unknown };
+    if (typeof context.channel_id !== "string") return { entities: [] };
+    return {
+      entities: [
+        {
+          type: "slack#/types/channel_id",
+          value: context.channel_id,
+          ...(typeof context.team_id === "string" ? { team_id: context.team_id } : {}),
+        },
+      ],
+    };
+  };
+  const messageAgentContext = async (body: any, message: any): Promise<SlackAgentContextEntity[]> => {
+    if (!message?.user || !message?.channel || !message?.ts) return [];
+    const workspace = teamId(body);
+    if (!workspace) return [];
+    const threadTs = String(message.thread_ts ?? message.ts);
+    if (message.app_context !== undefined) {
+      return (
+        (
+          await deps.bindAgentThread({
+            teamId: workspace,
+            ownerUserId: String(message.user),
+            channelId: String(message.channel),
+            threadTs,
+            context: message.app_context,
+            source: "message",
+            eventTs: String(message.event_ts ?? message.ts),
+          })
+        )?.entities ?? []
+      );
+    }
+    const existing = await deps.getAgentThread({
+      teamId: workspace,
+      ownerUserId: String(message.user),
+      channelId: String(message.channel),
+      threadTs,
+    });
+    if (existing?.source === "assistant_thread") return existing.entities;
+    return (
+      (
+        await deps.bindAgentThread({
+          teamId: workspace,
+          ownerUserId: String(message.user),
+          channelId: String(message.channel),
+          threadTs,
+          context: { entities: [] },
+          source: "message",
+          eventTs: String(message.event_ts ?? message.ts),
+        })
+      )?.entities ?? []
+    );
+  };
   const eventIdentity = async (
     client: any,
     event: { user?: string; bot_id?: string },
@@ -68,6 +160,7 @@ export function registerSlackEvents(
   app.event("app_mention", async ({ event, body, client, context }: any) => {
     const e = event as any;
     const identity = await eventIdentity(client, e);
+    const agentContext = await messageAgentContext(body, e);
     const key = dedupeKey({
       event_id: (body as any)?.event_id,
       client_msg_id: e.client_msg_id,
@@ -87,6 +180,8 @@ export function registerSlackEvents(
         threadTs: e.thread_ts,
         ts: e.ts,
         ...(e.bot_id || e.subtype === "bot_message" ? { botAuthored: true } : {}),
+        ...(agentContext.length ? { agentContext } : {}),
+        ...(intakeIdempotencyKey(body) ? { idempotencyKey: intakeIdempotencyKey(body) } : {}),
         ackGate: context.ackGate as AckGate | undefined,
       },
       client,
@@ -133,6 +228,7 @@ export function registerSlackEvents(
 
     if (m.channel_type === "im") {
       const identity = await eventIdentity(client, m);
+      const agentContext = await messageAgentContext(body, m);
       const key = dedupeKey({
         event_id: (body as any)?.event_id,
         client_msg_id: m.client_msg_id,
@@ -153,6 +249,8 @@ export function registerSlackEvents(
           threadTs: m.thread_ts,
           ts: m.ts,
           ...(m.bot_id || m.subtype === "bot_message" ? { botAuthored: true } : {}),
+          ...(agentContext.length ? { agentContext } : {}),
+          ...(intakeIdempotencyKey(body) ? { idempotencyKey: intakeIdempotencyKey(body) } : {}),
           ackGate,
         },
         client,
@@ -196,6 +294,7 @@ export function registerSlackEvents(
           ts: m.ts,
           unprompted: true,
           ...(m.bot_id || m.subtype === "bot_message" ? { botAuthored: true } : {}),
+          ...(intakeIdempotencyKey(body) ? { idempotencyKey: intakeIdempotencyKey(body) } : {}),
           ackGate,
         },
         client,
@@ -255,21 +354,88 @@ export function registerSlackEvents(
     await forceDirectorySync(client, e.channel, principalId);
   });
 
-  app.event("assistant_thread_started", async () => {});
-  app.event("assistant_thread_context_changed", async () => {});
+  app.event("app_home_opened", async ({ event, body }: any) => {
+    const e = event as { user?: string; tab?: string; context?: unknown; event_ts?: string };
+    const workspace = teamId(body);
+    if (e.tab !== "messages" || !workspace || !e.user || !e.event_ts) return;
+    await deps.saveAgentContext({
+      teamId: workspace,
+      ownerUserId: e.user,
+      context: e.context ?? { entities: [] },
+      source: "app_home",
+      eventTs: e.event_ts,
+    });
+  });
+  app.event("app_context_changed", async ({ event, body }: any) => {
+    const e = event as { user?: string; context?: unknown; event_ts?: string };
+    const workspace = teamId(body);
+    if (!workspace || !e.user || !e.event_ts) return;
+    await deps.saveAgentContext({
+      teamId: workspace,
+      ownerUserId: e.user,
+      context: e.context ?? { entities: [] },
+      source: "app_context",
+      eventTs: e.event_ts,
+    });
+  });
+  for (const name of ["assistant_thread_started", "assistant_thread_context_changed"] as const) {
+    app.event(name, async ({ event, body }: any) => {
+      const e = event as {
+        assistant_thread?: {
+          user_id?: string;
+          channel_id?: string;
+          thread_ts?: string;
+          context?: unknown;
+        };
+        event_ts?: string;
+      };
+      const thread = e.assistant_thread;
+      const workspace = teamId(body);
+      if (!workspace || !thread?.user_id || !thread.channel_id || !thread.thread_ts || !e.event_ts) return;
+      await deps.bindAgentThread({
+        teamId: workspace,
+        ownerUserId: thread.user_id,
+        channelId: thread.channel_id,
+        threadTs: thread.thread_ts,
+        context: legacyContext(thread.context),
+        source: "assistant_thread",
+        eventTs: e.event_ts,
+      });
+    });
+  }
+  app.event("agent_session_title_changed", async ({ event, body }: any) => {
+    const e = event as {
+      user?: string;
+      channel?: string;
+      thread_ts?: string;
+      title?: string;
+      event_ts?: string;
+    };
+    const workspace = teamId(body);
+    if (!workspace || !e.user || !e.channel || !e.thread_ts || !e.title || !e.event_ts) return;
+    await deps.renameAgentSession({
+      teamId: workspace,
+      agentId: ids.agentId,
+      channelId: e.channel,
+      threadTs: e.thread_ts,
+      changedByUserId: e.user,
+      title: e.title,
+      eventTs: e.event_ts,
+    });
+  });
   app.event("agent_session_stopped", async ({ event, body, client }: any) => {
-    const e = event as { channel_id?: string; channel?: string; thread_ts?: string; event_ts?: string };
-    if (
-      deduper.seen(
-        dedupeKey({
-          event_id: (body as { event_id?: string })?.event_id,
-          channel: e.channel_id ?? e.channel,
-          ts: e.event_ts ?? e.thread_ts,
-        }),
-      )
-    )
-      return;
-    await handleAgentSessionStopped(e, client);
+    const e = event as {
+      channel_id?: string;
+      channel?: string;
+      thread_ts?: string;
+      event_ts?: string;
+      user?: string;
+      streaming_message_ts?: string[];
+    };
+    await handleAgentSessionStopped(
+      { ...e, event_id: (body as { event_id?: string })?.event_id, team_id: teamId(body) },
+      client,
+    );
   });
 
   app.event("reaction_added", async ({ event, body, client }: any) => {

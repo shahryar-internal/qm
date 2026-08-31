@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import bolt from "@slack/bolt";
 import type { Receiver, ReceiverEvent, App as BoltApp } from "@slack/bolt";
-import { createDeferredEnvelopeAck, describeEnvelope, isGatedEnvelope } from "./deferred-ack.ts";
+import { createDeferredEnvelopeAck, describeEnvelope, isGatedEnvelope, requiresDurableAck } from "./deferred-ack.ts";
 import { errMessage } from "../util/errors.ts";
 import { PayloadTooLargeError, readBody } from "../../plugins/chassis/src/http.ts";
 
@@ -70,6 +70,7 @@ export function createHttpEventsReceiver(opts: HttpEventsReceiverOptions): Recei
     const label = describeEnvelope(body);
     const { ack, gate } = createDeferredEnvelopeAck(async (response?: unknown) => respond(res, 200, response ?? {}), {
       gated: isGatedEnvelope(body),
+      strict: requiresDurableAck(body),
       ...(opts.capMs !== undefined ? { capMs: opts.capMs } : {}),
       label,
       onWithhold: () => respond(res, 503, { error: "not_persisted" }),

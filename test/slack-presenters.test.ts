@@ -1,13 +1,85 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  SlackAgentWriteDeferredError,
   renderTaskList,
   createTaskListPresenter,
   createAckPresenter,
   createNativeAgentPresenter,
+  retrySlackAgentWrite,
   stripAckPrefix,
   stripReactionDirectives,
+  type NativeAgentStatusIntentRequest,
 } from "../src/slack/lib.ts";
+
+const acceptStatusIntent = async (_input: NativeAgentStatusIntentRequest): Promise<void> => {};
+
+test("Agent Sessions writes retry bounded rate limits and transient server failures", async () => {
+  const delays: number[] = [];
+  let attempts = 0;
+  const result = await retrySlackAgentWrite(
+    async () => {
+      attempts += 1;
+      if (attempts === 1)
+        throw { code: "slack_webapi_rate_limited_error", retryAfter: 1, data: { error: "ratelimited" } };
+      if (attempts === 2) throw { statusCode: 503, data: { error: "service_unavailable" } };
+      return "ok";
+    },
+    async (ms) => void delays.push(ms),
+  );
+  assert.equal(result, "ok");
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [1_000, 200]);
+});
+
+test("Agent Sessions writes do not retry permanent errors", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    retrySlackAgentWrite(
+      async () => {
+        attempts += 1;
+        throw new Error("invalid_arguments");
+      },
+      async () => {},
+    ),
+    /invalid_arguments/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("Agent Sessions writes preserve a provider Retry-After above the local retry window", async () => {
+  const delays: number[] = [];
+  let attempts = 0;
+  await assert.rejects(
+    retrySlackAgentWrite(
+      async () => {
+        attempts += 1;
+        throw { code: "slack_webapi_rate_limited_error", retryAfter: 90, data: { error: "ratelimited" } };
+      },
+      async (ms) => void delays.push(ms),
+    ),
+    (error: unknown) => error instanceof SlackAgentWriteDeferredError && error.retryAfterMs === 90_000,
+  );
+  assert.equal(attempts, 1);
+  assert.deepEqual(delays, []);
+});
+
+test("Agent Sessions writes preserve a short Retry-After after local retries are exhausted", async () => {
+  const delays: number[] = [];
+  let attempts = 0;
+  await assert.rejects(
+    retrySlackAgentWrite(
+      async () => {
+        attempts += 1;
+        throw { code: "slack_webapi_rate_limited_error", retryAfter: 1, data: { error: "ratelimited" } };
+      },
+      async (ms) => void delays.push(ms),
+    ),
+    (error: unknown) => error instanceof SlackAgentWriteDeferredError && error.retryAfterMs === 1_000,
+  );
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [1_000, 1_000]);
+});
 
 test("native agent presenter uses the current session endpoint, chunk streaming, and plan tasks", async () => {
   const apiCalls: Array<{ method: string; args: any }> = [];
@@ -35,6 +107,22 @@ test("native agent presenter uses the current session endpoint, chunk streaming,
     title: "Check today's calendar",
     sanitize: stripReactionDirectives,
     checkpoint: async (ts) => void checkpoints.push(ts),
+    writeStatusIntent: async (input) => {
+      apiCalls.push({
+        method: "agents.sessions.setStatus",
+        args: {
+          channel_id: "C1",
+          thread_ts: "170.1",
+          status: input.status,
+          ...(input.createSession
+            ? {
+                initiator_user_id: input.createSession.initiatorUserId,
+                title: input.createSession.title,
+              }
+            : {}),
+        },
+      });
+    },
     onSurfacePosted: () => {},
   });
 
@@ -55,16 +143,270 @@ test("native agent presenter uses the current session endpoint, chunk streaming,
         title: "Check today's calendar",
       },
     },
+    {
+      method: "agents.sessions.setStatus",
+      args: {
+        channel_id: "C1",
+        thread_ts: "170.1",
+        status: "active",
+      },
+    },
   ]);
   assert.equal(starts[0].task_display_mode, "plan");
   assert.equal(starts[0].recipient_user_id, "U1");
   assert.equal(starts[0].recipient_team_id, "T1");
   assert.deepEqual(checkpoints, ["171.2"]);
   assert.deepEqual(appends[0].chunks, [
+    { type: "plan_update", title: "Check today's calendar" },
     { type: "task_update", id: "calendar", title: "Read calendar", status: "in_progress" },
   ]);
   assert.equal(stops[0].session_status, "active");
   assert.equal(JSON.stringify([starts, appends, stops]).includes("[[react:"), false);
+});
+
+test("native agent presenter omits title and initiator after durable session creation", async () => {
+  const calls: any[] = [];
+  const presenter = createNativeAgentPresenter({
+    client: {
+      apiCall: async (_method: string, args: any) => void calls.push(args),
+      chat: { startStream: async () => ({ ts: "171.2" }), appendStream: async () => {}, stopStream: async () => {} },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    createSession: false,
+    title: "Do not rename",
+    sanitize: (text) => text,
+    checkpoint: async () => {},
+    writeStatusIntent: async (input) => void calls.push({ channel_id: "D1", thread_ts: "170.1", status: input.status }),
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await presenter.begin(), true);
+  assert.deepEqual(calls[0], { channel_id: "D1", thread_ts: "170.1", status: "processing" });
+});
+
+test("native agent presenter takeover stops and replaces the exact persisted stream", async () => {
+  const starts: any[] = [];
+  const appends: any[] = [];
+  const stops: any[] = [];
+  const updates: any[] = [];
+  const methods: string[] = [];
+  const presenter = createNativeAgentPresenter({
+    client: {
+      apiCall: async () => ({ ok: true }),
+      chat: {
+        startStream: async (args: any) => void starts.push(args),
+        appendStream: async (args: any) => void appends.push(args),
+        stopStream: async (args: any) => void stops.push(args),
+        update: async (args: any) => void updates.push(args),
+      },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    resumeStreamTs: "171.2",
+    title: "Continue",
+    sanitize: (text) => text,
+    checkpoint: async () => {},
+    writeStatusIntent: acceptStatusIntent,
+    beforeProviderWrite: async (method) => {
+      methods.push(method);
+      return undefined;
+    },
+    onSurfacePosted: () => {},
+  });
+
+  await presenter.finish("Recovered final result");
+
+  assert.deepEqual(starts, []);
+  assert.deepEqual(appends, []);
+  assert.deepEqual(stops, [{ channel: "D1", ts: "171.2", session_status: "active" }]);
+  assert.equal(updates[0]?.ts, "171.2");
+  assert.equal(updates[0]?.text, "Recovered final result");
+  assert.deepEqual(methods, ["chat.stopStream", "chat.update"]);
+});
+
+test("native cancellation omits stopStream for an event-listed stream", async () => {
+  let cancelled = false;
+  const stops: any[] = [];
+  const deletes: any[] = [];
+  const presenter = createNativeAgentPresenter({
+    client: {
+      apiCall: async () => ({ ok: true }),
+      chat: {
+        startStream: async () => ({ ts: "171.2" }),
+        appendStream: async () => {},
+        stopStream: async (args: any) => void stops.push(args),
+        delete: async (args: any) => void deletes.push(args),
+      },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    title: "Work",
+    sanitize: (text) => text,
+    checkpoint: async () => {
+      cancelled = true;
+      return true;
+    },
+    writeStatusIntent: acceptStatusIntent,
+    isCancelled: async () => cancelled,
+    alreadyStopped: async () => true,
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await presenter.begin(), true);
+  await presenter.finish("Result");
+  assert.deepEqual(stops, []);
+  assert.deepEqual(deletes, [{ channel: "D1", ts: "171.2" }]);
+});
+
+test("late-created stream cleanup tolerates only exact terminal stop outcomes", async () => {
+  for (const reason of ["stopped_by_user", "message_not_in_streaming_state"]) {
+    let cancelled = false;
+    const deletes: any[] = [];
+    const presenter = createNativeAgentPresenter({
+      client: {
+        apiCall: async () => ({ ok: true }),
+        chat: {
+          startStream: async () => ({ ts: "171.3" }),
+          appendStream: async () => {},
+          stopStream: async () => {
+            throw { data: { error: reason } };
+          },
+          delete: async (args: any) => void deletes.push(args),
+        },
+      },
+      channel: "D1",
+      threadTs: "170.1",
+      initiatorUserId: "U1",
+      title: "Work",
+      sanitize: (text) => text,
+      checkpoint: async () => {
+        cancelled = true;
+        return true;
+      },
+      writeStatusIntent: acceptStatusIntent,
+      isCancelled: async () => cancelled,
+      alreadyStopped: async () => false,
+      onSurfacePosted: () => {},
+    });
+    assert.equal(await presenter.begin(), true);
+    await presenter.finish("Result");
+    assert.deepEqual(deletes, [{ channel: "D1", ts: "171.3" }]);
+  }
+
+  let cancelled = false;
+  const rejected = createNativeAgentPresenter({
+    client: {
+      apiCall: async () => ({ ok: true }),
+      chat: {
+        startStream: async () => ({ ts: "171.4" }),
+        appendStream: async () => {},
+        stopStream: async () => {
+          throw { data: { error: "channel_not_found" } };
+        },
+        delete: async () => {},
+      },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    title: "Work",
+    sanitize: (text) => text,
+    checkpoint: async () => {
+      cancelled = true;
+      return true;
+    },
+    writeStatusIntent: acceptStatusIntent,
+    isCancelled: async () => cancelled,
+    alreadyStopped: async () => false,
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await rejected.begin(), true);
+  await assert.rejects(rejected.finish("Result"), (error: any) => error?.data?.error === "channel_not_found");
+});
+
+test("native agent presenter clears external processing when the durable status checkpoint fails", async () => {
+  const statuses: string[] = [];
+  const presenter = createNativeAgentPresenter({
+    client: {
+      apiCall: async (_method: string, args: any) => void statuses.push(args.status),
+      chat: { startStream: async () => ({ ts: "171.2" }), appendStream: async () => {}, stopStream: async () => {} },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    title: "Durable checkpoint",
+    sanitize: (text) => text,
+    checkpoint: async () => {},
+    writeStatusIntent: async (input) => void statuses.push(input.status),
+    onStatus: async () => {
+      throw new Error("database unavailable");
+    },
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await presenter.begin(), false);
+  assert.deepEqual(statuses, ["processing", "active"]);
+});
+
+test("native fallback is blocked when its durable status intent cannot be persisted", async () => {
+  const phases: string[] = [];
+  const presenter = createNativeAgentPresenter({
+    client: {
+      apiCall: async () => undefined,
+      chat: { startStream: async () => ({ ts: "171.2" }), appendStream: async () => {}, stopStream: async () => {} },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    title: "Durable checkpoint",
+    sanitize: (text) => text,
+    checkpoint: async () => {},
+    writeStatusIntent: async (input) => {
+      phases.push(input.phase);
+      if (input.phase === "begin_failed") throw new Error("status store unavailable");
+    },
+    onStatus: async () => {
+      throw new Error("database unavailable");
+    },
+    onSurfacePosted: () => {},
+  });
+  await assert.rejects(() => presenter.begin(), /status store unavailable/);
+  assert.deepEqual(phases, ["begin_processing", "begin_failed"]);
+});
+
+test("stream checkpoint failure cannot swallow a missing terminal status intent", async () => {
+  const phases: string[] = [];
+  const deleted: string[] = [];
+  const presenter = createNativeAgentPresenter({
+    client: {
+      apiCall: async () => undefined,
+      chat: {
+        startStream: async () => ({ ts: "171.2" }),
+        appendStream: async () => {},
+        stopStream: async () => {},
+        delete: async ({ ts }: { ts: string }) => void deleted.push(ts),
+      },
+    },
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    title: "Durable checkpoint",
+    sanitize: (text) => text,
+    checkpoint: async () => {
+      throw new Error("checkpoint unavailable");
+    },
+    writeStatusIntent: async (input) => {
+      phases.push(input.phase);
+      if (input.phase === "finish") throw new Error("status store unavailable");
+    },
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await presenter.begin(), true);
+  presenter.onDelta("A".repeat(400));
+  await assert.rejects(() => presenter.finish("A".repeat(400)), /status store unavailable/);
+  assert.deepEqual(phases, ["begin_processing", "finish", "finish"]);
+  assert.deepEqual(deleted, ["171.2"]);
 });
 
 test("native agent presenter clears processing if stream startup fails", async () => {
@@ -86,6 +428,7 @@ test("native agent presenter clears processing if stream startup fails", async (
     title: "Hello",
     sanitize: (text) => text,
     checkpoint: async () => {},
+    writeStatusIntent: async (input) => void statuses.push(input.status),
     onSurfacePosted: () => {},
   });
   assert.equal(await presenter.begin(), true);
@@ -114,6 +457,7 @@ test("native task-card delivery failure never interrupts core polling and settle
     title: "Plan",
     sanitize: (text) => text,
     checkpoint: async () => {},
+    writeStatusIntent: async (input) => void statuses.push(input.status),
     onSurfacePosted: () => {},
   });
   assert.equal(await presenter.begin(), true);
@@ -145,6 +489,7 @@ test("native agent presenter splits long Markdown without breaking surrogate pai
     title: "Long answer",
     sanitize: (text) => text,
     checkpoint: async () => {},
+    writeStatusIntent: acceptStatusIntent,
     onSurfacePosted: () => {},
   });
   const reply = `${"a".repeat(11_999)}😀${"b".repeat(12_001)}`;
@@ -158,6 +503,60 @@ test("native agent presenter splits long Markdown without breaking surrogate pai
   assert.ok(chunks.every((chunk) => chunk.length <= 12_000));
   assert.ok(chunks.every((chunk) => !/[\uD800-\uDBFF]$/.test(chunk) && !/^[\uDC00-\uDFFF]/.test(chunk)));
   assert.equal(stops[0].session_status, "active");
+});
+
+test("native agent presenter preserves every Agent Sessions terminal status including multi-agent responses", async () => {
+  const calls: Array<{ method: string; args: any }> = [];
+  const client = {
+    apiCall: async (method: string, args: any) => {
+      calls.push({ method, args });
+      return args.status === "active"
+        ? { status: "processing", agent_status: "active" }
+        : { status: args.status, agent_status: args.status };
+    },
+    chat: {
+      startStream: async () => ({ ts: "171.3" }),
+      appendStream: async () => ({ ok: true }),
+      stopStream: async () => ({ ok: true }),
+    },
+  };
+  const presenter = createNativeAgentPresenter({
+    client,
+    channel: "D1",
+    threadTs: "170.1",
+    initiatorUserId: "U1",
+    title: "Need a decision",
+    sanitize: (text) => text,
+    checkpoint: async () => {},
+    writeStatusIntent: async (input) =>
+      void calls.push({ method: "agents.sessions.setStatus", args: { status: input.status } }),
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await presenter.begin(), true);
+  await presenter.suspend();
+  assert.deepEqual(
+    calls.map((call) => [call.method, call.args.status]),
+    [
+      ["agents.sessions.setStatus", "processing"],
+      ["agents.sessions.setStatus", "suspended"],
+    ],
+  );
+
+  const closed = createNativeAgentPresenter({
+    client,
+    channel: "D1",
+    threadTs: "170.2",
+    initiatorUserId: "U1",
+    title: "Terminal task",
+    sanitize: (text) => text,
+    checkpoint: async () => {},
+    writeStatusIntent: async (input) =>
+      void calls.push({ method: "agents.sessions.setStatus", args: { status: input.status } }),
+    onSurfacePosted: () => {},
+  });
+  assert.equal(await closed.begin(), true);
+  await closed.finish("", "closed");
+  assert.equal(calls.at(-1)?.args.status, "closed");
 });
 
 test("renderTaskList renders every terminal state", () => {

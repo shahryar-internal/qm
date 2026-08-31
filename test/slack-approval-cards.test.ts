@@ -161,6 +161,7 @@ test("recoveredApprovalContext rebuilds a button context from core's durable rec
       deliveryTarget: "C1:t1",
       text: "!run git push --force origin main",
       unprompted: true,
+      verifiedSlack: { teamId: "T1", userId: "U1", channelId: "C1", threadTs: "t1" },
     },
   };
   const ctx = recoveredApprovalContext(stored, { channel: "D9" });
@@ -168,7 +169,12 @@ test("recoveredApprovalContext rebuilds a button context from core's durable rec
   assert.equal(ctx!.requesterId, "U1");
   assert.equal(ctx!.channel, "C1", "origin channel comes from the record, not the DM click");
   assert.equal(ctx!.replyThreadTs, "t1", "origin thread comes from the record's deliveryTarget");
-  assert.deepEqual(ctx!.nativeAgentSession, { channel: "C1", threadTs: "t1" });
+  assert.deepEqual(ctx!.nativeAgentSession, {
+    teamId: "T1",
+    channelId: "C1",
+    threadTs: "t1",
+  });
+  assert.equal(ctx!.approvalRequesterUserId, "U1");
   assert.equal(ctx!.approvalChannel, "D9", "the card lives where the click landed (the DM)");
   assert.equal(ctx!.threadOnly, true, "channel kind replies thread-only, like the original turn");
   assert.equal(ctx!.command, "git push --force origin main");

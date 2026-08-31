@@ -49,6 +49,33 @@ test("runResultDelivery maps ok-with-reply to a recovery delivery keyed by run",
   });
 });
 
+test("approval continuations retain exclusive durable result ownership", () => {
+  const d = runResultDelivery(
+    run({
+      dedupKey: "slack-approval:exact",
+      request: {
+        ...run({}).request,
+        approval: { requestId: "approval-1", approved: true, scope: "once" },
+      },
+    }),
+  );
+  assert.equal(d, null);
+});
+
+test("non-Slack approval runs retain generic recovery delivery", () => {
+  const d = runResultDelivery(
+    run({
+      dedupKey: "slack-approval:exact",
+      request: {
+        ...run({}).request,
+        surface: "web",
+        approval: { requestId: "approval-1", approved: true, scope: "once" },
+      },
+    }),
+  );
+  assert.equal(d?.destination.type, "web");
+});
+
 test("runResultDelivery carries the reply's attachments so recovery can replay the files", () => {
   const atts = [{ name: "report.csv", mimetype: "text/csv", sizeBytes: 42, blobId: "blob-1" }];
   const d = runResultDelivery(run({ result: { status: "ok", reply: "here's the file", attachments: atts } }));
