@@ -30,8 +30,10 @@ but cannot satisfy this analytics authority contract.
 The authority issuer and public key are matched exactly by Command Center.
 During rotation, place no more than three prior public keys in the optional
 overlap setting until every delivery sealed by them has drained, then remove
-them. New authority and delivery signatures always use the current private
-key.
+them. Prior-key cards are accepted only when their issuer, organization,
+canonical email principal, workspace, Slack user, and DM channel still match
+the current fixed configuration. New authority and delivery signatures always
+use the current private key.
 
 The QM MCP server record must pin the only allowed remote tool with these
 closed contract fields in addition to its exact reviewed input schema:

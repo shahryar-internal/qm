@@ -111,6 +111,18 @@ function cardAuthority(authority: McpAuthorityPayload): Record<string, unknown> 
   };
 }
 
+function fixedAuthorityMatchesConfig(authority: McpAuthorityPayload, config: McpAuthoritySignerConfig): boolean {
+  return (
+    authority.issuer === config.issuer &&
+    authority.organizationId === config.organizationId &&
+    authority.principalId === config.principalId &&
+    authority.slackTeamId === config.slackTeamId &&
+    authority.slackUserId === config.slackUserId &&
+    authority.slackChannelId === config.slackDmChannelId &&
+    authority.slackConversationType === "im"
+  );
+}
+
 const CARD_TOKEN_PREFIX = "qm.analytics.card.delivery.v1";
 const MAX_CARD_TOKEN_CHARS = 48_000;
 
@@ -244,6 +256,7 @@ export function createMcpAuthoritySigner(
         if (
           authority.version !== 1 ||
           authority.tool !== "analytics_query" ||
+          !fixedAuthorityMatchesConfig(authority, config) ||
           (payload.target !== authority.slackChannelId &&
             payload.target !== `${authority.slackChannelId}:${authority.slackThreadTs}`)
         ) {

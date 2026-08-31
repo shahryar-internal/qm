@@ -12,7 +12,7 @@ import {
 } from "../src/mcp/mcp-authority.ts";
 import { createMcpServerStore, type McpAllowedTool, type McpServer } from "../src/mcp/mcp-server-store.ts";
 import { createMcpToolService } from "../src/mcp/mcp-tool-service.ts";
-import type { McpFetch } from "../src/mcp/mcp-client.ts";
+import { parseMcpInputSchema, type McpFetch } from "../src/mcp/mcp-client.ts";
 import { parseAnalyticsNativeDelivery } from "../src/mcp/mcp-native-card.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { analyticsNativeCardBlocks } from "../src/slack/native-cards.ts";
@@ -42,7 +42,12 @@ const context: McpHumanCallContext = {
 };
 const inputSchema = {
   type: "object",
-  properties: { question: { type: "string", minLength: 3, maxLength: 2_000 } },
+  properties: {
+    question: { type: "string", minLength: 3, maxLength: 2_000 },
+    account: { type: "string", minLength: 1, maxLength: 200 },
+    person: { type: "string", minLength: 1, maxLength: 200 },
+    priorReceiptHandle: { type: "string", minLength: 46, maxLength: 46 },
+  },
   required: ["question"],
   additionalProperties: false,
 };
@@ -190,6 +195,10 @@ test("authority environment loading is default-off and rejects partial configura
   assert.throws(() => createMcpAuthoritySigner({ ...signerConfig, ttlSeconds: 1 }));
 });
 
+test("the closed Command Center analytics schema is accepted without pattern support", () => {
+  assert.deepEqual(parseMcpInputSchema(inputSchema), inputSchema);
+});
+
 test("signer configuration requires the same canonical email identity carried in authority payloads", () => {
   for (const principalId of [
     "U123ABC",
@@ -255,7 +264,7 @@ test("native analytics parser rejects remote blocks and QM renders bounded escap
   assert.match(rendered, /&lt;@here&gt; &amp; 12 active/);
 });
 
-test("sealed analytics deliveries bind exact target, reject tampering, and survive an explicit key overlap", () => {
+test("sealed analytics deliveries bind exact target and fixed authority through an explicit key overlap", () => {
   const oldSigner = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
   const authority = decodeAuthority(
     oldSigner.sign("analytics_query", { question: "How is UC Online doing?" }, context).token,
@@ -288,6 +297,28 @@ test("sealed analytics deliveries bind exact target, reject tampering, and survi
     previousPublicKeys: [keys.publicKey.export({ format: "der", type: "spki" }).toString("base64")],
   });
   assert.equal(rotatingSigner.verifyAnalyticsCard(token, "D123")?.receiptId, "a".repeat(64));
+  for (const [configOverride, contextOverride] of [
+    [{ issuer: "qm:other" }, {}],
+    [{ organizationId: "org-other" }, {}],
+    [{ principalId: "other@example.com" }, { principalId: "other@example.com" }],
+    [{ slackTeamId: "T999" }, { slackTeamId: "T999" }],
+    [{ slackUserId: "U999" }, { slackUserId: "U999" }],
+    [{ slackDmChannelId: "D999" }, { slackChannelId: "D999", deliveryTarget: "D999" }],
+  ] as const) {
+    const priorIdentitySigner = createMcpAuthoritySigner(
+      { ...signerConfig, ...configOverride },
+      () => 1_788_119_999_000,
+    );
+    const priorContext = { ...context, ...contextOverride };
+    const priorAuthority = decodeAuthority(
+      priorIdentitySigner.sign("analytics_query", { question: "How is UC Online doing?" }, priorContext).token,
+    );
+    const priorDelivery = parseAnalyticsNativeDelivery(delivery(priorAuthority), priorAuthority);
+    assert.ok(priorDelivery);
+    const priorTarget = priorContext.deliveryTarget;
+    const priorToken = priorIdentitySigner.sealAnalyticsCard(priorDelivery.unsignedCard, priorAuthority, priorTarget);
+    assert.equal(rotatingSigner.verifyAnalyticsCard(priorToken, priorTarget), null);
+  }
   const noOverlap = createMcpAuthoritySigner({
     ...signerConfig,
     privateKey: nextKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
