@@ -6,10 +6,6 @@
   "ignoreIssues": {
     "scripts/migrate-principals-to-email.d.mts": ["files"],
     "plugins/chassis/src/source-auth-sign.ts": ["exports"],
-    "src/background-jobs/attention.ts": ["types"],
-    "src/background-jobs/composition.ts": ["types"],
-    "src/background-jobs/fixed-client.ts": ["types"],
-    "src/background-jobs/types.ts": ["types"],
     "src/cron/postgres-schedule-authority.ts": ["types"],
     "src/cron/schedule-authority.ts": ["exports", "types"],
     "src/mcp/mcp-server-store.ts": ["types"],
