@@ -1,0 +1,86 @@
+import {
+  GMAIL_COMPOSE_SCOPE,
+  gmailDraftEffectPayload,
+  gmailDraftThreadBinding,
+  sha256Bytes,
+  sha256Canonical,
+  type GmailDraftEffectProposal,
+} from "../src/gmail-drafts/contracts.ts";
+
+export const GMAIL_TEST_NOW = 1_800_000_000_000;
+
+export function gmailDraftProposal(overrides: Partial<GmailDraftEffectProposal> = {}): GmailDraftEffectProposal {
+  const initial = {
+    contractType: "qm-gmail-draft-effect-proposal" as const,
+    contractVersion: 1 as const,
+    effectProposalId: "effect-proposal-1",
+    revision: 1,
+    draftRevision: 1,
+    operation: "create" as const,
+    draftId: null,
+    priorDraftReceiptSha256: null,
+    organizationId: "org-1",
+    logicalConnectionId: "google-connection-1",
+    connectionVersion: 4,
+    ownerPrincipalId: "owner-1",
+    googleSubject: "google-subject-1",
+    mailbox: "owner@example.com",
+    accountType: "company" as const,
+    grantedScopes: [GMAIL_COMPOSE_SCOPE] as const,
+    to: ["recipient@example.edu"] as const,
+    subject: "Next steps from our working session",
+    bodyText: "Hello,\n\nHere are the agreed next steps.\n\nThank you.",
+    gmailThreadId: null,
+    replyAuthority: null,
+    businessContextSha256: sha256Bytes("source-bound business context"),
+    sourceReceiptSha256s: [sha256Bytes("meeting-receipt"), sha256Bytes("pricing-receipt")] as readonly string[],
+    recipientsSha256: "",
+    subjectSha256: "",
+    bodySha256: "",
+    threadBindingSha256: "",
+    sourceBundleSha256: "",
+    effectPayloadSha256: "",
+  };
+  const content = { ...initial, ...overrides };
+  const hashed = {
+    ...content,
+    recipientsSha256: sha256Canonical(content.to),
+    subjectSha256: sha256Bytes(content.subject),
+    bodySha256: sha256Bytes(content.bodyText),
+    threadBindingSha256: sha256Canonical(gmailDraftThreadBinding(content)),
+    sourceBundleSha256: sha256Canonical(content.sourceReceiptSha256s),
+  };
+  const effectPayloadSha256 = sha256Canonical(gmailDraftEffectPayload(hashed as GmailDraftEffectProposal));
+  const approval = {
+    contractType: "qm-verified-gmail-draft-approval" as const,
+    contractVersion: 1 as const,
+    issuer: "private-slack-approval-service",
+    keyId: "approval-key-1",
+    jti: `approval-${hashed.effectProposalId}-${hashed.revision}`,
+    receiptId: `approval-receipt-${hashed.effectProposalId}-${hashed.revision}`,
+    organizationId: hashed.organizationId,
+    ownerPrincipalId: hashed.ownerPrincipalId,
+    actorPrincipalId: hashed.ownerPrincipalId,
+    actorSlackId: "U12345678",
+    slackTeamId: "T12345678",
+    slackUserId: "U12345678",
+    channelId: "D12345678",
+    messageTs: "1800000000.000001",
+    threadTs: "1800000000.000001",
+    actionTs: "1800000000.000002",
+    humanOrigin: true as const,
+    effectProposalId: hashed.effectProposalId,
+    proposalRevision: hashed.revision,
+    draftRevision: hashed.draftRevision,
+    operation: hashed.operation,
+    logicalConnectionId: hashed.logicalConnectionId,
+    connectionVersion: hashed.connectionVersion,
+    mailbox: hashed.mailbox,
+    approvedPayloadSha256: effectPayloadSha256,
+    issuedAt: GMAIL_TEST_NOW,
+    expiresAt: GMAIL_TEST_NOW + 120_000,
+    signedReceiptSha256: sha256Bytes("signed approval"),
+    verifiedReceiptSha256: sha256Bytes("verified approval"),
+  };
+  return structuredClone({ ...hashed, effectPayloadSha256, approval }) as GmailDraftEffectProposal;
+}
