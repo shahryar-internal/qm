@@ -38,6 +38,7 @@ async function postTurn(ctx: ApiCtx): Promise<void> {
     ownerKeychainUnion: _ownerKeychainUnion,
     spawned: _spawned,
     unattendedGrants: _unattendedGrants,
+    trustedSlackTeamId: _trustedSlackTeamId,
     ...safeBody
   } = body;
   const resolvedOrigin = publicTurnOrigin(safeBody);

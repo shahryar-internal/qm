@@ -494,6 +494,7 @@ test("a DM becomes one scoped live turn and one Slack reply", async () => {
     await f.app.emitMessage({ channel: "D1", channel_type: "im", user: "U1", text: "hello agent", ts: "100.1" });
     assert.equal(f.core.turns.length, 1);
     assert.equal(f.core.turns[0].text, "hello agent");
+    assert.equal(f.core.turns[0].trustedSlackTeamId, "T1");
     assert.equal(f.core.turns[0].conversation.kind, "dm");
     assert.equal(f.core.turns[0].conversation.threadRef, "dm:D1");
     assert.equal(f.core.turns[0].conversation.audience[0].externalId, "U1");

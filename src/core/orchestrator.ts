@@ -77,6 +77,7 @@ import {
   renderPendingOnboardingPrompt,
 } from "../onboarding/onboarding.ts";
 import { createToolContext, NeedsApproval, CommandDenied } from "../tools/primitives.ts";
+import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createSecretValueMasker } from "../security/secret-masking.ts";
 import { shq } from "../util/shell.ts";
@@ -2065,6 +2066,32 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
           ...(deps.mcp ? { mcp: deps.mcp } : {}),
+          ...(() => {
+            if (
+              input.surface !== "slack" ||
+              conversation.kind !== "dm" ||
+              input.origin.kind !== "human" ||
+              !messageTs ||
+              defaultDestination?.type !== "slack"
+            ) {
+              return {};
+            }
+            const separator = defaultDestination.target.indexOf(":");
+            const slackChannelId =
+              separator < 0 ? defaultDestination.target : defaultDestination.target.slice(0, separator);
+            const slackThreadTs = separator < 0 ? messageTs : defaultDestination.target.slice(separator + 1);
+            const mcpCallContext: McpHumanCallContext = {
+              surface: "slack",
+              conversationType: "dm",
+              principalId: actor.id,
+              slackTeamId: input.trustedSlackTeamId ?? "",
+              slackUserId: actor.id,
+              slackChannelId,
+              slackMessageTs: messageTs,
+              slackThreadTs,
+            };
+            return { mcpCallContext };
+          })(),
           sessionHistory: {
             search: async (q: string, limit?: number) =>
               searchSessionEntries(

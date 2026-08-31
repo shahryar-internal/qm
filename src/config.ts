@@ -25,6 +25,7 @@ import {
 } from "./model/pi-models.ts";
 import { isStrongSigningSecret } from "./auth/source-auth.ts";
 import { DEV_GEMINI_MODEL, devGeminiProviderFromEnv, type DevGeminiProvider } from "./model/dev-gemini-provider.ts";
+import { mcpAuthoritySignerConfigFromEnv, type McpAuthoritySignerConfig } from "./mcp/mcp-authority.ts";
 
 export interface Config {
   production: boolean;
@@ -162,6 +163,7 @@ export interface Config {
   smolmachinesSandbox: SmolmachinesSandboxEnv;
   awsDeploy: AwsDeployEnv;
   flyDeploy: FlyDeployEnv;
+  mcpAuthoritySigner?: McpAuthoritySignerConfig;
 }
 
 export function configuredModelForHarness(config: Config, harness: string): string | undefined {
@@ -849,12 +851,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     numEnvStrict("RUN_MAX_AGE_MS", env.RUN_MAX_AGE_MS) ??
     (turnWallClockMs > 0 ? 2 * turnWallClockMs : CONFIG_DEFAULTS.runMaxAgeMs);
   const slack = slackPluginConfigFromEnv(env);
+  const mcpAuthoritySigner = mcpAuthoritySignerConfigFromEnv(env);
   return {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
     dataDir,
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
+    ...(mcpAuthoritySigner ? { mcpAuthoritySigner } : {}),
     sessionStore: env.SESSION_STORE === "postgres" ? "postgres" : "memory",
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     ...(env.DATABASE_CA_CERT ? { databaseCaCert: env.DATABASE_CA_CERT } : {}),

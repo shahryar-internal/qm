@@ -153,3 +153,36 @@ test("expired effect authority rejects before sandbox, credential, MCP, control,
     surface: 0,
   });
 });
+
+test("MCP native cards are consumed by the current surface and never returned as model-visible JSON", async () => {
+  const posted: unknown[] = [];
+  const card = {
+    version: 1 as const,
+    renderer: "qm.analytics.card.v1" as const,
+    receiptId: "a".repeat(64),
+    fallbackText: "Analytics result",
+    heading: "Analytics",
+    question: "How is usage?",
+    findings: [],
+    confidenceNotes: [],
+    nextStep: "Review.",
+    proposedActions: [],
+  };
+  const { sandbox } = recordingSandbox();
+  const ctx = ctxFor(sandbox, {
+    mcp: {
+      toolDefs: () => [],
+      async callWithContext() {
+        return { text: "model-safe result", nativeCard: card, nativeCardIdempotencyKey: `mcp-card:${card.receiptId}` };
+      },
+    } as never,
+    surface: {
+      async postNativeCard(received: unknown, idempotencyKey: string) {
+        posted.push(received, idempotencyKey);
+        return { ok: true, deliveryId: "delivery-1" };
+      },
+    } as never,
+  });
+  assert.equal(await ctx.callMcpTool("analytics", {}), "model-safe result");
+  assert.deepEqual(posted, [card, `mcp-card:${card.receiptId}`]);
+});

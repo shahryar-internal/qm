@@ -149,9 +149,10 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
     destination: Destination,
     postText: string,
     attachments?: OutgoingAttachment[],
+    exactIdempotencyKey?: string,
   ): Promise<SurfacePostResult> => {
     try {
-      const idempotencyKey = `post:${session.id}:${randomUUID()}`;
+      const idempotencyKey = exactIdempotencyKey ?? `post:${session.id}:${randomUUID()}`;
       const delivery = await reachEnqueue({
         deliveries,
         destination,
@@ -206,6 +207,15 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
     return { ok: true, attachments: r.attachments };
   };
   return {
+    postNativeCard: async (card, idempotencyKey) => {
+      if (currentDestination.type !== "slack") return { ok: false, message: "native cards require Slack" };
+      return enqueue(
+        { type: currentDestination.type, target: currentDestination.target, nativeCard: card },
+        card.fallbackText,
+        undefined,
+        idempotencyKey,
+      );
+    },
     post: async (postText, opts, files) => {
       let destination = currentDestination;
       if (opts?.ts && destination.type !== "principal") {

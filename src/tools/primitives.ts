@@ -45,6 +45,8 @@ import { putMiniapp, type MiniappInput, type MiniappResult, type MiniappStore } 
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryService } from "../memory/memory-service.ts";
 import type { McpToolService, McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
+import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
+import type { QmAnalyticsNativeCard } from "../types.ts";
 import type { ReachResolution } from "../resolution/scope-reach.ts";
 import type {
   ControlService,
@@ -368,6 +370,7 @@ export interface SurfaceToolDeps {
     ambientEnabled?: boolean | null,
   ): Promise<SurfaceStandingOrderResult>;
   staySilent(reason: string): Promise<{ ok: true; message: string }>;
+  postNativeCard?(card: QmAnalyticsNativeCard, idempotencyKey: string): Promise<SurfacePostResult>;
 }
 
 export interface ControlUnavailable {
@@ -422,6 +425,7 @@ export interface ToolContextDeps {
   memoryScopeId?: ScopeId;
   memoryAccess?: { write?: ScopeId; read: ScopeId[] };
   mcp?: McpToolService;
+  mcpCallContext?: McpHumanCallContext;
   sessionHistory?: { search(q: string, limit?: number): Promise<string[]> };
   actingSlackUserId?: string;
   layerAuth?: {
@@ -960,7 +964,15 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
 
     async callMcpTool(name: string, args: Record<string, unknown>): Promise<string> {
       if (!deps.mcp) throw new Error("no MCP connectors are configured");
-      return deps.mcp.call(name, args, deps.createdBy);
+      const result = await deps.mcp.callWithContext(name, args, deps.mcpCallContext, deps.createdBy);
+      if (result.nativeCard) {
+        if (!deps.surface?.postNativeCard || !result.nativeCardIdempotencyKey) {
+          throw new Error("MCP native card delivery is unavailable on this turn");
+        }
+        const delivered = await deps.surface.postNativeCard(result.nativeCard, result.nativeCardIdempotencyKey);
+        if (!delivered.ok) throw new Error("MCP native card delivery failed");
+      }
+      return result.text;
     },
 
     async backgroundStart(command: string, opts?: { ttlSeconds?: number }): Promise<BackgroundStartResult> {

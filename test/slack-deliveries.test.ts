@@ -86,3 +86,29 @@ test("Slack delivery keeps the separate-comment fallback when upload comments ca
   assert.equal(uploads[0]!.initial_comment, undefined);
   assert.equal((uploads[0]!.file_uploads as unknown[]).length, 3);
 });
+
+test("Slack delivery renders a closed analytics card locally at the current destination", async () => {
+  const { posts } = await deliver({
+    nativeCard: {
+      version: 1,
+      renderer: "qm.analytics.card.v1",
+      receiptId: "a".repeat(64),
+      fallbackText: "Analytics result",
+      heading: "Analytics · UC Online",
+      question: "How is usage?",
+      findings: [{ source: "posthog", topic: "usage", text: "<@here> & 12 active", confidence: "high" }],
+      confidenceNotes: [],
+      nextStep: "Review the evidence.",
+      proposedActions: ["Draft an email."],
+    },
+  });
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0]!.channel, "C1");
+  assert.equal(posts[0]!.thread_ts, "100.200");
+  assert.equal(posts[0]!.text, "two screenshots and the notes");
+  const blocks = JSON.stringify(posts[0]!.blocks);
+  assert.match(blocks, /Analytics · UC Online/);
+  assert.doesNotMatch(blocks, /<@here>/);
+  assert.match(blocks, /&lt;@here&gt; &amp; 12 active/);
+});

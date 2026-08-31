@@ -23,6 +23,7 @@ import type { Delivery } from "../types.ts";
 import type { CoreBridge } from "./core-bridge.ts";
 import type { Mirror } from "./mirror.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
+import { analyticsNativeCardBlocks } from "./native-cards.ts";
 
 const DELIVERY_CLAIM_MS = 15_000;
 
@@ -131,6 +132,9 @@ export function createDeliveryPoller(deps: {
                     : []),
                 ]
               : undefined;
+            const nativeCardBlocks = d.destination.nativeCard
+              ? analyticsNativeCardBlocks(d.destination.nativeCard)
+              : undefined;
             if (!text.trim()) {
               if (taskList) {
                 let preserved = false;
@@ -185,6 +189,7 @@ export function createDeliveryPoller(deps: {
               }
             }
             const footerBlocks =
+              nativeCardBlocks ??
               taskListBlocks ??
               (d.destination.debugFooter && text.length <= 2900
                 ? [

@@ -307,6 +307,7 @@ export function createTurnMethods(
 
       const input = {
         surface: req.surface,
+        ...(req.trustedSlackTeamId ? { trustedSlackTeamId: req.trustedSlackTeamId } : {}),
         ...(req.deliveryTarget ? { deliveryTarget: req.deliveryTarget } : {}),
         ...(req.deliveryCandidates?.length ? { deliveryCandidates: req.deliveryCandidates } : {}),
         actor,

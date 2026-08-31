@@ -12,6 +12,9 @@ import {
   type McpResolveHost,
 } from "./mcp-client.ts";
 import type { McpAllowedTool, McpServer, McpServerStore } from "./mcp-server-store.ts";
+import type { McpAuthoritySigner, McpHumanCallContext } from "./mcp-authority.ts";
+import { parseAnalyticsNativeDelivery } from "./mcp-native-card.ts";
+import type { QmAnalyticsNativeCard } from "../types.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const MAX_TOOLS_PER_SERVER = 64;
@@ -50,6 +53,14 @@ export interface McpToolDescriptor {
   remoteDestructiveHint: boolean;
   serverUpdatedAt: number;
   serverContractSha256: string;
+  requestAuthority?: McpAllowedTool["requestAuthority"];
+  nativeRenderer?: McpAllowedTool["nativeRenderer"];
+}
+
+export interface McpToolCallResult {
+  text: string;
+  nativeCard?: QmAnalyticsNativeCard;
+  nativeCardIdempotencyKey?: string;
 }
 
 export interface McpProbedTool {
@@ -62,6 +73,12 @@ export interface McpProbedTool {
 export interface McpToolService {
   toolDefs(): McpToolDescriptor[];
   call(name: string, args: Record<string, unknown>, principalId?: string): Promise<string>;
+  callWithContext(
+    name: string,
+    args: Record<string, unknown>,
+    context: McpHumanCallContext | undefined,
+    principalId?: string,
+  ): Promise<McpToolCallResult>;
   refresh(): Promise<void>;
   probe(server: McpServer): Promise<McpProbedTool[]>;
   close(): void;
@@ -130,6 +147,8 @@ function contractMatches(def: McpToolDescriptor, server: McpServer, allowed: Mcp
     def.readOnly === trustedReadOnly(server, allowed, remote) &&
     def.remoteReadOnlyHint === remote.readOnlyHint &&
     def.remoteDestructiveHint === remote.destructiveHint &&
+    def.requestAuthority === allowed.requestAuthority &&
+    def.nativeRenderer === allowed.nativeRenderer &&
     !!allowed.inputSchema &&
     isDeepStrictEqual(def.inputSchema, allowed.inputSchema) &&
     isDeepStrictEqual(allowed.inputSchema, remote.inputSchema)
@@ -143,6 +162,7 @@ export function createMcpToolService(opts: {
   resolveHost?: McpResolveHost;
   now?: () => number;
   refreshIntervalMs?: number;
+  authoritySigner?: McpAuthoritySigner;
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
   const clients = new Map<string, { client: McpClient; serverContractSha256: string }>();
@@ -215,6 +235,8 @@ export function createMcpToolService(opts: {
             remoteDestructiveHint: remote.destructiveHint,
             serverUpdatedAt: server.updatedAt,
             serverContractSha256: publicServerContractSha256(server),
+            ...(allowed.requestAuthority ? { requestAuthority: allowed.requestAuthority } : {}),
+            ...(allowed.nativeRenderer ? { nativeRenderer: allowed.nativeRenderer } : {}),
           });
         }
         if (
@@ -254,36 +276,49 @@ export function createMcpToolService(opts: {
   timer.unref?.();
   void refresh();
 
-  return {
-    toolDefs: () => snapshot,
-    async call(name, args, principalId) {
-      const def = snapshot.find((tool) => tool.name === name);
-      if (!def) throw new Error(`unknown MCP tool: ${name}`);
-      const server = await opts.servers.get(def.serverId);
-      if (!server || !server.enabled || server.credentialState === "reentry-required") {
-        throw new Error(`MCP server ${def.serverId} is not available`);
+  async function callWithContext(
+    name: string,
+    args: Record<string, unknown>,
+    context: McpHumanCallContext | undefined,
+    principalId?: string,
+  ): Promise<McpToolCallResult> {
+    const def = snapshot.find((tool) => tool.name === name);
+    if (!def) throw new Error(`unknown MCP tool: ${name}`);
+    const server = await opts.servers.get(def.serverId);
+    if (!server || !server.enabled || server.credentialState === "reentry-required") {
+      throw new Error(`MCP server ${def.serverId} is not available`);
+    }
+    const allowedMatches = server.allowedTools.filter((tool) => tool.name === def.remoteName);
+    if (allowedMatches.length !== 1) {
+      record("call", `${def.serverId}/${def.remoteName}`, "error: allowlist drift", principalId);
+      throw new Error(`MCP tool contract changed: ${def.remoteName}`);
+    }
+    const allowed = allowedMatches[0]!;
+    if (!validateMcpToolArguments(allowed.inputSchema, args)) {
+      record("call", `${def.serverId}/${def.remoteName}`, "error: invalid arguments", principalId);
+      throw new Error(`MCP tool arguments do not match the pinned contract: ${def.remoteName}`);
+    }
+    try {
+      if (def.nativeRenderer && !def.requestAuthority) {
+        throw new Error(`MCP native renderer requires request authority: ${def.remoteName}`);
       }
-      const allowedMatches = server.allowedTools.filter((tool) => tool.name === def.remoteName);
-      if (allowedMatches.length !== 1) {
-        record("call", `${def.serverId}/${def.remoteName}`, "error: allowlist drift", principalId);
+      const authority = def.requestAuthority ? opts.authoritySigner?.sign(def.remoteName, args, context) : undefined;
+      if (def.requestAuthority && !authority) {
+        throw new Error(`MCP request authority is unavailable: ${def.remoteName}`);
+      }
+      const client = clientFor(server);
+      const discovered = await client.listTools();
+      if (discovered.length > MAX_TOOLS_PER_SERVER) {
         throw new Error(`MCP tool contract changed: ${def.remoteName}`);
       }
-      const allowed = allowedMatches[0]!;
-      if (!validateMcpToolArguments(allowed.inputSchema, args)) {
-        record("call", `${def.serverId}/${def.remoteName}`, "error: invalid arguments", principalId);
-        throw new Error(`MCP tool arguments do not match the pinned contract: ${def.remoteName}`);
+      const remote = exactRemote(discovered, def.remoteName);
+      if (!remote || !contractMatches(def, server, allowed, remote)) {
+        throw new Error(`MCP tool contract changed: ${def.remoteName}`);
       }
-      try {
-        const client = clientFor(server);
-        const discovered = await client.listTools();
-        if (discovered.length > MAX_TOOLS_PER_SERVER) {
-          throw new Error(`MCP tool contract changed: ${def.remoteName}`);
-        }
-        const remote = exactRemote(discovered, def.remoteName);
-        if (!remote || !contractMatches(def, server, allowed, remote)) {
-          throw new Error(`MCP tool contract changed: ${def.remoteName}`);
-        }
-        const result = await client.callTool(def.remoteName, args, async () => {
+      const result = await client.callTool(
+        def.remoteName,
+        args,
+        async () => {
           const current = await opts.servers.get(def.serverId);
           const currentAllowed = current?.allowedTools.filter((tool) => tool.name === def.remoteName) ?? [];
           if (
@@ -295,15 +330,36 @@ export function createMcpToolService(opts: {
           ) {
             throw new Error(`MCP tool contract changed: ${def.remoteName}`);
           }
-        });
+        },
+        authority?.token,
+      );
+      const text = mcpResultText(result) || JSON.stringify(result.structuredContent ?? "") || "";
+      const boundedText = text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated]` : text;
+      if (!def.nativeRenderer) {
         record("call", `${def.serverId}/${def.remoteName}`, "ok", principalId);
-        const text = mcpResultText(result) || JSON.stringify(result.structuredContent ?? "") || "";
-        return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n[truncated]` : text;
-      } catch (error) {
-        record("call", `${def.serverId}/${def.remoteName}`, "error", principalId);
-        throw error;
+        return { text: boundedText };
       }
+      if (!authority) throw new Error(`MCP native renderer authority is unavailable: ${def.remoteName}`);
+      const delivery = parseAnalyticsNativeDelivery(result.structuredContent, authority.payload);
+      if (!delivery) throw new Error(`MCP native renderer result is invalid: ${def.remoteName}`);
+      record("call", `${def.serverId}/${def.remoteName}`, "ok", principalId);
+      return {
+        text: boundedText,
+        nativeCard: delivery.card,
+        nativeCardIdempotencyKey: delivery.idempotencyKey,
+      };
+    } catch (error) {
+      record("call", `${def.serverId}/${def.remoteName}`, "error", principalId);
+      throw error;
+    }
+  }
+
+  return {
+    toolDefs: () => snapshot,
+    async call(name, args, principalId) {
+      return (await callWithContext(name, args, undefined, principalId)).text;
     },
+    callWithContext,
     refresh,
     async probe(server) {
       const tools = await clientFor(server).listTools();

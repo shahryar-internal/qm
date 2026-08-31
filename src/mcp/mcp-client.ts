@@ -677,7 +677,12 @@ export interface McpClient {
   readonly base: string;
   readonly host: string;
   listTools(): Promise<McpRemoteTool[]>;
-  callTool(name: string, args: Record<string, unknown>, beforeDispatch?: () => Promise<void>): Promise<McpToolResult>;
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    beforeDispatch?: () => Promise<void>,
+    authorityToken?: string,
+  ): Promise<McpToolResult>;
 }
 
 interface CachedToken {
@@ -868,6 +873,7 @@ export function createMcpClient(opts: {
     method: string,
     params: Record<string, unknown>,
     beforeDispatch?: () => Promise<void>,
+    authorityToken?: string,
   ): Promise<unknown> {
     const id = ++rpcId;
     const headers = await authHeaders();
@@ -877,6 +883,7 @@ export function createMcpClient(opts: {
         method: "POST",
         headers: {
           ...headers,
+          ...(authorityToken ? { "x-risely-qm-authority": authorityToken } : {}),
           "content-type": "application/json",
           accept: MCP_ACCEPT,
         },
@@ -942,8 +949,14 @@ export function createMcpClient(opts: {
       }
       return out;
     },
-    async callTool(name, args, beforeDispatch) {
-      const result = await rpc("tools/call", { name, arguments: args }, beforeDispatch);
+    async callTool(name, args, beforeDispatch, authorityToken) {
+      if (
+        authorityToken !== undefined &&
+        (!/^[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{80,128}$/.test(authorityToken) || authorityToken.length > 6_144)
+      ) {
+        throw new Error("MCP authority token is invalid");
+      }
+      const result = await rpc("tools/call", { name, arguments: args }, beforeDispatch, authorityToken);
       if (!result || typeof result !== "object" || Array.isArray(result)) {
         throw new Error(`mcp tool ${name} returned an invalid result`);
       }

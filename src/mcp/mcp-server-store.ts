@@ -19,6 +19,8 @@ export interface McpAllowedTool {
   status: string;
   readOnly: boolean;
   inputSchema: Record<string, unknown>;
+  requestAuthority?: "qm.ed25519.founder-dm.v1";
+  nativeRenderer?: "qm.analytics.card.v1";
 }
 
 export interface McpServer {
@@ -70,9 +72,10 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
     if (!entry || typeof entry !== "object" || Array.isArray(entry))
       throw new Error("allowedTools entries are invalid");
     const record = entry as Record<string, unknown>;
-    const keys = Object.keys(record).sort().join(",");
+    const allowedKeys = ["inputSchema", "label", "name", "nativeRenderer", "readOnly", "requestAuthority", "status"];
     if (
-      (keys !== "label,name,readOnly,status" && keys !== "inputSchema,label,name,readOnly,status") ||
+      Object.keys(record).some((key) => !allowedKeys.includes(key)) ||
+      !["inputSchema", "label", "name", "readOnly", "status"].every((key) => Object.hasOwn(record, key)) ||
       typeof record.name !== "string" ||
       !TOOL_NAME_PATTERN.test(record.name) ||
       typeof record.label !== "string" ||
@@ -86,6 +89,9 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       record.status.length > 120 ||
       /[\u0000-\u001f\u007f]/.test(record.status) ||
       typeof record.readOnly !== "boolean" ||
+      (record.requestAuthority !== undefined && record.requestAuthority !== "qm.ed25519.founder-dm.v1") ||
+      (record.nativeRenderer !== undefined && record.nativeRenderer !== "qm.analytics.card.v1") ||
+      ((record.requestAuthority !== undefined || record.nativeRenderer !== undefined) && record.readOnly !== true) ||
       !parseMcpInputSchema(record.inputSchema)
     ) {
       throw new Error("allowedTools entries require exact name, label, status, and readOnly fields");
@@ -100,6 +106,8 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       status: record.status,
       readOnly: record.readOnly,
       inputSchema: parseMcpInputSchema(record.inputSchema)!,
+      ...(record.requestAuthority === "qm.ed25519.founder-dm.v1" ? { requestAuthority: record.requestAuthority } : {}),
+      ...(record.nativeRenderer === "qm.analytics.card.v1" ? { nativeRenderer: record.nativeRenderer } : {}),
     };
   });
 }

@@ -35,6 +35,7 @@ test("POST /v1/turns strips ownerKeychainUnion from the external body but keeps 
     text: "x",
     triggered: true,
     ownerKeychainUnion: true,
+    trustedSlackTeamId: "TATTACKER",
     readOnly: true,
     skipMemory: true,
     async: true,
@@ -54,6 +55,7 @@ test("POST /v1/turns strips ownerKeychainUnion from the external body but keeps 
   );
   assert.equal(run?.request.readOnly, true, "non-internal fields are still forwarded");
   assert.equal(run?.request.skipMemory, true, "the source-authenticated memory opt-out is forwarded");
+  assert.equal(run?.request.trustedSlackTeamId, undefined, "external turn ingress cannot assert a Slack workspace");
 });
 
 test("POST /v1/turns strips unattendedGrants from the external body", async () => {

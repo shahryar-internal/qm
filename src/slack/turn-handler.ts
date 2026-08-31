@@ -407,6 +407,7 @@ export function createTurnHandler(deps: {
     if (inc.unprompted && !text.trim() && attachments.length === 0) return;
 
     const turn: Omit<CoreTurnBody, "approval"> = {
+      trustedSlackTeamId: ids.ownTeamId,
       actor,
       conversation: {
         kind: conversationKind,
