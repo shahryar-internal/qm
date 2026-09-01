@@ -346,6 +346,22 @@ export interface Runtime {
   releaseInFlightRuns(): Promise<void>;
 }
 
+export interface BackgroundJobCompositionContext {
+  artifactMap<T>(table: string): DurableMap<T>;
+  blobTransfer: BlobTransferStore;
+  files: FileArtifactStore;
+  deliveries: DeliveryStore;
+  orgId: string;
+  publicUrl?: string;
+  region?: string;
+  env: Readonly<Record<string, string | undefined>>;
+  durable: boolean;
+}
+
+export type BackgroundJobCompositionSource =
+  | Readonly<BackgroundJobProductionComposition>
+  | ((context: Readonly<BackgroundJobCompositionContext>) => Readonly<BackgroundJobProductionComposition>);
+
 export function stopWithBackstop(
   runtime: Runtime,
   shutdownDrainMs: number,
@@ -456,7 +472,7 @@ export function buildApp(
     modelCredentialFetch?: typeof fetch;
     privateTurnObserver?: import("./api/private-turn-observer.ts").PrivateTurnObservationSink;
     privateTurnObserverTimeoutMs?: number;
-    backgroundJobs?: Readonly<BackgroundJobProductionComposition>;
+    backgroundJobs?: BackgroundJobCompositionSource;
   } = {},
 ): BuiltApp {
   if (
@@ -617,6 +633,27 @@ export function buildApp(
     terminalAndExpired: (profile, now) => backgroundJobTerminalAndExpired(backgroundJobBacking, profile, now),
   });
   const backgroundJobAttention = createBackgroundJobAttentionReader(backgroundJobStore, backgroundJobOutbox);
+  const workspace = createLocalWorkspaceStore(config.dataDir);
+  const blobTransfer: BlobTransferStore =
+    config.transferStore === "s3" && config.s3Bucket
+      ? createS3BlobTransferStore({
+          bucket: config.s3Bucket,
+          ...(config.s3Region ? { region: config.s3Region } : {}),
+          ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
+        })
+      : createLocalBlobTransferStore(join(config.dataDir, "transfer"));
+  const fileBytes: DurableByteStore =
+    config.snapshotStore === "s3" && config.s3Bucket
+      ? createS3DurableByteStore({
+          bucket: config.s3Bucket,
+          ...(config.s3Region ? { region: config.s3Region } : {}),
+          ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
+        })
+      : createLocalDurableByteStore(join(config.dataDir, "docstore"));
+  const files: FileArtifactStore = config.databaseUrl
+    ? createPostgresFileArtifactStore(config.databaseUrl, fileBytes)
+    : createMemoryFileArtifactStore(fileBytes);
+  const deliveries = config.databaseUrl ? createPostgresDeliveryStore(config.databaseUrl) : createDeliveryStore();
   const deploymentLayerStore = createDeploymentLayerStore({
     backing: artifactMap<StoredDeploymentLayer>("deployment_layer"),
     runtime: deploymentLayer,
@@ -652,7 +689,20 @@ export function buildApp(
     }
     return record;
   });
-  const backgroundJobComposition = overrides.backgroundJobs ?? createBackgroundJobProductionComposition();
+  const backgroundJobComposition =
+    typeof overrides.backgroundJobs === "function"
+      ? overrides.backgroundJobs({
+          artifactMap,
+          blobTransfer,
+          files,
+          deliveries,
+          orgId: config.orgId,
+          ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}),
+          ...(config.s3Region ? { region: config.s3Region } : {}),
+          env: config.layerEnv ?? {},
+          durable: pgArtifactMap !== null,
+        })
+      : (overrides.backgroundJobs ?? createBackgroundJobProductionComposition());
   let backgroundJobRuntime: ProductionBackgroundJobRuntime | undefined;
   let backgroundJobsStarted = false;
   const rebuildBackgroundJobRuntime = async (): Promise<ProductionBackgroundJobRuntime | undefined> => {
@@ -660,7 +710,7 @@ export function buildApp(
     backgroundJobRuntime = undefined;
     if (!backgroundJobComposition || !config.backgroundWorkEnabled) return undefined;
     const runtime = createProductionBackgroundJobRuntime({
-      profiles: () => deploymentLayer.backgroundJobs,
+      profiles: () => [...deploymentLayer.backgroundJobs, ...backgroundJobComposition.profiles()],
       receiptStoreName: backgroundJobComposition.receiptStoreName,
       approvalStoreName: backgroundJobComposition.approvalStoreName,
       receipts: backgroundJobStore,
@@ -735,26 +785,6 @@ export function buildApp(
       : createBudgetTracker(budgetOpts);
   const resolution = createResolutionService(config.orgId, configStore, acl);
 
-  const workspace = createLocalWorkspaceStore(config.dataDir);
-  const blobTransfer: BlobTransferStore =
-    config.transferStore === "s3" && config.s3Bucket
-      ? createS3BlobTransferStore({
-          bucket: config.s3Bucket,
-          ...(config.s3Region ? { region: config.s3Region } : {}),
-          ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
-        })
-      : createLocalBlobTransferStore(join(config.dataDir, "transfer"));
-  const fileBytes: DurableByteStore =
-    config.snapshotStore === "s3" && config.s3Bucket
-      ? createS3DurableByteStore({
-          bucket: config.s3Bucket,
-          ...(config.s3Region ? { region: config.s3Region } : {}),
-          ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
-        })
-      : createLocalDurableByteStore(join(config.dataDir, "docstore"));
-  const files: FileArtifactStore = config.databaseUrl
-    ? createPostgresFileArtifactStore(config.databaseUrl, fileBytes)
-    : createMemoryFileArtifactStore(fileBytes);
   const baseMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
@@ -1263,7 +1293,6 @@ export function buildApp(
   const webhooks = createWebhookStore(artifactMap<Webhook>("webhooks"));
   if (pgArtifactMap)
     void disableLegacyWebhookRows(pgArtifactMap.pool).catch(swallowAs("wiring: legacy webhook sweep", undefined));
-  const deliveries = config.databaseUrl ? createPostgresDeliveryStore(config.databaseUrl) : createDeliveryStore();
   const layerEnv = config.layerEnv ?? {};
   const layerBrokerCache = new Map<string, AwsRoleBroker>();
   const layerBrokerFor = (tool: BrokeredLayerTool): AwsRoleBroker | undefined => {

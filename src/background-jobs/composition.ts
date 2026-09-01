@@ -10,6 +10,7 @@ export interface BackgroundJobProductionComposition {
   sender: BackgroundJobRenderOnlySender;
   receiptStoreName: string;
   approvalStoreName: string;
+  profiles: () => readonly Readonly<BackgroundJobDeploymentProfile>[];
 }
 
 export interface BackgroundJobAuthorityDependency {
@@ -26,6 +27,7 @@ export interface BackgroundJobProductionDependencies {
   sender?: BackgroundJobRenderOnlySender;
   receiptStoreName?: string;
   approvalStoreName?: string;
+  profiles?: () => readonly Readonly<BackgroundJobDeploymentProfile>[];
 }
 
 const unavailableSender: BackgroundJobRenderOnlySender = Object.freeze({
@@ -52,5 +54,6 @@ export function createBackgroundJobProductionComposition(
     sender: dependencies.sender ?? unavailableSender,
     receiptStoreName: dependencies.receiptStoreName ?? "background_job_records",
     approvalStoreName: dependencies.approvalStoreName ?? "background_job_approval_ledger",
+    profiles: dependencies.profiles ?? (() => Object.freeze([])),
   });
 }

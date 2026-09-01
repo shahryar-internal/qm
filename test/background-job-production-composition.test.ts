@@ -28,6 +28,24 @@ test("production composition resolves only explicitly supplied named dependencie
   assert.equal(composition.sender.readiness().ready, false);
   assert.equal(composition.receiptStoreName, "background_job_records");
   assert.equal(composition.approvalStoreName, "background_job_approval_ledger");
+  assert.deepEqual(composition.profiles(), []);
+});
+
+test("buildApp resolves private composition factories against canonical durable stores", () => {
+  let durable: boolean | undefined;
+  const built = buildApp(testConfig(), {
+    backgroundJobs: (context) => {
+      durable = context.durable;
+      assert.equal(context.orgId, "default-org");
+      assert.ok(context.artifactMap("factory_test"));
+      assert.ok(context.blobTransfer);
+      assert.ok(context.files);
+      assert.ok(context.deliveries);
+      return createBackgroundJobProductionComposition();
+    },
+  });
+  assert.equal(durable, false);
+  built.runtime.stop();
 });
 
 test("a disabled restart durably invalidates only background-job approvals before re-enable", async () => {

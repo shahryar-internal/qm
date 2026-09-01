@@ -11,6 +11,8 @@ import { createStagedBackgroundJobAuthority, type BackgroundJobAuthorityStageRec
 import type {
   BackgroundJobAdapter,
   BackgroundJobApprovalStore,
+  BackgroundJobAuthoritySigner,
+  BackgroundJobClient,
   BackgroundJobAuthoritySignerConfig,
   BackgroundJobCompletionRuntime,
   BackgroundJobDeliveryOutbox,
@@ -33,6 +35,10 @@ export interface BackgroundJobKmsGeneration {
 export interface BackgroundJobNativeDependency {
   adapter: BackgroundJobAdapter<unknown, unknown, unknown>;
   parsers: BackgroundJobResponseParsers<unknown, unknown>;
+  createClient?: (
+    profile: Readonly<BackgroundJobDeploymentProfile>,
+    authority: BackgroundJobAuthoritySigner,
+  ) => BackgroundJobClient<unknown, unknown>;
 }
 
 export interface BackgroundJobNativeDependencyRegistry {
@@ -156,10 +162,12 @@ export function createProductionBackgroundJobRuntime(options: {
           ...(next && authorityConfig.next ? { next: { kid: authorityConfig.next.tokenKid, signer: next } } : {}),
           ...(options.now ? { now: options.now } : {}),
         });
-        const client = createFixedBackgroundJobClient(
-          { origin: profile.origin, definition: profile.definition, parsers: native.parsers },
-          authority,
-        );
+        const client = native.createClient
+          ? native.createClient(profile, authority)
+          : createFixedBackgroundJobClient(
+              { origin: profile.origin, definition: profile.definition, parsers: native.parsers },
+              authority,
+            );
         const service = createBackgroundJobProfileService({
           deployment: profile,
           adapter: native.adapter,
