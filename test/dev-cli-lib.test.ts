@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { envSha, formatAge, readEnvFile } from "../scripts/dev/lib/util.ts";
@@ -28,15 +28,23 @@ import {
   writeHeartbeat,
   writeMeta,
 } from "../scripts/dev/lib/lease.ts";
-import { assembleEnv, completeDevSecuritySecrets } from "../scripts/dev/lib/envctx.ts";
+import { assembleEnv, completeDevSecuritySecrets, withoutTransientProviderSecrets } from "../scripts/dev/lib/envctx.ts";
 import { buildChildSpecs, type SpecInputs } from "../scripts/dev/supervisor/specs.ts";
-import { loadConfig, OPENCODE_RUNTIME_VERSION } from "../src/config.ts";
+import { loadConfig, OPENCODE_RUNTIME_VERSION, providerKeysPresent } from "../src/config.ts";
+import { DEV_GEMINI_BASE_URL, DEV_GEMINI_MODEL } from "../src/model/dev-gemini-provider.ts";
 import type { LeaseInfo } from "../scripts/dev/lib/types.ts";
 
 function tmpStore(): string {
   const store = mkdtempSync(join(tmpdir(), "qm-dev-test-"));
   ensureStore(store);
   return store;
+}
+
+function oauthIdToken(accountId: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
+  ).toString("base64url");
+  return `header.${payload}.signature`;
 }
 
 function addSlot(store: string, n: number, extra = ""): void {
@@ -214,9 +222,39 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   assert.equal(openCode.env.PI_CAPTURE_REQUESTS, undefined);
 
   await assert.rejects(
-    assembleEnv({ worktree, callerEnv: { HARNESS: "codex" }, allowMock: false, log, probeLoginShell: async () => "" }),
+    assembleEnv({
+      worktree,
+      callerEnv: { HARNESS: "codex", CODEX_HOME: join(worktree, "empty-codex") },
+      allowMock: false,
+      log,
+      probeLoginShell: async () => "",
+    }),
     /HARNESS=codex needs OPENAI_API_KEY/,
   );
+  const oauthAuthFile = join(worktree, "codex-auth.json");
+  writeFileSync(
+    oauthAuthFile,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "access",
+        refresh_token: "refresh",
+        account_id: "account",
+        id_token: oauthIdToken("account"),
+      },
+    }),
+  );
+  chmodSync(oauthAuthFile, 0o600);
+  const codexOAuth = await assembleEnv({
+    worktree,
+    callerEnv: { HARNESS: "codex", CODEX_AUTH_FILE: oauthAuthFile },
+    allowMock: false,
+    log,
+    probeLoginShell: async () => "",
+  });
+  assert.equal(codexOAuth.harness, "codex");
+  assert.equal(codexOAuth.env.CODEX_AUTH_FILE, oauthAuthFile);
+  assert.equal(codexOAuth.codexAuthSource, oauthAuthFile);
   const codex = await assembleEnv({
     worktree,
     callerEnv: { HARNESS: "codex", OPENAI_API_KEY: "sk-openai" },
@@ -227,6 +265,21 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   assert.equal(codex.harness, "codex");
   assert.equal(codex.env.HARNESS, "codex");
   assert.equal(codex.openaiKeySource, "your shell export");
+
+  const gemini = await assembleEnv({
+    worktree,
+    callerEnv: { GEMINI_API_KEY: "gemini-secret" },
+    allowMock: false,
+    log,
+    probeLoginShell: async () => "",
+  });
+  assert.equal(gemini.harness, "pi");
+  assert.equal(gemini.env.HARNESS, "pi");
+  assert.equal(gemini.env.PI_MODEL, DEV_GEMINI_MODEL);
+  assert.equal(gemini.env.GEMINI_API_KEY, undefined);
+  assert.equal(gemini.coreEnv.GEMINI_API_KEY, "gemini-secret");
+  assert.equal(gemini.coreEnv.GEMINI_BASE_URL, DEV_GEMINI_BASE_URL);
+  assert.equal(gemini.geminiKeySource, "your shell export");
 
   const claude = await assembleEnv({
     worktree,
@@ -287,6 +340,38 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   rmSync(worktree, { recursive: true, force: true });
 });
 
+test("Gemini dev credentials fail closed on files, endpoint, model, and harness", async () => {
+  const worktree = mkdtempSync(join(tmpdir(), "qm-wt-"));
+  mkdirSync(join(worktree, ".git"));
+  const liveEnv = join(worktree, "dev.env");
+  writeFileSync(liveEnv, "");
+  const previous = process.env.QM_DEV_ENV;
+  process.env.QM_DEV_ENV = liveEnv;
+  const options = { worktree, allowMock: false, log: () => {}, probeLoginShell: async () => "" };
+  await assert.rejects(
+    assembleEnv({ ...options, callerEnv: { GEMINI_API_KEY: "key", GEMINI_BASE_URL: "https://proxy.example" } }),
+    /GEMINI_BASE_URL/,
+  );
+  await assert.rejects(
+    assembleEnv({ ...options, callerEnv: { GEMINI_API_KEY: "key", GEMINI_MODEL: "gemini-other" } }),
+    /GEMINI_MODEL/,
+  );
+  await assert.rejects(
+    assembleEnv({ ...options, callerEnv: { GEMINI_API_KEY: "key", HARNESS: "opencode" } }),
+    /requires HARNESS=pi/,
+  );
+  await assert.rejects(
+    assembleEnv({ ...options, callerEnv: { GEMINI_API_KEY: "key", HARNESS: "codex", OPENAI_API_KEY: "key" } }),
+    /requires HARNESS=pi/,
+  );
+  writeFileSync(join(worktree, ".env"), "GEMINI_API_KEY=file-secret\n");
+  await assert.rejects(assembleEnv({ ...options, callerEnv: {} }), /invoking process environment/);
+  assert.deepEqual(withoutTransientProviderSecrets({ A: "1", GEMINI_API_KEY: "secret" }), { A: "1" });
+  if (previous === undefined) delete process.env.QM_DEV_ENV;
+  else process.env.QM_DEV_ENV = previous;
+  rmSync(worktree, { recursive: true, force: true });
+});
+
 test("dev security secrets are stable, complete, and distinct", () => {
   const first: Record<string, string> = {};
   const second: Record<string, string> = {};
@@ -315,6 +400,31 @@ test("OpenCode config is strict, pinned, and inherits the Pi model", () => {
     "claude-opus-4-8",
   );
   assert.equal(loadConfig({ HARNESS: "claude", CLAUDE_BIN: "/bin/claude" }).claudeBinPath, "/bin/claude");
+  const source = mkdtempSync(join(tmpdir(), "qm-codex-config-"));
+  const authFile = join(source, "auth.json");
+  writeFileSync(
+    authFile,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: "access",
+        refresh_token: "refresh",
+        account_id: "account",
+        id_token: oauthIdToken("account"),
+      },
+    }),
+  );
+  chmodSync(authFile, 0o600);
+  const oauthConfig = loadConfig({ HARNESS: "codex", CODEX_AUTH_FILE: authFile });
+  assert.equal(oauthConfig.codexAuthFile, authFile);
+  assert.equal(providerKeysPresent(oauthConfig).openai, false);
+  assert.equal(providerKeysPresent(oauthConfig).codexOAuth, true);
+  assert.throws(
+    () =>
+      loadConfig({ HARNESS: "codex", CODEX_AUTH_FILE: join(source, "missing.json"), OPENAI_API_KEY: "placeholder" }),
+    /OPENAI_API_KEY/,
+  );
+  rmSync(source, { recursive: true, force: true });
   assert.throws(() => loadConfig({ HARNESS: "bogus" }), /use mock, pi, opencode, codex, or claude/);
   assert.throws(() => loadConfig({ HARNESS: "PI" }), /use mock, pi, opencode, codex, or claude/);
 });
@@ -349,7 +459,13 @@ test("supervised children share the selected dev org", () => {
   const inputs: SpecInputs = {
     worktree: "/tmp/worktree",
     ports: slotPorts("pool1"),
-    baseEnv: { DEV_INSTANCE_ORG_ID: "beta" },
+    baseEnv: {
+      DEV_INSTANCE_ORG_ID: "beta",
+      CODEX_AUTH_FILE: "/tmp/codex-auth.json",
+      HOME: "/tmp/home",
+      CODEX_HOME: "/tmp/home/.codex",
+    },
+    coreEnv: {},
     watch: false,
     webUiBasePath: "/",
     slack: { botToken: "xoxb-test", appToken: "xapp-test" },
@@ -364,6 +480,12 @@ test("supervised children share the selected dev org", () => {
   };
   const specs = buildChildSpecs(inputs);
   assert.equal(specs.find((spec) => spec.name === "core")!.env.ORG_ID, "beta");
+  assert.equal(specs.find((spec) => spec.name === "core")!.env.CODEX_AUTH_FILE, "/tmp/codex-auth.json");
+  for (const spec of specs.filter((spec) => spec.name !== "core")) {
+    assert.equal(spec.env.CODEX_AUTH_FILE, "");
+    assert.equal(spec.env.HOME, undefined);
+    assert.equal(spec.env.CODEX_HOME, undefined);
+  }
   for (const spec of specs) assert.equal(spec.env.CORE_ORG_ID, "beta");
   inputs.baseEnv = {};
   assert.equal(buildChildSpecs(inputs).find((spec) => spec.name === "core")!.env.ORG_ID, "acme");
@@ -374,6 +496,39 @@ test("child specs omit Slack env when no Slack tokens are supplied", () => {
     worktree: "/tmp/worktree",
     ports: slotPorts("pool1"),
     baseEnv: {},
+    coreEnv: { GEMINI_API_KEY: "transient-secret", DEV_INSTANCE_GEMINI_PROVIDER: "1" },
+    watch: false,
+    webUiBasePath: "/",
+    sessionStore: "memory",
+    runStore: "memory",
+    databaseUrl: "",
+    adminGrantsSeed: "",
+    coreSigningSecret: "",
+    portalSessionSecret: "secret",
+    portalDevPrincipal: "U1",
+    sandboxEnv: {},
+  };
+  const specs = buildChildSpecs(inputs);
+  const core = specs.find((spec) => spec.name === "core")!;
+  assert.equal(core.env.SLACK_BOT_TOKEN, undefined);
+  assert.equal(core.env.SLACK_APP_TOKEN, undefined);
+  assert.equal(core.env.DEV_INTROSPECTION, undefined);
+  assert.equal(core.env.DEV_HEALTH_PORT, undefined);
+  assert.equal(core.env.CORE_ORG_ID, "acme");
+  assert.equal(core.env.PUBLIC_WEB_URL, `http://localhost:${inputs.ports.portal}`);
+  assert.equal(core.env.GEMINI_API_KEY, "transient-secret");
+  for (const spec of specs.filter((child) => child.name !== "core")) {
+    assert.equal(spec.env.GEMINI_API_KEY, undefined);
+    assert.equal(spec.env.DEV_INSTANCE_GEMINI_PROVIDER, undefined);
+  }
+});
+
+test("child specs keep an operator-set PUBLIC_WEB_URL so Slack playground links are reachable", () => {
+  const inputs: SpecInputs = {
+    worktree: "/tmp/worktree",
+    ports: slotPorts("pool1"),
+    baseEnv: { PUBLIC_WEB_URL: "https://tunnel.example" },
+    coreEnv: {},
     watch: false,
     webUiBasePath: "/",
     sessionStore: "memory",
@@ -386,11 +541,28 @@ test("child specs omit Slack env when no Slack tokens are supplied", () => {
     sandboxEnv: {},
   };
   const core = buildChildSpecs(inputs).find((spec) => spec.name === "core")!;
-  assert.equal(core.env.SLACK_BOT_TOKEN, undefined);
-  assert.equal(core.env.SLACK_APP_TOKEN, undefined);
-  assert.equal(core.env.DEV_INTROSPECTION, undefined);
-  assert.equal(core.env.DEV_HEALTH_PORT, undefined);
-  assert.equal(core.env.CORE_ORG_ID, "acme");
+  assert.equal(core.env.PUBLIC_WEB_URL, "https://tunnel.example");
+});
+
+test("child specs replace an empty operator PUBLIC_WEB_URL with the local portal", () => {
+  const inputs: SpecInputs = {
+    worktree: "/tmp/worktree",
+    ports: slotPorts("pool1"),
+    baseEnv: { PUBLIC_WEB_URL: "" },
+    coreEnv: {},
+    watch: false,
+    webUiBasePath: "/",
+    sessionStore: "memory",
+    runStore: "memory",
+    databaseUrl: "",
+    adminGrantsSeed: "",
+    coreSigningSecret: "",
+    portalSessionSecret: "secret",
+    portalDevPrincipal: "U1",
+    sandboxEnv: {},
+  };
+  const core = buildChildSpecs(inputs).find((spec) => spec.name === "core")!;
+  assert.equal(core.env.PUBLIC_WEB_URL, `http://localhost:${inputs.ports.portal}`);
 });
 
 test("formatAge renders the bash-compatible shapes", () => {

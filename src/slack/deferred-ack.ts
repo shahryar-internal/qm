@@ -16,7 +16,7 @@ export interface DeferredAck {
 
 export function createDeferredEnvelopeAck(
   sendAck: (response?: unknown) => Promise<void>,
-  opts: { gated: boolean; capMs?: number; label?: string; onWithhold?: () => void },
+  opts: { gated: boolean; capMs?: number; label?: string; onWithhold?: () => void; strict?: boolean },
 ): DeferredAck {
   const capMs = opts.capMs ?? ACK_CAP_MS;
   const label = opts.label ?? "event";
@@ -43,7 +43,10 @@ export function createDeferredEnvelopeAck(
       if (!timer && !done) {
         timer = setTimeout(
           () =>
-            finish(true, `ack cap hit for ${label} after ${capMs}ms — acking before durable acceptance was confirmed`),
+            finish(
+              !opts.strict,
+              `ack cap hit for ${label} after ${capMs}ms — ${opts.strict ? "withholding for durable replay" : "acking before durable acceptance was confirmed"}`,
+            ),
           capMs,
         );
       }
@@ -58,7 +61,18 @@ export function createDeferredEnvelopeAck(
 
 export function isGatedEnvelope(body: Record<string, unknown>): boolean {
   const event = body.event as { type?: string } | undefined;
-  return body.type === "event_callback" && (event?.type === "message" || event?.type === "app_mention");
+  return (
+    body.type === "event_callback" &&
+    (event?.type === "message" || event?.type === "app_mention" || event?.type === "agent_session_stopped")
+  );
+}
+
+export function requiresDurableAck(body: Record<string, unknown>): boolean {
+  const event = body.event as { type?: string } | undefined;
+  return (
+    body.type === "event_callback" &&
+    (event?.type === "message" || event?.type === "app_mention" || event?.type === "agent_session_stopped")
+  );
 }
 
 export function describeEnvelope(body: Record<string, unknown>): string {
@@ -93,6 +107,7 @@ export function createDeferredAckReceiver(opts: DeferredAckReceiverOptions): Rec
     }) => {
       const { ack, gate } = createDeferredEnvelopeAck(args.ack, {
         gated: isGatedEnvelope(args.body),
+        strict: requiresDurableAck(args.body),
         ...(opts.capMs !== undefined ? { capMs: opts.capMs } : {}),
         label: describeEnvelope(args.body),
       });

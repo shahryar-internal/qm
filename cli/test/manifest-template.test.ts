@@ -23,6 +23,8 @@ test("rendered Slack manifests default to qm naming", () => {
   assert.match(bot, /name: qm\n/);
   assert.match(bot, /display_name: qm\n/);
   assert.match(bot, /description: qm workspace agent for acme\n/);
+  assert.match(bot, /suggested_prompts:\n\s+-\n\s+title: Research a topic/);
+  assert.doesNotMatch(bot, /\[object Object\]/);
   assert.match(sso, /name: qm SSO\n/);
   assert.match(sso, /description: Sign in to your qm deployment with Slack\n/);
 });

@@ -409,6 +409,68 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     } else if (composerState.error) {
       composerNotice = html`<div class="composer-error">${composerState.error}</div>`;
     }
+    let runtimeControls: TemplateResult | typeof nothing = nothing;
+    if (!appState.me?.individualModelAuth) {
+      runtimeControls = ctx.pane
+        ? settingsControl(agent, selectedModel, inputBlocked)
+        : html`
+            ${
+              runtimeToggled
+                ? html`<button
+                    class="runtime-default-btn"
+                    type="button"
+                    aria-label="Make default"
+                    data-mobile-label="Default"
+                    title="Use this harness, model, effort, and fast setting as the default for this scope"
+                    ?disabled=${inputBlocked}
+                    @click=${() => changeScopeRuntime({ harnessId: selectedModel.harnessId, modelId: selectedModel.model.id, effortLevel: composerState.effortLevel, fastMode: fastOn }, agent)}
+                  >
+                    Make default
+                  </button>`
+                : nothing
+            }
+            ${
+              runtimeToggled && activeRuntimeConfig?.scopeOverride
+                ? html`<button
+                    class="runtime-default-btn"
+                    type="button"
+                    aria-label="Use org default"
+                    data-mobile-label="Org default"
+                    ?disabled=${inputBlocked}
+                    @click=${() => changeScopeRuntime({ inherit: true }, agent)}
+                  >
+                    Use org default
+                  </button>`
+                : nothing
+            }
+            ${menuControl({
+              kind: "model",
+              label: selectedModel.buttonLabel,
+              suffix: `· ${effortLabel(composerState.effortLevel)}`,
+              title: "Model",
+              selected: selectedModel.value,
+              align: "right",
+              searchable: true,
+              options: getModelOptionsForHarness(selectedModel.harnessId, scopeKey()).map((option) => ({
+                value: option.value,
+                label: option.label,
+                groupLabel: option.groupLabel,
+              })),
+              disabled: inputBlocked,
+              onSelect: (value: string) => selectModel(value, agent),
+            })}
+            ${menuControl({
+              kind: "harness",
+              label: selectedModel.harnessLabel,
+              title: "Harness",
+              selected: selectedModel.harnessId,
+              align: "right",
+              options: getHarnessOptions(scopeKey()),
+              disabled: inputBlocked,
+              onSelect: (value: string) => selectHarness(value, agent),
+            })}
+          `;
+    }
     return html`
       <form class="composer-wrap" @submit=${(e: Event) => submitComposer(e, agent)}>
         ${slashMenu(agent)}
@@ -545,70 +607,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   `
             }
           </div>
-          <div class="composer-right">
-            ${
-              ctx.pane
-                ? settingsControl(agent, selectedModel, inputBlocked)
-                : html`
-                    ${
-                      runtimeToggled
-                        ? html`<button
-                            class="runtime-default-btn"
-                            type="button"
-                            aria-label="Make default"
-                            data-mobile-label="Default"
-                            title="Use this harness, model, effort, and fast setting as the default for this scope"
-                            ?disabled=${inputBlocked}
-                            @click=${() => changeScopeRuntime({ harnessId: selectedModel.harnessId, modelId: selectedModel.model.id, effortLevel: composerState.effortLevel, fastMode: fastOn }, agent)}
-                          >
-                            Make default
-                          </button>`
-                        : nothing
-                    }
-                    ${
-                      runtimeToggled && activeRuntimeConfig?.scopeOverride
-                        ? html`<button
-                            class="runtime-default-btn"
-                            type="button"
-                            aria-label="Use org default"
-                            data-mobile-label="Org default"
-                            ?disabled=${inputBlocked}
-                            @click=${() => changeScopeRuntime({ inherit: true }, agent)}
-                          >
-                            Use org default
-                          </button>`
-                        : nothing
-                    }
-                    ${menuControl({
-                      kind: "model",
-                      label: selectedModel.buttonLabel,
-                      suffix: `· ${effortLabel(composerState.effortLevel)}`,
-                      title: "Model",
-                      selected: selectedModel.value,
-                      align: "right",
-                      searchable: true,
-                      options: getModelOptionsForHarness(selectedModel.harnessId, scopeKey()).map((option) => ({
-                        value: option.value,
-                        label: option.label,
-                        groupLabel: option.groupLabel,
-                      })),
-                      disabled: inputBlocked,
-                      onSelect: (value: string) => selectModel(value, agent),
-                    })}
-                    ${menuControl({
-                      kind: "harness",
-                      label: selectedModel.harnessLabel,
-                      title: "Harness",
-                      selected: selectedModel.harnessId,
-                      align: "right",
-                      options: getHarnessOptions(scopeKey()),
-                      disabled: inputBlocked,
-                      onSelect: (value: string) => selectHarness(value, agent),
-                    })}
-                  `
-            }
-            ${sendControls(agent)}
-          </div>
+          <div class="composer-right">${runtimeControls} ${sendControls(agent)}</div>
         </div>
         ${composerNotice}
       </form>
@@ -756,9 +755,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function composerApprovalPanel(approvals: PendingApproval[]): TemplateResult {
-    const busy = ctx.chat.state.resolvingApprovals.size > 0;
     const decide = (decision: ApprovalDecision): void => {
-      if (!busy) ctx.chat.resolveCommandApproval(decision);
+      if (!ctx.chat.state.resolvingApprovals.has(decision.requestId)) ctx.chat.resolveCommandApproval(decision);
     };
     return html`<div class="composer-approval-panel" role="group" aria-label="Command approval">
       ${approvals.map(
@@ -769,7 +767,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
               <button
                 class="approval-btn deny"
                 type="button"
-                ?disabled=${busy}
+                ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
                 @click=${() => decide({ requestId: a.requestId, approved: false })}
               >
                 Deny
@@ -777,7 +775,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
               <button
                 class="approval-btn"
                 type="button"
-                ?disabled=${busy}
+                ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
                 @click=${() => decide({ requestId: a.requestId, approved: true, scope: "once" })}
               >
                 Allow once
@@ -788,7 +786,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   : html`<button
                       class="approval-btn primary"
                       type="button"
-                      ?disabled=${busy}
+                      ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
                       @click=${() => decide({ requestId: a.requestId, approved: true, scope: "session" })}
                     >
                       Allow for session
@@ -800,7 +798,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   : html`<button
                       class="approval-btn"
                       type="button"
-                      ?disabled=${busy}
+                      ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
                       @click=${() => decide({ requestId: a.requestId, approved: true, scope: "always" })}
                     >
                       Allow always
@@ -979,6 +977,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                             @input=${(e: InputEvent) => {
                               composerState.menuQuery = (e.currentTarget as HTMLInputElement).value;
                               ctx.chat.drawActiveChat();
+                              requestAnimationFrame(() => placeComposerMenu(args.kind));
                             }}
                           />
                         </label>`
@@ -1017,16 +1016,37 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     `;
   }
 
+  function placeComposerMenu(kind: ComposerMenu): void {
+    const popover = ctx.chat.state.host?.querySelector<HTMLElement>(`#composer-${kind}-menu`);
+    const anchor = popover?.parentElement;
+    if (!popover || !anchor) return;
+    const viewport = window.visualViewport;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportBottom = viewportTop + (viewport?.height ?? window.innerHeight);
+    const anchorRect = anchor.getBoundingClientRect();
+    const margin = 12;
+    const gap = 8;
+    const availableAbove = Math.max(0, anchorRect.top - viewportTop - margin - gap);
+    const availableBelow = Math.max(0, viewportBottom - anchorRect.bottom - margin - gap);
+    const placeBelow = availableBelow > availableAbove;
+    const availableHeight = placeBelow ? availableBelow : availableAbove;
+    popover.classList.toggle("drop-down", placeBelow);
+    popover.style.setProperty("--menu-available-height", `${Math.floor(availableHeight)}px`);
+  }
+
   function toggleComposerMenu(e: Event, kind: ComposerMenu): void {
     e.stopPropagation();
     const opening = composerState.openMenu !== kind;
     composerState.openMenu = opening ? kind : null;
     composerState.menuQuery = "";
     ctx.chat.drawActiveChat();
-    if (opening && kind === "model") {
-      requestAnimationFrame(() =>
-        ctx.chat.state.host?.querySelector<HTMLInputElement>(".model-control .menu-search input")?.focus(),
-      );
+    if (opening) {
+      requestAnimationFrame(() => {
+        placeComposerMenu(kind);
+        if (kind !== "model") return;
+        ctx.chat.state.host?.querySelector<HTMLInputElement>(".model-control .menu-search input")?.focus();
+        requestAnimationFrame(() => placeComposerMenu(kind));
+      });
     }
   }
 

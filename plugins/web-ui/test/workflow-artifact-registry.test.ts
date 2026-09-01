@@ -1,0 +1,274 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  decodeWorkflowArtifactCard,
+  workflowArtifactSlackLinksText,
+  workflowArtifactSlackMrkdwn,
+  workflowArtifactSlackSectionText,
+} from "../../chassis/src/workflow-artifact-card.ts";
+import {
+  WORKFLOW_ARTIFACT_MIME,
+  WORKFLOW_ARTIFACT_CARD_RENDERER,
+  WorkflowArtifactRegistry,
+  createDefaultWorkflowArtifactRegistry,
+  safeWorkflowArtifactHref,
+  validateWorkflowArtifactCard,
+  validateWorkflowArtifactEnvelope,
+} from "../src/workflow-artifact-registry.ts";
+
+const envelope = {
+  version: 1,
+  renderer: "test.summary",
+  fallbackText: "Open the original summary.",
+  payload: { title: "Quarterly summary" },
+} as const;
+
+test("registry registration is instance-scoped, exact, one-use removable, and duplicate-safe", () => {
+  const first = new WorkflowArtifactRegistry();
+  const second = new WorkflowArtifactRegistry();
+  const renderer = {
+    type: "test.summary",
+    decode: (payload: unknown) => payload as { title: string },
+    toCard: (value: { title: string }) => ({ heading: value.title }),
+  };
+  const unregister = first.register(renderer);
+  assert.equal(first.has(renderer.type), true);
+  assert.equal(second.has(renderer.type), false);
+  assert.throws(() => first.register(renderer), /already registered/);
+  assert.deepEqual(first.render(validateWorkflowArtifactEnvelope(envelope), "https://qm.test/chat"), {
+    heading: "Quarterly summary",
+  });
+  unregister();
+  unregister();
+  assert.equal(first.has(renderer.type), false);
+  assert.throws(() => first.render(validateWorkflowArtifactEnvelope(envelope), "https://qm.test/chat"), /unknown/);
+
+  const mutable = { ...renderer, type: "test.mutable" };
+  const unregisterMutable = first.register(mutable);
+  mutable.type = "test.changed";
+  unregisterMutable();
+  assert.equal(first.has("test.mutable"), false);
+});
+
+test("the production default registry renders the generic actionless card contract", () => {
+  const registry = createDefaultWorkflowArtifactRegistry();
+  const value = validateWorkflowArtifactEnvelope({
+    version: 1,
+    renderer: WORKFLOW_ARTIFACT_CARD_RENDERER,
+    fallbackText: "Open the original card.",
+    payload: {
+      heading: "Review ready",
+      status: { label: "Prepared", tone: "success" },
+      sections: [{ key: "summary", label: "Summary", items: [{ value: "No actions available." }] }],
+    },
+  });
+  assert.deepEqual(registry.render(value, "https://qm.test/chat"), value.payload);
+});
+
+test("envelopes require the exact v1 shape and bounded inert JSON payloads", () => {
+  assert.equal(validateWorkflowArtifactEnvelope(envelope).renderer, "test.summary");
+  for (const hostile of [
+    { ...envelope, version: 2 },
+    { ...envelope, renderer: "../../dynamic-import" },
+    { ...envelope, fallbackText: "" },
+    { ...envelope, extra: true },
+    { ...envelope, payload: { value: Number.NaN } },
+    { ...envelope, payload: { value: "x".repeat(8_193) } },
+    { ...envelope, payload: Array.from({ length: 65 }, () => null) },
+    { ...envelope, payload: JSON.parse('{"__proto__":{"polluted":true}}') },
+  ]) {
+    assert.throws(() => validateWorkflowArtifactEnvelope(hostile));
+  }
+  let deep: unknown = "end";
+  for (let index = 0; index < 10; index++) deep = { next: deep };
+  assert.throws(() => validateWorkflowArtifactEnvelope({ ...envelope, payload: deep }));
+  const accessor = Object.create(null) as Record<string, unknown>;
+  Object.defineProperties(accessor, {
+    version: { enumerable: true, value: 1 },
+    renderer: { enumerable: true, value: "test.summary" },
+    fallbackText: { enumerable: true, value: "fallback" },
+    payload: { enumerable: true, get: () => ({}) },
+  });
+  assert.throws(() => validateWorkflowArtifactEnvelope(accessor));
+});
+
+test("card output is independently revalidated after decoder execution", () => {
+  const registry = new WorkflowArtifactRegistry();
+  registry.register({
+    type: "test.summary",
+    decode: () => ({ trusted: true }),
+    toCard: () => ({
+      heading: "Safe",
+      sections: [{ key: "details", label: "Details", items: [{ value: "ok", href: "javascript:alert(1)" }] }],
+    }),
+  });
+  assert.throws(() => registry.render(validateWorkflowArtifactEnvelope(envelope), "https://qm.test/chat"));
+
+  const throwing = new WorkflowArtifactRegistry();
+  throwing.register({
+    type: "test.summary",
+    decode: () => {
+      throw new Error("decoder failed");
+    },
+    toCard: () => ({ heading: "unreachable" }),
+  });
+  assert.throws(
+    () => throwing.render(validateWorkflowArtifactEnvelope(envelope), "https://qm.test/chat"),
+    /decoder failed/,
+  );
+
+  assert.throws(() =>
+    validateWorkflowArtifactCard(
+      {
+        heading: "Duplicate sections",
+        sections: [
+          { key: "same", label: "One", items: [] },
+          { key: "same", label: "Two", items: [] },
+        ],
+      },
+      "https://qm.test/chat",
+    ),
+  );
+  assert.throws(() => validateWorkflowArtifactCard({ heading: "Unknown", onClick: "effect" }, "https://qm.test/chat"));
+});
+
+test("card text budgets match the native Slack renderer without silent clipping", () => {
+  const base = "https://qm.test/chat";
+  assert.equal(validateWorkflowArtifactCard({ heading: "x".repeat(150) }, base).heading.length, 150);
+  assert.throws(() => validateWorkflowArtifactCard({ heading: "x".repeat(151) }, base));
+  assert.equal(
+    validateWorkflowArtifactCard({ heading: "Summary", summary: "&".repeat(600) }, base).summary?.length,
+    600,
+  );
+  assert.throws(() => validateWorkflowArtifactCard({ heading: "Summary", summary: "&".repeat(601) }, base));
+  assert.throws(() =>
+    validateWorkflowArtifactCard(
+      {
+        heading: "Oversized section",
+        sections: [
+          {
+            key: "details",
+            label: "Details",
+            items: [{ value: "x".repeat(1_498) }, { value: "y".repeat(1_498) }],
+          },
+        ],
+      },
+      base,
+    ),
+  );
+  assert.throws(() =>
+    validateWorkflowArtifactCard(
+      {
+        heading: "Oversized links",
+        links: [
+          { label: "One", href: `https://docs.example/${"x".repeat(1_500)}` },
+          { label: "Two", href: `https://docs.example/${"y".repeat(1_500)}` },
+        ],
+      },
+      base,
+    ),
+  );
+});
+
+test("the shared decoder and Slack renderer use one exact escaped serialization contract", () => {
+  const base = "https://qm.test/chat";
+  const card = validateWorkflowArtifactCard(
+    {
+      heading: "Review ready",
+      summary: "R&D <review>",
+      sections: [
+        {
+          key: "facts",
+          label: "Facts & evidence",
+          items: [{ label: "Owner <lead>", value: "R&D", href: "https://docs.example/fact" }],
+        },
+      ],
+      links: [{ label: "Open <source>", href: "https://docs.example/source" }],
+    },
+    base,
+  );
+  assert.equal(workflowArtifactSlackMrkdwn(card.summary!), "R&amp;D &lt;review&gt;");
+  assert.equal(
+    workflowArtifactSlackSectionText(card.sections![0], base),
+    "*Facts &amp; evidence*\n• *Owner &lt;lead&gt;:* <https://docs.example/fact|R&amp;D>",
+  );
+  assert.equal(workflowArtifactSlackLinksText(card.links!, base), "<https://docs.example/source|Open &lt;source&gt;>");
+
+  const encoded = (payload: unknown) =>
+    new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        renderer: WORKFLOW_ARTIFACT_CARD_RENDERER,
+        fallbackText: "Open the original card.",
+        payload,
+      }),
+    );
+  for (const payload of [
+    { heading: "Summary", summary: "&".repeat(601) },
+    {
+      heading: "Section",
+      sections: [{ key: "facts", label: "Facts", items: [{ value: "&".repeat(600) }] }],
+    },
+    {
+      heading: "Links",
+      links: Array.from({ length: 5 }, (_, index) => ({
+        label: "&".repeat(120),
+        href: `https://docs.example/${index}`,
+      })),
+    },
+  ]) {
+    assert.throws(() => decodeWorkflowArtifactCard(encoded(payload), base), /invalid workflow artifact card/);
+  }
+});
+
+test("links allow same-origin HTTP(S) or credential-free cross-origin HTTPS only", () => {
+  const base = "http://qm.test/chat";
+  assert.equal(safeWorkflowArtifactHref("/files/one", base), "http://qm.test/files/one");
+  assert.equal(safeWorkflowArtifactHref("https://docs.example/path", base), "https://docs.example/path");
+  assert.equal(
+    safeWorkflowArtifactHref("https://docs.example/path?view=compact", base),
+    "https://docs.example/path?view=compact",
+  );
+  assert.equal(
+    safeWorkflowArtifactHref("https://docs.example/path?view=compact&keyboard=short&author=one&monkey=two", base),
+    "https://docs.example/path?view=compact&keyboard=short&author=one&monkey=two",
+  );
+  for (const value of [
+    "http://docs.example/path",
+    "javascript:alert(1)",
+    "data:text/html,bad",
+    "https://user:secret@docs.example/path",
+    "//user:secret@qm.test/path",
+    "https://docs.example/path?token=secret",
+    "https://docs.example/path?access_token=secret",
+    "https://docs.example/path?idToken=secret",
+    "https://docs.example/path?apiKey=secret",
+    "https://docs.example/path?key=secret",
+    "https://docs.example/path?authorization=secret",
+    "https://docs.example/path?auth_token=secret",
+    "https://docs.example/path?authToken=secret",
+    "https://docs.example/path?oauth_token=secret",
+    "https://docs.example/path?X-Amz-Credential=secret",
+    "https://docs.example/path?X-Amz-Signature=secret",
+    "https://docs.example/path?X-Goog-Signature=secret",
+    "https://docs.example/path?AWSAccessKeyId=secret",
+    "https://docs.example/path?sig=secret",
+    "https://docs.example/path?clientSecret=secret",
+    "https://docs.example/path?secretKey=secret",
+    "https://docs.example/path?privateKey=secret",
+    "https://docs.example/path?sessionToken=secret",
+    "https://docs.example/path?credentials=secret",
+    "https://docs.example/path?credentialId=secret",
+    "https://docs.example/path?signatureVersion=secret",
+    "https://docs.example/path?client-secrets=secret",
+    "https://docs.example/path?session_tokens=secret",
+    "https://docs.example/path?private.keys=secret",
+    "https://docs.example/path?signatures=secret",
+  ]) {
+    assert.equal(safeWorkflowArtifactHref(value, base), null);
+  }
+});
+
+test("workflow MIME is an exact versioned transport contract", () => {
+  assert.equal(WORKFLOW_ARTIFACT_MIME, "application/vnd.qm.workflow-artifact+json;v=1");
+});

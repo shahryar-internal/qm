@@ -1,5 +1,11 @@
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
-import { defaultModelForHarness, isHarnessId, modelSupportedByHarness, type HarnessId } from "../model/pi-models.ts";
+import {
+  defaultModelForHarness,
+  isHarnessId,
+  modelSupportedByHarness,
+  resolveModel,
+  type HarnessId,
+} from "../model/pi-models.ts";
 import type { ScopeId } from "../types.ts";
 import type { Harness, HarnessTurnInput } from "./harness.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
@@ -7,6 +13,16 @@ import { NonRetryableTurnError } from "../core/turn-error.ts";
 export interface RuntimeChoice {
   harnessId: HarnessId;
   modelId: string;
+}
+
+function resolveForcedRuntimeChoice(forced: RuntimeChoice, requested?: Partial<RuntimeChoice>): RuntimeChoice {
+  if (
+    (requested?.harnessId && requested.harnessId !== forced.harnessId) ||
+    (requested?.modelId && requested.modelId !== forced.modelId)
+  ) {
+    throw new NonRetryableTurnError(`runtime is fixed to ${forced.harnessId}/${forced.modelId} for this dev instance`);
+  }
+  return forced;
 }
 
 export function resolveRuntimeChoice(
@@ -59,7 +75,10 @@ export async function resolveRuntimeChoiceDurable(
   scope: ScopeId,
   fallback: RuntimeChoice,
   requested?: Partial<RuntimeChoice>,
+  hydrateModelCatalog?: () => Promise<unknown>,
+  forced?: RuntimeChoice,
 ): Promise<RuntimeChoice> {
+  if (forced) return resolveForcedRuntimeChoice(forced, requested);
   const approved = (await config.getApprovedHarnessesDurable()) ?? [fallback.harnessId];
   const [orgStored, scopedStored, orgLegacy, scopedLegacy] = await Promise.all([
     config.getRuntimeSelectionDurable(orgScopeId),
@@ -67,6 +86,10 @@ export async function resolveRuntimeChoiceDurable(
     config.getBaseModelOwnDurable(orgScopeId),
     scope === orgScopeId ? null : config.getBaseModelOwnDurable(scope),
   ]);
+  if (hydrateModelCatalog) {
+    const candidates = [requested?.modelId, scopedStored?.modelId, orgStored?.modelId];
+    if (candidates.some((modelId) => modelId && !resolveModel(modelId))) await hydrateModelCatalog();
+  }
   const view: Pick<ScopedConfigStore, "getApprovedHarnesses" | "getRuntimeSelection" | "getBaseModel"> = {
     getApprovedHarnesses: () => approved,
     getRuntimeSelection: (id: ScopeId) => {

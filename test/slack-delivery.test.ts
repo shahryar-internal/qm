@@ -9,6 +9,7 @@ import {
   deliveryCandidatesFor,
   createDeliveryTracker,
   deliverWithRetry,
+  deletePostedByKey,
   postWithVerify,
   channelSurfaceUrl,
   channelWelcomeMessage,
@@ -425,6 +426,26 @@ function verifyHarness(
 
 const KEY = "run:abc";
 const foundMsg = { ts: "9.9", metadata: { event_type: "qm_delivery", event_payload: { idempotency_key: KEY } } };
+
+test("deletePostedByKey requires durable cleanup transport for a recovered message", async () => {
+  const h = verifyHarness({ historyMessages: [foundMsg] });
+  await assert.rejects(
+    () => deletePostedByKey(h.client, { channel: "C1", text: "" }, KEY, "0"),
+    /cleanup transport unavailable/,
+  );
+});
+
+test("deletePostedByKey propagates transient cleanup failures and accepts terminal absence", async () => {
+  const h = verifyHarness({ historyMessages: [foundMsg] });
+  h.client.chat.delete = async () => {
+    throw Object.assign(new Error("rate limited"), { data: { error: "ratelimited" } });
+  };
+  await assert.rejects(() => deletePostedByKey(h.client, { channel: "C1", text: "" }, KEY, "0"));
+  h.client.chat.delete = async () => {
+    throw Object.assign(new Error("already gone"), { data: { error: "message_not_found" } });
+  };
+  await assert.doesNotReject(() => deletePostedByKey(h.client, { channel: "C1", text: "" }, KEY, "0"));
+});
 
 test("postWithVerify: posts once and returns ts on success", async () => {
   const h = verifyHarness();

@@ -15,7 +15,21 @@
       "always_online": true
     },
     "agent_view": {
-      "agent_description": "A workspace agent you can pin to the Slack top bar. Ask it anything; it can also act on what you're currently viewing."
+      "agent_description": "A workspace agent you can pin to the Slack top bar. Ask it anything; it can also act on what you're currently viewing.",
+      "suggested_prompts": [
+        {
+          "title": "Research a topic",
+          "message": "Research this topic and return a concise, source-backed brief."
+        },
+        {
+          "title": "Draft a document",
+          "message": "Draft a polished document from this conversation and the files I provide."
+        },
+        {
+          "title": "Analyze data",
+          "message": "Analyze the available data and explain the most important findings."
+        }
+      ]
     }
   },
   "oauth_config": {
@@ -64,8 +78,12 @@
         "channel_unarchive",
         "reaction_added",
         "reaction_removed",
+        "app_home_opened",
+        "app_context_changed",
         "assistant_thread_started",
-        "assistant_thread_context_changed"
+        "assistant_thread_context_changed",
+        "agent_session_stopped",
+        "agent_session_title_changed"
       ]
     },
     "interactivity": {

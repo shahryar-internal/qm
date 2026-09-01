@@ -50,6 +50,7 @@ import {
   contextTokenBudgetForModel,
 } from "../model/pi-models.ts";
 import { customModelsJson, customProvidersVersion } from "../model/custom-providers.ts";
+import { normalizeConfiguredDevGeminiPayload } from "../model/dev-gemini-provider.ts";
 import {
   defineHarness,
   envelopeWithoutMessages,
@@ -93,6 +94,7 @@ export interface PiHarnessOptions {
   openaiApiKey?: string;
   openrouterApiKey?: string;
   resolveProviderKeys?: () => Promise<ProviderKeys>;
+  devGeminiProviderId?: string;
   tempDirPrefix?: string;
   captureRequests?: boolean;
   systemCacheSplit?: boolean;
@@ -1285,6 +1287,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     tapeMode?: "shadow" | "serve",
     tapeFold?: unknown[],
     tape?: HarnessTurnInput["tape"],
+    turnProviderKeys?: ProviderKeys,
   ): Promise<{ entry: TurnSession; compileMs: number; tapeWriteFailed: boolean }> {
     const compileStart = Date.now();
     const cacheBoundary =
@@ -1324,7 +1327,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const composedPrompt = systemPrompt + (seedPlan === "preamble" ? replayPreamble(history) : "");
 
     const model = getRequiredModel(resolveModelId(turnScope));
-    const modelRuntime = await buildModelRuntime(await resolveProviderKeys());
+    const modelRuntime = await buildModelRuntime(turnProviderKeys ?? (await resolveProviderKeys()));
     const ref: ToolContextRef = { current: null };
     const { resourceLoader, cwd, agentDir } = await createIsolatedResources(tempDirPrefix, composedPrompt);
     const compileMs = Date.now() - compileStart;
@@ -1417,6 +1420,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           }
           const result = prior ? await prior(payload, model) : payload;
           let finalPayload = result ?? payload;
+          const payloadProvider = (model as { provider?: unknown } | null)?.provider;
+          finalPayload = normalizeConfiguredDevGeminiPayload(finalPayload, payloadProvider, opts?.devGeminiProviderId);
           try {
             finalPayload = trimPayloadToByteBudget(finalPayload);
           } catch (e) {
@@ -1503,6 +1508,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeMode,
           turn.tapeFold,
           turn.tape,
+          turn.providerKeys,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
@@ -1792,7 +1798,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                       await entry.agentSession.abort();
                     },
                   },
-                  { onError: (e) => swallow("pi: run signal poll", e) },
+                  {
+                    onError: (e) => swallow("pi: run signal poll", e),
+                    discard: turn.acceptRunSignals === false,
+                  },
                 )
               : null;
           const promptStart = Date.now();

@@ -27,6 +27,7 @@ import type { RunSignal, RunSignalStore } from "../runs/run-signal-store.ts";
 import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import type { ModelGateway } from "../model/model-gateway.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
+import type { UserModelCredentialStore } from "../model/user-model-credential-store.ts";
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
 import type { McpServerStore } from "../mcp/mcp-server-store.ts";
 import type { McpToolService } from "../mcp/mcp-tool-service.ts";
@@ -95,6 +96,9 @@ import type { ModelProviderAvailability } from "../model/pi-models.ts";
 import type { RuntimeChoice } from "../harness/harness-router.ts";
 import { type ReachOpts, type ReachResolution, type ReachTarget } from "../reach/reach.ts";
 import { type Project, type ProjectStore } from "../projects/project-store.ts";
+import type { PrivateTurnObservationOutbox } from "./private-turn-observation-outbox.ts";
+import type { PostgresScheduleAuthority } from "../cron/postgres-schedule-authority.ts";
+import type { ScheduledTurnContext } from "../cron/schedule-authority.ts";
 
 interface DeploymentVersionView {
   version: number;
@@ -235,7 +239,7 @@ export interface SessionSearchHit {
 }
 
 export interface App {
-  turn(req: TurnRequest): Promise<TurnResult>;
+  turn(req: TurnRequest, scheduled?: ScheduledTurnContext): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void): () => void;
   listSessionApprovals(sessionId: string, viewer: string): Promise<PendingApproval[]>;
@@ -513,12 +517,15 @@ export interface AppDeps {
   leaseTtlMs: number;
   maxAttempts: number;
   runWaitMs?: number;
+  privateTurnObservationOutbox?: PrivateTurnObservationOutbox;
+  scheduleAuthority?: Pick<PostgresScheduleAuthority, "claim" | "current" | "assertCurrent">;
   turnStream?: TurnStream;
   runActivity?: RunActivityStore;
   signals?: RunSignalStore;
   tasks?: TaskStore;
   modelGateway: ModelGateway;
   modelCredentials?: ModelCredentialStore;
+  userModelCredentials?: UserModelCredentialStore;
   mcpServers?: McpServerStore;
   mcpToolService?: McpToolService;
   modelCredentialFetch?: typeof fetch;
@@ -537,6 +544,7 @@ export interface AppDeps {
   webhooks: WebhookStore;
   deliveries: DeliveryStore;
   directory: DirectoryStore;
+  emailAuthMembers?: DirectoryMember[];
   projects?: ProjectStore;
   deploy: DeployService;
   deploymentLayer?: DeploymentLayerRuntime;
@@ -561,6 +569,7 @@ export interface AppDeps {
   modelProviders?: ModelProviderAvailability;
   providerKeys?: ModelProviderAvailability;
   runtimeFallback?: RuntimeChoice;
+  runtimeChoiceOverride?: RuntimeChoice;
 }
 
 export interface ContextSummary {

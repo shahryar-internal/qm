@@ -311,6 +311,7 @@ describe("pushing the group roster when Slack won't list group DMs", () => {
       core: core as never,
       ids: {
         ownTeamId: "T1",
+        agentId: "A1",
         botUserId: "UBOT",
         ownBotId: "BBOT",
         botHandle: "qm",

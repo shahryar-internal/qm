@@ -3,6 +3,7 @@ import { sleep } from "./util.ts";
 import { isExternallyShared, isMpim, type ChannelMeta } from "./identity.ts";
 
 export interface SlackReplyArgs {
+  [key: string]: unknown;
   channel: string;
   text: string;
   thread_ts?: string;
@@ -391,7 +392,10 @@ export interface PostMessageArgs {
   [key: string]: unknown;
 }
 export interface PostVerifyClient {
-  chat: { postMessage(args: PostMessageArgs): Promise<unknown> };
+  chat: {
+    postMessage(args: PostMessageArgs): Promise<unknown>;
+    delete?(args: { channel: string; ts: string }): Promise<unknown>;
+  };
   conversations: {
     history(args: {
       channel: string;
@@ -447,6 +451,23 @@ async function findPostedByKey(
     cursor = page.response_metadata?.next_cursor?.trim() || undefined;
   } while (cursor);
   return undefined;
+}
+
+export async function deletePostedByKey(
+  client: PostVerifyClient,
+  args: PostMessageArgs,
+  idempotencyKey: string,
+  oldest: string,
+): Promise<void> {
+  const found = await findPostedByKey(client, args, idempotencyKey, oldest);
+  if (!found) return;
+  if (!client.chat.delete) throw new Error("Slack message cleanup transport unavailable");
+  try {
+    await client.chat.delete({ channel: found.channel, ts: found.ts });
+  } catch (error) {
+    const code = (error as { data?: { error?: unknown } })?.data?.error;
+    if (code !== "not_found" && code !== "message_not_found" && code !== "already_deleted") throw error;
+  }
 }
 
 export async function postWithVerify(

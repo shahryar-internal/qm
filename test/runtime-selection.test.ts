@@ -6,7 +6,9 @@ import {
   type PersistedBaseModel,
 } from "../src/resolution/config-store.ts";
 import { resolveRuntimeChoice, resolveRuntimeChoiceDurable } from "../src/harness/harness-router.ts";
+import { registerOpenRouterCatalogModel } from "../src/model/pi-models.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { DEV_GEMINI_MODEL } from "../src/model/dev-gemini-provider.ts";
 
 const ORG = "org:default-org" as const;
 const PERSONAL = "personal:alice" as const;
@@ -85,6 +87,37 @@ test("runtime resolution reads approvals and selections from shared durable stat
   );
 });
 
+test("a forced dev runtime ignores durable choices and refuses per-request provider drift", async () => {
+  const config = createMemoryConfigStore("default-org");
+  config.setApprovedHarnesses(["codex"]);
+  config.setRuntimeSelection(ORG, { harnessId: "codex", modelId: "gpt-5.5" });
+  config.setRuntimeSelection(PERSONAL, { harnessId: "claude", modelId: "claude-opus-5" });
+  await config.flushScope(ORG);
+  await config.flushScope(PERSONAL);
+  const fallback = { harnessId: "pi" as const, modelId: DEV_GEMINI_MODEL };
+
+  assert.deepEqual(
+    await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback, undefined, undefined, fallback),
+    fallback,
+  );
+  assert.deepEqual(
+    await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback, fallback, undefined, fallback),
+    fallback,
+  );
+  await assert.rejects(
+    resolveRuntimeChoiceDurable(
+      config,
+      ORG,
+      PERSONAL,
+      fallback,
+      { harnessId: "codex", modelId: "gpt-5.5" },
+      undefined,
+      fallback,
+    ),
+    /runtime is fixed to pi\/gemini-3\.7-flash/,
+  );
+});
+
 test("every write that changes a scope's served model notifies listeners", async () => {
   const config = createMemoryConfigStore("default-org");
   const seen: string[] = [];
@@ -107,4 +140,49 @@ test("a listener that throws cannot break the write that notified it", async () 
   config.setApprovedHarnesses(["pi"]);
   await config.setRuntimeSelectionLatest(ORG, { harnessId: "pi", modelId: "claude-opus-4-8" });
   assert.equal((await config.getRuntimeSelectionDurable(ORG))?.modelId, "claude-opus-4-8");
+});
+
+test("durable runtime resolution hydrates the model catalog before rejecting an unknown dynamic model", async () => {
+  const config = createMemoryConfigStore("default-org");
+  config.setApprovedHarnesses(["pi"]);
+  await config.setRuntimeSelectionLatest(PERSONAL, { harnessId: "pi", modelId: "testvendor/cold-router-model" });
+  await config.flushScope(PERSONAL);
+  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-4-8" };
+
+  assert.deepEqual(await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback), fallback);
+
+  let hydrations = 0;
+  const hydrate = async () => {
+    hydrations += 1;
+    registerOpenRouterCatalogModel({
+      id: "testvendor/cold-router-model",
+      name: "Cold Router Model",
+      contextWindow: 1_048_576,
+      maxTokens: 131_072,
+      input: ["text"],
+      reasoning: true,
+      cost: { input: 0, output: 0 },
+    });
+  };
+  assert.deepEqual(await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback, undefined, hydrate), {
+    harnessId: "pi",
+    modelId: "testvendor/cold-router-model",
+  });
+  assert.equal(hydrations, 1);
+
+  assert.deepEqual(
+    await resolveRuntimeChoiceDurable(
+      config,
+      ORG,
+      PERSONAL,
+      fallback,
+      { modelId: "testvendor/cold-router-model" },
+      hydrate,
+    ),
+    { harnessId: "pi", modelId: "testvendor/cold-router-model" },
+  );
+
+  const before = hydrations;
+  await resolveRuntimeChoiceDurable(config, ORG, PERSONAL, fallback, undefined, hydrate);
+  assert.equal(hydrations, before);
 });

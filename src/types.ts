@@ -1,5 +1,16 @@
 import type { ResolvedSecurityPolicy } from "./security/security-posture.ts";
 
+export interface VerifiedSlackTurn {
+  teamId: string;
+  userId: string;
+  channelId: string;
+  messageTs: string;
+  threadTs: string;
+  threaded: boolean;
+  liveHuman: true;
+  actionTs?: string;
+}
+
 export type PrincipalType = "internal" | "guest";
 
 export interface Principal {
@@ -180,6 +191,27 @@ export interface Destination {
   debugFooter?: string;
 }
 
+export interface QmAnalyticsNativeCard {
+  version: 1;
+  renderer: "qm.analytics.card.v1";
+  receiptId: string;
+  fallbackText: string;
+  heading: string;
+  question: string;
+  findings: Array<{
+    source: "posthog" | "clarify" | "brain" | "calendar" | "human_receipt";
+    topic:
+      "usage" | "funnel" | "error" | "opportunity" | "meeting" | "recipient" | "commitment" | "pricing" | "history";
+    text: string;
+    confidence: "high" | "medium" | "low";
+  }>;
+  confidenceNotes: string[];
+  nextStep: string;
+  proposedActions: string[];
+}
+
+export type TrustedAnalyticsCard = string & { readonly __trustedAnalyticsCard: unique symbol };
+
 export interface CandidateDestination extends Destination {
   key: string;
   label: string;
@@ -218,6 +250,7 @@ export interface CronFireLogEntry {
 
 export interface Cron extends TriggerBase {
   schedule: CronSchedule;
+  scheduleAuthority?: import("./cron/schedule-authority.ts").CronScheduleAuthority;
   nextFireAt?: number;
   lastAttemptAt?: number;
   title?: string;
@@ -267,6 +300,7 @@ export interface Delivery {
   text: string;
   attachments?: OutgoingAttachment[];
   provenance?: DeliveryProvenance;
+  trustedAnalyticsCard?: TrustedAnalyticsCard;
   idempotencyKey: string;
   createdAt: number;
   deliveredAt: number | null;
@@ -323,6 +357,8 @@ export interface CommandRule {
   pattern: string;
   decision: CommandDecision;
   reason?: string;
+  approvalScope?: "rule" | "command";
+  subsumesToolApproval?: true;
 }
 
 type CommandPolicyMode = "denylist" | "allowlist";
@@ -347,6 +383,7 @@ export type IncomingAttachment = BlobAttachment & {
 export type OutgoingAttachment = BlobAttachment & {
   artifactId?: string;
   artifactViewerId?: string;
+  renderOnly?: true;
 };
 
 export interface AttachmentMeta {
@@ -389,6 +426,8 @@ export type TurnOrigin =
 
 export interface TurnRequest {
   surface: string;
+  trustedSlackTeamId?: string;
+  trustedSlackUserId?: string;
   scopeVersion?: string;
   deliveryTarget?: string;
   deliveryCandidates?: { target: string; label: string }[];
@@ -415,6 +454,15 @@ export interface TurnRequest {
   ownerKeychainUnion?: boolean;
   unprompted?: boolean;
   liveActor?: boolean;
+  verifiedSlack?: VerifiedSlackTurn;
+  slackAgentSessionToken?: string;
+  slackAgentSession?: {
+    teamId: string;
+    agentId: string;
+    channelId: string;
+    threadTs: string;
+    token: string;
+  };
   botActor?: boolean;
   conversationHeader?: string;
   priorTurns?: ConversationTurn[];
@@ -459,6 +507,7 @@ export interface PendingApproval {
   matched?: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   approvalKey?: string;
   grantModes?: ApprovalGrantModes;
   blocksInput?: boolean;
@@ -473,6 +522,7 @@ export interface PendingApprovalRecord {
   matched?: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   approvalKey?: string;
   grantModes?: ApprovalGrantModes;
   request?: TurnRequest;
@@ -506,6 +556,7 @@ export interface TurnResult {
   adminUrl?: string;
   runId?: string;
   steered?: true;
+  replayed?: true;
   stopped?: boolean;
   pendingApprovals?: PendingApproval[];
   attachments?: OutgoingAttachment[];

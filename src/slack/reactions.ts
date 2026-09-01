@@ -103,8 +103,13 @@ export function normalizeReactions(names: readonly string[]): string[] {
 }
 
 export interface ReactionClient {
-  reactions: { add(args: { channel: string; timestamp: string; name: string }): Promise<unknown> };
+  reactions: {
+    add(args: { channel: string; timestamp: string; name: string }): Promise<unknown>;
+    remove?(args: { channel: string; timestamp: string; name: string }): Promise<unknown>;
+  };
 }
+
+export type ReactionCompensationVerdict = "confirmed" | "pending" | "manual_attention";
 
 const REACTION_PROPAGATION_ERRORS = new Set(["invalid_name", "not_reactable", "no_reaction"]);
 const REACTION_RETRY_DELAYS_MS = [1500, 2500, 3000] as const;
@@ -114,10 +119,52 @@ export async function applyReactions(
   channel: string,
   timestamp: string,
   names: readonly string[],
-): Promise<{ added: string[]; failed: string[] }> {
+  opts: {
+    isCancelled?: () => boolean | Promise<boolean>;
+    compensateCreatedReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      ordinal: number;
+    }) => Promise<ReactionCompensationVerdict>;
+    compensationEffectId?: (input: { channel: string; timestamp: string; name: string; ordinal: number }) => string;
+    admitDesiredReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      ordinal: number;
+    }) => Promise<boolean>;
+    withdrawDesiredReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      ordinal: number;
+    }) => Promise<void>;
+    cancelDesiredReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      ordinal: number;
+    }) => Promise<void>;
+  } = {},
+): Promise<{ added: string[]; failed: string[]; removed?: string[]; pendingRemoval?: string[] }> {
   const added: string[] = [];
   const failed: string[] = [];
-  for (const name of normalizeReactions(names)) {
+  const removed: string[] = [];
+  const pendingRemoval: string[] = [];
+  for (const [ordinal, name] of normalizeReactions(names).entries()) {
+    if (await opts.isCancelled?.()) break;
+    const effectId = opts.compensationEffectId?.({ channel, timestamp, name, ordinal });
+    const effect = effectId ? { channel, timestamp, name, effectId, ordinal } : undefined;
+    if (effect && (await opts.admitDesiredReaction?.(effect)) === false) continue;
+    if (await opts.isCancelled?.()) {
+      if (effect) await opts.cancelDesiredReaction?.(effect);
+      break;
+    }
     let landed = false;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -138,9 +185,38 @@ export async function applyReactions(
         break;
       }
     }
+    if (effect && !landed) await opts.withdrawDesiredReaction?.(effect);
+    const cancelled = (await opts.isCancelled?.()) === true;
+    if (effect && cancelled) await opts.cancelDesiredReaction?.(effect);
+    if (landed && cancelled) {
+      let verdict: ReactionCompensationVerdict = "pending";
+      if (opts.compensateCreatedReaction) {
+        verdict = effectId
+          ? await opts.compensateCreatedReaction({ channel, timestamp, name, effectId, ordinal })
+          : "manual_attention";
+      } else if (client.reactions.remove) {
+        try {
+          await client.reactions.remove({ channel, timestamp, name });
+          verdict = "confirmed";
+        } catch {
+          verdict = "pending";
+        }
+      }
+      if (verdict === "confirmed") {
+        landed = false;
+        removed.push(name);
+      } else {
+        pendingRemoval.push(name);
+      }
+    }
     (landed ? added : failed).push(name);
   }
-  return { added, failed };
+  return {
+    added,
+    failed,
+    ...(removed.length ? { removed } : {}),
+    ...(pendingRemoval.length ? { pendingRemoval } : {}),
+  };
 }
 
 export interface ReactionTally {

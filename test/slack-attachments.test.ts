@@ -13,6 +13,13 @@ import {
   MAX_ATTACHMENTS_PER_TURN,
   type SlackFile,
 } from "../src/slack/lib.ts";
+import { WORKFLOW_ARTIFACT_MIME } from "../plugins/chassis/src/workflow-artifact.ts";
+import {
+  validateWorkflowArtifactCard,
+  workflowArtifactSlackLinksText,
+  workflowArtifactSlackMrkdwn,
+  workflowArtifactSlackSectionText,
+} from "../plugins/chassis/src/workflow-artifact-card.ts";
 
 function fakeFetch(opts: {
   ok?: boolean;
@@ -412,6 +419,436 @@ test("uploadAttachments waits for the file's channel share to commit before reso
     fetchBlob,
   );
   assert.ok(infoCalls >= 3, `expected polling until the share committed, got ${infoCalls}`);
+});
+
+test("uploadAttachments reconciles a prior exact upload marker across paginated thread history", async () => {
+  let uploadCalls = 0;
+  let replyCalls = 0;
+  const client = {
+    conversations: {
+      replies: async (args: Record<string, unknown>) => {
+        replyCalls += 1;
+        assert.equal(args.channel, "C1");
+        assert.equal(args.ts, "123.45");
+        assert.equal(args.oldest, "120");
+        if (!args.cursor) return { messages: [], response_metadata: { next_cursor: "page-2" } };
+        assert.equal(args.cursor, "page-2");
+        return {
+          messages: [
+            {
+              files: [
+                {
+                  alt_txt: "x.txt\nqm-attachment:2e4a772d849fffc5039eafccb5da9c0c871555083ebac8dd5b6d50d94417a422",
+                },
+              ],
+            },
+          ],
+          response_metadata: { next_cursor: "" },
+        };
+      },
+      history: async () => ({ messages: [] }),
+    },
+    files: {
+      uploadV2: async () => {
+        uploadCalls += 1;
+      },
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+
+  const result = await uploadAttachments(
+    client,
+    "C1",
+    "123.45",
+    [{ name: "x.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B1" }],
+    async () => Buffer.from("data"),
+    undefined,
+    { idempotencyKey: "run:R1:attachments", verifyOldest: "120" },
+  );
+
+  assert.equal(replyCalls, 2);
+  assert.equal(uploadCalls, 0);
+  assert.deepEqual(result, { uploaded: true });
+});
+
+test("uploadAttachments renders a valid workflow artifact as Block Kit instead of raw JSON", async () => {
+  const posts: any[] = [];
+  const uploads: any[] = [];
+  const client = {
+    chat: {
+      postMessage: async (args: any) => {
+        posts.push(args);
+        return { ts: "171.2" };
+      },
+    },
+    files: {
+      uploadV2: async (args: any) => void uploads.push(args),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  const payload = {
+    heading: "Today's calendar",
+    summary: "Two meetings with <@U999>",
+    status: { label: "Ready", tone: "success" as const },
+    sections: [
+      {
+        key: "events",
+        label: "Events",
+        items: [{ label: "10:00", value: "Planning", href: "https://calendar.example.com/event/1" }],
+      },
+    ],
+    links: [{ label: "Open calendar", href: "https://calendar.example.com" }],
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Calendar ready",
+      payload,
+    }),
+  );
+  const normalized = validateWorkflowArtifactCard(payload, "https://workflow-artifact.invalid/");
+  const firstSection = normalized.sections?.[0];
+  assert.ok(firstSection);
+
+  const result = await uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "calendar.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: artifact.length, blobId: "B1" }],
+    async () => artifact,
+  );
+
+  assert.deepEqual(result, { uploaded: true, messageTs: "171.2" });
+  assert.equal(uploads.length, 0);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].text, "Calendar ready");
+  assert.equal(posts[0].thread_ts, "170.1");
+  assert.equal(posts[0].blocks[0].type, "header");
+  assert.equal(posts[0].blocks[2].text.text, workflowArtifactSlackMrkdwn(normalized.summary!));
+  assert.equal(
+    posts[0].blocks[3].text.text,
+    workflowArtifactSlackSectionText(firstSection, "https://workflow-artifact.invalid/"),
+  );
+  assert.equal(
+    posts[0].blocks[4].elements[0].text,
+    workflowArtifactSlackLinksText(normalized.links!, "https://workflow-artifact.invalid/"),
+  );
+});
+
+test("workflow fallback text cannot trigger Slack controls, mentions, or automatic links", async () => {
+  const posts: any[] = [];
+  const client = {
+    chat: {
+      postMessage: async (args: any) => {
+        posts.push(args);
+        return { ts: "171.3" };
+      },
+    },
+    files: {
+      uploadV2: async () => ({ ok: true }),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText:
+        "<!channel> <@U123> <#C123|ops> @here @alice https://evil.example/path slack://channel?id=C1 www.evil.test evil.test alice@example.test <https://evil.example|open>",
+      payload: { heading: "Safe card" },
+    }),
+  );
+
+  await uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "safe.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: artifact.length, blobId: "B1" }],
+    async () => artifact,
+  );
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].mrkdwn, false);
+  assert.equal(posts[0].parse, "none");
+  assert.equal(posts[0].link_names, false);
+  assert.equal(posts[0].unfurl_links, false);
+  assert.equal(posts[0].unfurl_media, false);
+  assert.doesNotMatch(posts[0].text, /<[@#!]|<(?:https?|mailto):/i);
+  assert.doesNotMatch(posts[0].text, /@(?!\u200b)/u);
+  assert.doesNotMatch(posts[0].text, /\b[a-z][a-z0-9+.-]{1,31}:\/\//i);
+  assert.doesNotMatch(posts[0].text, /\bwww\.(?!\u200b)/i);
+  assert.doesNotMatch(posts[0].text, /\b[a-z0-9-]+\.(?:com|example|test)\b/i);
+});
+
+test("the shared workflow decoder rejects escaped text that would exceed Slack block limits", async () => {
+  const posts: any[] = [];
+  const client = {
+    chat: { postMessage: async (args: any) => void posts.push(args) },
+    files: {
+      uploadV2: async () => ({ ok: true }),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  for (const payload of [
+    { heading: "Summary overflow", summary: "&".repeat(601) },
+    {
+      heading: "Section overflow",
+      sections: [{ key: "details", label: "Details", items: [{ value: "&".repeat(600) }] }],
+    },
+    {
+      heading: "Link overflow",
+      links: Array.from({ length: 5 }, (_, index) => ({
+        label: "&".repeat(120),
+        href: `https://example.com/${index}`,
+      })),
+    },
+  ]) {
+    const artifact = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        renderer: "qm.card.v1",
+        fallbackText: "Safe fallback",
+        payload,
+      }),
+    );
+    await assert.rejects(
+      uploadAttachments(
+        client,
+        "C1",
+        "170.1",
+        [
+          {
+            name: "overflow.workflow.json",
+            mimetype: WORKFLOW_ARTIFACT_MIME,
+            sizeBytes: artifact.length,
+            blobId: "B1",
+          },
+        ],
+        async () => artifact,
+      ),
+      /could not be rendered safely/,
+    );
+  }
+  assert.equal(posts.length, 0);
+});
+
+test("uploadAttachments deletes a workflow card whose Slack post finishes after cancellation", async () => {
+  let cancelled = false;
+  let releasePost: ((value: { ts: string }) => void) | undefined;
+  const deletes: any[] = [];
+  const client = {
+    chat: {
+      postMessage: async () => new Promise<{ ts: string }>((resolve) => (releasePost = resolve)),
+      delete: async (args: any) => void deletes.push(args),
+    },
+    files: {
+      uploadV2: async () => ({ ok: true }),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Late card",
+      payload: { heading: "Late card", sections: [] },
+    }),
+  );
+  const delivery = uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "late.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: artifact.length, blobId: "B1" }],
+    async () => artifact,
+    undefined,
+    { isCancelled: () => cancelled },
+  );
+  while (!releasePost) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  releasePost({ ts: "late-card-ts" });
+
+  assert.deepEqual(await delivery, { uploaded: false });
+  assert.deepEqual(deletes, [{ channel: "C1", ts: "late-card-ts" }]);
+});
+
+test("uploadAttachments deletes files whose Slack upload finishes after cancellation", async () => {
+  let cancelled = false;
+  let releaseUpload: ((value: { files: Array<{ id: string }> }) => void) | undefined;
+  const deletes: any[] = [];
+  const client = {
+    files: {
+      uploadV2: async () => new Promise<{ files: Array<{ id: string }> }>((resolve) => (releaseUpload = resolve)),
+      info: async () => ({ file: { shares: {} } }),
+      delete: async (args: any) => void deletes.push(args),
+    },
+  };
+  const delivery = uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [{ name: "late.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B1" }],
+    async () => Buffer.from("late"),
+    undefined,
+    { isCancelled: () => cancelled },
+  );
+  while (!releaseUpload) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  releaseUpload({ files: [{ id: "F-late" }] });
+
+  assert.deepEqual(await delivery, { uploaded: false });
+  assert.deepEqual(deletes, [{ file: "F-late" }]);
+});
+
+test("uploadAttachments deletes recovered and new mixed outputs when cancellation races a restarted upload", async () => {
+  let cancelled = false;
+  let releaseUpload: ((value: { files: Array<{ id: string }> }) => void) | undefined;
+  let uploadAttempts = 0;
+  const messages: any[] = [];
+  const deletedCards: any[] = [];
+  const deletedFiles: any[] = [];
+  const client = {
+    conversations: {
+      replies: async () => ({ messages, response_metadata: { next_cursor: "" } }),
+      history: async () => ({ messages: [], response_metadata: { next_cursor: "" } }),
+    },
+    chat: {
+      postMessage: async (args: any) => {
+        const posted = { ...args, ts: "persisted-card-ts" };
+        messages.push(posted);
+        return posted;
+      },
+      delete: async (args: any) => void deletedCards.push(args),
+    },
+    files: {
+      uploadV2: async (args: any) => {
+        uploadAttempts += 1;
+        if (uploadAttempts === 1) {
+          messages.push({
+            ts: "persisted-file-ts",
+            files: [{ id: "F-recovered", alt_txt: args.file_uploads[0].alt_txt }],
+          });
+          throw new Error("simulated crash after mixed output post");
+        }
+        return new Promise<{ files: Array<{ id: string }> }>((resolve) => (releaseUpload = resolve));
+      },
+      info: async () => ({ file: { shares: {} } }),
+      delete: async (args: any) => void deletedFiles.push(args),
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Persistent card",
+      payload: { heading: "Persistent card", sections: [] },
+    }),
+  );
+  const attachments = [
+    {
+      name: "persistent.workflow.json",
+      mimetype: WORKFLOW_ARTIFACT_MIME,
+      sizeBytes: artifact.length,
+      blobId: "B-card",
+    },
+    { name: "recovered.txt", mimetype: "text/plain", sizeBytes: 9, blobId: "B-recovered" },
+    { name: "new.txt", mimetype: "text/plain", sizeBytes: 3, blobId: "B-new" },
+  ];
+  const fetchBlob = async (blobId: string) => (blobId === "B-card" ? artifact : Buffer.from(blobId));
+  const opts = {
+    idempotencyKey: "run:R-mixed:attachments",
+    verifyOldest: "170",
+    isCancelled: () => cancelled,
+  };
+
+  await assert.rejects(
+    uploadAttachments(client, "C1", "170.1", attachments, fetchBlob, undefined, opts),
+    /simulated crash after mixed output post/,
+  );
+  assert.equal(messages.length, 2);
+
+  const retried = uploadAttachments(client, "C1", "170.1", attachments, fetchBlob, undefined, opts);
+  while (!releaseUpload) await new Promise((resolve) => setImmediate(resolve));
+  cancelled = true;
+  releaseUpload({ files: [{ id: "F-retried" }] });
+
+  assert.deepEqual(await retried, { uploaded: false });
+  assert.equal(messages.length, 2);
+  assert.deepEqual(deletedCards, [{ channel: "C1", ts: "persisted-card-ts" }]);
+  assert.deepEqual(deletedFiles, [{ file: "F-recovered" }, { file: "F-retried" }]);
+});
+
+test("uploadAttachments accepts exact already-deleted cleanup outcomes as idempotent success", async () => {
+  let cancelled = false;
+  const client = {
+    chat: {
+      postMessage: async () => ({ ts: "terminal-card-ts" }),
+      delete: async () => {
+        throw { data: { error: "message_not_found" } };
+      },
+    },
+    files: {
+      uploadV2: async () => {
+        cancelled = true;
+        return { files: [{ id: "F-terminal" }] };
+      },
+      info: async () => ({ file: { shares: {} } }),
+      delete: async () => {
+        throw { data: { error: "already_deleted" } };
+      },
+    },
+  };
+  const artifact = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      renderer: "qm.card.v1",
+      fallbackText: "Terminal cleanup",
+      payload: { heading: "Terminal cleanup", sections: [] },
+    }),
+  );
+  const result = await uploadAttachments(
+    client,
+    "C1",
+    "170.1",
+    [
+      {
+        name: "terminal.workflow.json",
+        mimetype: WORKFLOW_ARTIFACT_MIME,
+        sizeBytes: artifact.length,
+        blobId: "B-card",
+      },
+      { name: "terminal.txt", mimetype: "text/plain", sizeBytes: 4, blobId: "B-file" },
+    ],
+    async (blobId) => (blobId === "B-card" ? artifact : Buffer.from("file")),
+    undefined,
+    { isCancelled: () => cancelled },
+  );
+
+  assert.deepEqual(result, { uploaded: false });
+});
+
+test("uploadAttachments fails closed instead of uploading malformed private workflow JSON", async () => {
+  const posts: any[] = [];
+  const uploads: any[] = [];
+  const client = {
+    chat: { postMessage: async (args: any) => void posts.push(args) },
+    files: {
+      uploadV2: async (args: any) => void uploads.push(args),
+      info: async () => ({ file: { shares: {} } }),
+    },
+  };
+  await assert.rejects(
+    uploadAttachments(
+      client,
+      "D1",
+      undefined,
+      [{ name: "broken.workflow.json", mimetype: WORKFLOW_ARTIFACT_MIME, sizeBytes: 1, blobId: "B1" }],
+      async () => Buffer.from("{"),
+    ),
+    /could not be rendered safely/,
+  );
+  assert.equal(posts.length, 0);
+  assert.equal(uploads.length, 0);
 });
 
 test("uploadFailureNote blames files:write only for permission-class errors", () => {

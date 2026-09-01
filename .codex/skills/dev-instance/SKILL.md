@@ -119,8 +119,20 @@ The dev instance should exercise the real system:
 
 - real LLM: needs a model credential for the harness you run. Core supports several
   (`HARNESS=pi|opencode|codex|claude`); the launcher picks one from the credentials it
-  finds and honours an explicit `HARNESS`. Set the key your chosen harness expects, or
-  pass `DEV_INSTANCE_ALLOW_MOCK=1` for a deliberate no-model wiring check
+  finds and honours an explicit `HARNESS`. Set the key your chosen harness expects. For
+  Codex, a ChatGPT OAuth session is also supported: `HARNESS=codex` discovers a valid
+  `$HOME/.codex/auth.json`, or you can set `CODEX_AUTH_FILE` to another auth file. Core
+  refreshes OAuth tokens centrally and hands the Codex child ephemeral material (no
+  refresh token). Pass `DEV_INSTANCE_ALLOW_MOCK=1` for a deliberate no-model wiring
+  check. The auth-file path is for local dev instances; deployed production processes
+  use an API key or a keychain credential (`CODEX_AUTH_CREDENTIAL` /
+  `CLAUDE_AUTH_CREDENTIAL`), whose secret lives encrypted in its owner's keychain.
+- Gemini: an exported `GEMINI_API_KEY` selects `HARNESS=pi`, the transient
+  `google-gemini-dev` custom provider, Google's exact OpenAI-compatible endpoint, and
+  `gemini-3.7-flash`. Conflicting harness, endpoint, provider, or model settings are
+  refused. The launcher does not alias the key to another vendor, write it into the lease
+  boot spec, expose it to non-core children or supervisor helpers, or store it in the
+  custom-provider database. Stored and per-request runtime choices cannot override it.
 - real durability: uses `DATABASE_URL` when supplied; otherwise starts/reuses a local
   Docker Postgres container and runs core with `SESSION_STORE=postgres` and
   `RUN_STORE=postgres`
@@ -154,6 +166,12 @@ The launcher reads values from, in priority order: exported shell env, the machi
 `~/.config/qm/dev.env`, your login shell (for a model credential exported there), and this
 worktree's `.env` (seeded from the main checkout in linked worktrees). Slack pool tokens
 default to `~/.config/qm/slack-pool`.
+
+`GEMINI_API_KEY` is deliberately process-only. Load it into the environment of the `up`
+command without printing it. Run `down`, then unset it after QA. The launcher refuses to read this key
+from `dev.env` or `.env`; `GEMINI_BASE_URL`, when present, must be
+`https://generativelanguage.googleapis.com/v1beta/openai`, and `GEMINI_MODEL`, when
+present, must be `gemini-3.7-flash`.
 
 When a cloud sandbox backend is configured it also validates that provider's access at
 startup, refreshes a stale provider token from the provider CLI's own logged-in session

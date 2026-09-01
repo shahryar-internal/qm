@@ -4,6 +4,7 @@ import type {
   Destination,
   EntryType,
   ScopeId,
+  Session,
   SessionEntry,
   SessionType,
   TurnResult,
@@ -76,6 +77,7 @@ import {
   renderPendingOnboardingPrompt,
 } from "../onboarding/onboarding.ts";
 import { createToolContext, NeedsApproval, CommandDenied } from "../tools/primitives.ts";
+import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createSecretValueMasker } from "../security/secret-masking.ts";
 import { shq } from "../util/shell.ts";
@@ -133,7 +135,10 @@ import { randomUUID } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import type { SkillResolution, GrantedSkillRef } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
-import { resolveModel } from "../model/pi-models.ts";
+import { resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
+import type { ProviderKeys } from "../harness/pi-harness.ts";
+import type { CodexTurnAuth } from "../harness/harness.ts";
+import { resolveIndividualAuthRouting } from "./individual-auth-routing.ts";
 import {
   MAX_AUTO_ATTACHMENT_SCREEN_BYTES,
   approvalGrantId,
@@ -192,6 +197,39 @@ const DEFAULT_APPROVAL_SUMMARY_TIMEOUT_MS = 6_000;
 const CONNECTOR_HOSTS = Object.values(PROVIDERS).flatMap((p) => p.hosts);
 const INSTANCE_CACHE_MAX_ENTRIES = 5_000;
 const DIRECTORY_INDEX_CACHE_MAX_ENTRIES = 100;
+
+export function requestWorkspaceWriteAllowed(
+  input: unknown,
+  workspaces: readonly { prefix: string; maxBytes: number }[],
+): boolean {
+  if (input === null || typeof input !== "object") return false;
+  try {
+    const prototype = Object.getPrototypeOf(input);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length !== 2 || !keys.every((key) => key === "path" || key === "data")) return false;
+    const path = descriptors.path?.value;
+    const data = descriptors.data?.value;
+    if (
+      typeof path !== "string" ||
+      typeof data !== "string" ||
+      path.length === 0 ||
+      path.startsWith("/") ||
+      path.startsWith("~") ||
+      path.includes("\\") ||
+      /\s/.test(path) ||
+      path.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+    ) {
+      return false;
+    }
+    return workspaces.some(
+      (workspace) => path.startsWith(`${workspace.prefix}/`) && Buffer.byteLength(data, "utf8") <= workspace.maxBytes,
+    );
+  } catch {
+    return false;
+  }
+}
 
 export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const skillMaterializer = createSkillMaterializer(deps.advisoryLock);
@@ -347,8 +385,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         actor.id,
         scopeLabel,
         sessionId
-          ? async (rec) => {
-              await deps.sessions.recordLlmRequest(sessionId, { ...rec, scopeLabel });
+          ? async (rec, signal) => {
+              await deps.sessions.recordLlmRequest(sessionId, { ...rec, scopeLabel }, signal);
             }
           : undefined,
         { hook: "user_input", surface: "steer", origin: "ambient" },
@@ -473,6 +511,37 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
       const resolution = await deps.resolution.resolve(conversation, actor);
       const scopeId = deps.resolution.scopeFor(conversation, actor);
+      const sessionForTurn = async (type: SessionType): Promise<Session> => {
+        if (!input.scheduleAuthority) {
+          return deps.sessions.getOrCreateByThread(
+            conversation.threadRef,
+            type,
+            scopeId,
+            conversation.channelName,
+            input.surface,
+          );
+        }
+        const trusted = await input.scheduleAuthority.assertCurrent(input);
+        const session = await deps.sessions.get(trusted.authority.sessionId);
+        if (
+          !session ||
+          trusted.authority.runId !== input.runId ||
+          session.id !== trusted.authority.sessionId ||
+          session.threadRef !== trusted.authority.threadRef ||
+          session.threadRef !== conversation.threadRef ||
+          session.type !== type ||
+          session.scopeId !== scopeId ||
+          session.surface !== "cron"
+        ) {
+          throw new NonRetryableTurnError("scheduled run preallocated session is unavailable or changed");
+        }
+        return session;
+      };
+      const assertScheduleEffectCurrent = input.scheduleAuthority
+        ? async () => {
+            await input.scheduleAuthority!.assertCurrent(input);
+          }
+        : undefined;
       let participantHistorySeqs: Set<number> | undefined;
       let participantHistoryMaxSeq = -1;
       const filterHistory = (entries: SessionEntry[]): SessionEntry[] =>
@@ -526,13 +595,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         );
       const screenSession: { id?: string } = {};
       const pendingScreenRequests: HarnessLlmRequestRecord[] = [];
-      const recordScreenRequest = async (rec: HarnessLlmRequestRecord): Promise<void> => {
+      const recordScreenRequest = async (rec: HarnessLlmRequestRecord, signal?: AbortSignal): Promise<void> => {
         if (!screenSession.id) {
           pendingScreenRequests.push(rec);
           return;
         }
         try {
-          await deps.sessions.recordLlmRequest(screenSession.id, { ...rec, scopeLabel: scopeId });
+          await deps.sessions.recordLlmRequest(screenSession.id, { ...rec, scopeLabel: scopeId }, signal);
         } catch (err) {
           console.error("[orchestrator] failed to persist security screen request snapshot:", errMessage(err));
         }
@@ -688,13 +757,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let type: SessionType = "channel";
         if (conversation.kind === "dm") type = "dm";
         else if (conversation.kind === "group") type = "group";
-        const session = await deps.sessions.getOrCreateByThread(
-          conversation.threadRef,
-          type,
-          scopeId,
-          conversation.channelName,
-          input.surface,
-        );
+        const session = await sessionForTurn(type);
         screenSession.id = session.id;
         if (!input.sessionParticipantIds?.length && !automatedTurn)
           await deps.sessions.addParticipant(session.id, actor.id);
@@ -714,7 +777,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         try {
           await withManagedRosterVersion(async () => {
             await reconcileSessionParticipants(session.id);
-            await Promise.all(pendingScreenRequests.splice(0).map(recordScreenRequest));
+            await Promise.all(pendingScreenRequests.splice(0).map((rec) => recordScreenRequest(rec)));
             for (const overheard of screenedOverheard) {
               const imported = await deps.sessions.append(lease, {
                 type: "user",
@@ -964,13 +1027,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let leaseMs = 0;
       const perf = { credsMs: 0 };
       const sessionStart = Date.now();
-      const session = await deps.sessions.getOrCreateByThread(
-        conversation.threadRef,
-        type,
-        scopeId,
-        conversation.channelName,
-        input.surface,
-      );
+      const session = await sessionForTurn(type);
       screenSession.id = session.id;
       leaseMs += Date.now() - sessionStart;
       if (!input.sessionParticipantIds?.length && !automatedTurn)
@@ -991,7 +1048,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!resolution.approvalGrantModes[grant.scope]) continue;
         commandUses.set(grant.approvalKey ?? grant.command, Infinity);
       }
-      const authorizeToolCall = (tool: string): boolean => {
+      const authorizeToolCall = (tool: string, params?: unknown): boolean => {
+        if (
+          tool === "execute" &&
+          params !== null &&
+          typeof params === "object" &&
+          typeof (params as { command?: unknown }).command === "string" &&
+          evaluateCommandWithLayer((params as { command: string }).command, commandPolicy, layerCommandRules)
+            .subsumesToolApproval
+        ) {
+          return true;
+        }
+        if (tool === "write" && requestWorkspaceWriteAllowed(params, deps.deploymentLayer?.requestWorkspaces ?? [])) {
+          return true;
+        }
         const key = `tool:${tool}`;
         const n = commandUses.get(key) ?? 0;
         if (n <= 0) return false;
@@ -1012,6 +1082,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         reason: string;
         purpose: string;
         summary: string;
+        summaryDetail: string;
         approvalKey: string;
         grantModes: { session: boolean; always: boolean };
       }> = [];
@@ -1021,6 +1092,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           .replace(/\s+/g, " ")
           .trim();
         return cleaned.length > 240 ? `${cleaned.slice(0, 240)}…` : cleaned;
+      };
+      const quarantineFullText = (payload: string): string => {
+        const cleaned = payload.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim();
+        return cleaned.length > 16_000 ? `${cleaned.slice(0, 16_000)}…` : cleaned;
       };
       const brokeredTools = deps.brokeredTools ?? [];
       const cutoverModes = new Map<string, DeviceFlowCutoverMode>();
@@ -1404,7 +1479,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       try {
         await withManagedRosterVersion(async () => {
           await reconcileSessionParticipants(session.id);
-          await Promise.all(pendingScreenRequests.splice(0).map(recordScreenRequest));
+          await Promise.all(pendingScreenRequests.splice(0).map((rec) => recordScreenRequest(rec)));
           return true;
         });
         if (input.approval) {
@@ -1426,11 +1501,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             };
           } else if (p && p.sessionId === session.id) {
             const scope = input.approval.scope ?? "once";
-            const recordDisallowsScope =
-              scope !== "once" &&
-              p.grantModes?.[scope] === false &&
-              p.approvalKey?.startsWith("security-screen-release:") === true;
+            const recordDisallowsScope = scope !== "once" && p.grantModes?.[scope] === false;
+            const quarantineOnceOnly = p.approvalKey?.startsWith("security-screen-release:") === true;
+            const commandOnceOnly = p.grantModes?.session === false && p.grantModes?.always === false;
             if (scope !== "once" && (!resolution.approvalGrantModes[scope] || recordDisallowsScope)) {
+              let reason = `the "${scope}" approval option is disabled by an admin here — approve once or deny`;
+              if (recordDisallowsScope && quarantineOnceOnly) {
+                reason = "quarantined content can only be released once — approve once or deny";
+              } else if (recordDisallowsScope && commandOnceOnly) {
+                reason = "this command can only be approved once — approve once or deny";
+              }
               deps.auditLog.record({
                 at: Date.now(),
                 principalId: actor.id,
@@ -1442,9 +1522,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               return {
                 status: "pending_approval",
                 sessionId: session.id,
-                reason: recordDisallowsScope
-                  ? `quarantined content can only be released once — approve once or deny`
-                  : `the "${scope}" approval option is disabled by an admin here — approve once or deny`,
+                reason,
                 pendingApprovals: [
                   {
                     requestId: input.approval.requestId,
@@ -1455,6 +1533,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     ...(p.matched ? { matched: p.matched } : {}),
                     ...(p.purpose ? { purpose: p.purpose } : {}),
                     ...(p.summary ? { summary: p.summary } : {}),
+                    ...(p.summaryDetail ? { summaryDetail: p.summaryDetail } : {}),
                     ...(p.approvalKey ? { approvalKey: p.approvalKey } : {}),
                     ...(p.kind ? { kind: p.kind } : {}),
                   },
@@ -1818,6 +1897,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
         const tools = createToolContext({
           sandbox: deps.sandbox,
+          ...(assertScheduleEffectCurrent ? { assertEffectCurrent: assertScheduleEffectCurrent } : {}),
           provision,
           provisionScratch,
           ...(provisionOwnerAuth ? { provisionOwnerAuth } : {}),
@@ -1880,6 +1960,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     "approval",
                     gate.matched,
                     gate.approvalKey,
+                    gate.grantModes,
                   );
                 }
                 let aws;
@@ -1987,6 +2068,33 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
           ...(deps.mcp ? { mcp: deps.mcp } : {}),
+          ...(() => {
+            if (
+              input.surface !== "slack" ||
+              conversation.kind !== "dm" ||
+              input.origin.kind !== "human" ||
+              !messageTs ||
+              defaultDestination?.type !== "slack"
+            ) {
+              return {};
+            }
+            const separator = defaultDestination.target.indexOf(":");
+            const slackChannelId =
+              separator < 0 ? defaultDestination.target : defaultDestination.target.slice(0, separator);
+            const slackThreadTs = separator < 0 ? messageTs : defaultDestination.target.slice(separator + 1);
+            const mcpCallContext: McpHumanCallContext = {
+              surface: "slack",
+              conversationType: "dm",
+              principalId: actor.id,
+              slackTeamId: input.trustedSlackTeamId ?? "",
+              slackUserId: input.trustedSlackUserId ?? "",
+              slackChannelId,
+              slackMessageTs: messageTs,
+              slackThreadTs,
+              deliveryTarget: defaultDestination.target,
+            };
+            return { mcpCallContext };
+          })(),
           sessionHistory: {
             search: async (q: string, limit?: number) =>
               searchSessionEntries(
@@ -2314,7 +2422,98 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const wantsOrgFastMode =
           typeof input.fastMode !== "boolean" && humanTurn && (await deps.config?.getInteractiveFastModeDurable());
         const effectiveFastMode = resolveTurnFastMode(input.fastMode, humanTurn, wantsOrgFastMode === true);
-        const runHarnessTurn = (
+        let userProviderKeys: ProviderKeys | undefined;
+        let userModelOverride: string | undefined;
+        let userHarnessOverride: string | undefined;
+        let claudeOauthToken: string | undefined;
+        let codexTurnAuth: CodexTurnAuth | undefined;
+        const userCredStore = deps.userModelCredentials;
+        const individualAuthRequired =
+          !!userCredStore && humanTurn && (await deps.config?.getIndividualModelAuthDurable()) === true;
+        if (individualAuthRequired && deps.runtimeChoiceOverride) {
+          deps.auditLog.record({
+            at: Date.now(),
+            principalId: actor.id,
+            action: "individual-model-auth.bypassed",
+            resource: conversation.threadRef,
+            scopeLabel: scopeId,
+            status: "forced-runtime",
+            detail: JSON.stringify(deps.runtimeChoiceOverride),
+          });
+        } else if (userCredStore && individualAuthRequired) {
+          const [anthCred, oaiCred] = await Promise.all([
+            userCredStore.get(actor.id, "anthropic"),
+            userCredStore.get(actor.id, "openai"),
+          ]);
+          // The org's harness choice decides how a ChatGPT subscription is
+          // served: pi orgs stay on pi (Codex provider inside pi-ai), others
+          // hop to the codex harness.
+          const orgRuntime = await deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId);
+          const preferredHarness = input.harness ?? orgRuntime?.harnessId ?? deps.defaultHarness;
+          const routing = resolveIndividualAuthRouting(
+            anthCred ?? null,
+            oaiCred ?? null,
+            input.model,
+            preferredHarness,
+          );
+          if (routing?.kind === "apikey") {
+            userHarnessOverride = "pi";
+            userProviderKeys = { [routing.provider]: routing.apiKey };
+            userModelOverride = routing.model;
+          } else if (routing?.kind === "oauth" && routing.provider === "anthropic" && anthCred?.oauth) {
+            // Derived material only — the keychain refreshes centrally
+            // (single-flight, CAS) and the refresh token never leaves it.
+            const derived = await userCredStore.derivedOAuth(actor.id, "anthropic");
+            if (derived) {
+              claudeOauthToken = derived.accessToken;
+              userHarnessOverride = routing.harness;
+              userModelOverride = routing.model;
+            }
+          } else if (
+            routing?.kind === "oauth" &&
+            routing.provider === "openai" &&
+            routing.harness === "pi" &&
+            oaiCred?.oauth
+          ) {
+            // pi-on-ChatGPT: pi-ai's openai-codex provider takes the access
+            // token as its key (the account claim rides inside the JWT).
+            const derived = await userCredStore.derivedOAuth(actor.id, "openai");
+            if (derived) {
+              userProviderKeys = { [CODEX_SUBSCRIPTION_PROVIDER]: derived.accessToken };
+              userHarnessOverride = routing.harness;
+              userModelOverride = routing.model;
+            }
+          } else if (routing?.kind === "oauth" && routing.provider === "openai" && oaiCred?.oauth) {
+            const derived = await userCredStore.derivedOAuth(actor.id, "openai");
+            if (derived?.idToken) {
+              codexTurnAuth = {
+                accessToken: derived.accessToken,
+                idToken: derived.idToken,
+                ...(derived.accountId ? { accountId: derived.accountId } : {}),
+                ...(derived.expiresAt !== undefined ? { expiresAt: derived.expiresAt } : {}),
+              };
+              userHarnessOverride = routing.harness;
+              userModelOverride = routing.model;
+            }
+          }
+          if (!userHarnessOverride) {
+            throw new NonRetryableTurnError(
+              "This organization has each person chat on their own AI account, and yours isn't connected yet. Open the web app and connect Claude or ChatGPT from the AI account panel, then try again.",
+            );
+          }
+        }
+        const effectiveModel = userModelOverride ?? input.model;
+        const effectiveHarness = userHarnessOverride ?? input.harness;
+        if (userHarnessOverride) {
+          let authLabel = "api-key";
+          if (claudeOauthToken) authLabel = "claude-oauth";
+          else if (codexTurnAuth) authLabel = "codex-oauth";
+          else if (userProviderKeys?.[CODEX_SUBSCRIPTION_PROVIDER]) authLabel = "codex-oauth-pi";
+          console.log(
+            `[individual-auth] user=${actor.id} harness=${userHarnessOverride} model=${effectiveModel} auth=${authLabel}`,
+          );
+        }
+        const runHarnessTurn = async (
           harnessInput: string,
           extras: {
             environment?: string;
@@ -2336,9 +2535,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               ...(tapeRows.fold ? { fold: tapeRows.fold } : {}),
             };
           }
+          await assertScheduleEffectCurrent?.();
           return deps.harness.turns.runTurn({
             session,
+            ...(userProviderKeys ? { providerKeys: userProviderKeys } : {}),
+            ...(claudeOauthToken ? { claudeOauthToken } : {}),
+            ...(userHarnessOverride ? { runtimePinned: true } : {}),
+            ...(codexTurnAuth ? { codexAuth: codexTurnAuth } : {}),
             ...(input.runId ? { runId: input.runId } : {}),
+            ...(input.scheduleAuthority ? { acceptRunSignals: false } : {}),
             ...(input.cancel ? { cancel: input.cancel } : {}),
             input: harnessInput,
             ...(!partial && messageTs ? { triggerTs: messageTs } : {}),
@@ -2348,8 +2553,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(extras.overheard?.length ? { overheard: extras.overheard } : {}),
             ...(extras.attachments?.length ? { attachments: extras.attachments } : {}),
             ...(extras.images?.length ? { images: extras.images } : {}),
-            ...(input.harness ? { harness: input.harness } : {}),
-            ...(input.model ? { model: input.model } : {}),
+            ...(effectiveHarness ? { harness: effectiveHarness } : {}),
+            ...(effectiveModel ? { model: effectiveModel } : {}),
             ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
             ...(typeof effectiveFastMode === "boolean" ? { fastMode: effectiveFastMode } : {}),
             ...(strictReadOnly ? { readOnly: true } : {}),
@@ -2421,6 +2626,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
                           summary: `Blocked content preview: ${quarantinePreview(result)}`,
+                          summaryDetail: quarantineFullText(result),
                           approvalKey: releaseKey,
                           grantModes: { session: false, always: false },
                         });
@@ -2576,9 +2782,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
               void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
             },
-            recordLlmRequest: async (rec) => {
+            recordLlmRequest: async (rec, signal) => {
               try {
-                await deps.sessions.recordLlmRequest(session.id, { ...rec, scopeLabel: scopeId });
+                await deps.sessions.recordLlmRequest(session.id, { ...rec, scopeLabel: scopeId }, signal);
               } catch (err) {
                 console.error("[orchestrator] failed to persist LLM request snapshot:", errMessage(err));
               }
@@ -2593,6 +2799,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(inbound.metas.length ? { attachments: inbound.metas } : {}),
           ...(inbound.images.length ? { images: inbound.images } : {}),
         });
+        await assertScheduleEffectCurrent?.();
         const primarySubturnEndSeq = emittedEntries.at(-1)?.seq;
         if (
           input.addressed &&
@@ -2611,6 +2818,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const primaryReply = stripAckPrefix(result.reply ?? "", spineAckText).trim();
           if (primaryReply && defaultDestination && deps.deliveries) {
             try {
+              await assertScheduleEffectCurrent?.();
               const directKey = `post:${session.id}:${randomUUID()}`;
               await reachEnqueue({
                 deliveries: deps.deliveries,
@@ -2676,12 +2884,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               },
               { history: nudgeHistory, ...(nudgeTape ? { tape: nudgeTape } : {}) },
             );
+            await assertScheduleEffectCurrent?.();
             if (firstTapeWriteFailed || result.tapeWriteFailed) result = { ...result, tapeWriteFailed: true };
             if (primaryStopped && !result.stopped) result = { ...result, stopped: true };
             if (spine.surfaceOutboundCount === 0 && spine.staySilentReason === undefined && !result.silent) {
               const fallback = stripAckPrefix(result.reply ?? "", spineAckText).trim();
               if (fallback && defaultDestination && deps.deliveries) {
                 try {
+                  await assertScheduleEffectCurrent?.();
                   const fallbackKey = `post:${session.id}:${randomUUID()}`;
                   await reachEnqueue({
                     deliveries: deps.deliveries,
@@ -2706,6 +2916,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
         const totalMs = Date.now() - turnStart;
 
+        await assertScheduleEffectCurrent?.();
         const noOutbound = { attachments: [], oversized: [], empty: [], dropped: 0 };
         const harvestOutbox = conversation.kind === "dm";
         const outboundScoped =
@@ -2994,13 +3205,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const turnApprovals: Array<
             NonNullable<HarnessTurnResult["pendingApprovals"]>[number] & {
               summary?: string;
+              summaryDetail?: string;
               grantModes?: { session: boolean; always: boolean };
             }
           > = [...(result.pendingApprovals ?? []), ...quarantineReleaseApprovals];
           for (const pa of turnApprovals) {
             const blocks = approvalBlocksInput(pa.kind, outcome);
             const command = pa.command;
-            const requestId = commandApprovalId(session.id, command);
+            const onceOnly = pa.grantModes?.session === false && pa.grantModes.always === false;
+            const requestId = commandApprovalId(session.id, command, onceOnly ? randomUUID() : undefined);
             const summary = pa.summary ?? (await approvalSummary(scopeId, command, pa.reason, pa.purpose));
             prepared.push({
               requestId,
@@ -3015,6 +3228,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(pa.matched ? { matched: pa.matched } : {}),
                 ...(pa.purpose ? { purpose: pa.purpose } : {}),
                 ...(summary ? { summary } : {}),
+                ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
               },
@@ -3027,6 +3241,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(pa.matched ? { matched: pa.matched } : {}),
                 ...(pa.purpose ? { purpose: pa.purpose } : {}),
                 ...(summary ? { summary } : {}),
+                ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
               },
@@ -3086,11 +3301,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
         }
         if (err instanceof NeedsApproval) {
-          const requestId = commandApprovalId(session.id, err.command);
-          const grantModesField =
-            resolution.approvalGrantModes.session && resolution.approvalGrantModes.always
-              ? {}
-              : { grantModes: resolution.approvalGrantModes };
+          const onceOnly = err.grantModes?.session === false && err.grantModes.always === false;
+          const requestId = commandApprovalId(session.id, err.command, onceOnly ? randomUUID() : undefined);
+          let grantModesField: { grantModes?: { session: boolean; always: boolean } } = {};
+          if (err.grantModes) grantModesField = { grantModes: err.grantModes };
+          else if (!resolution.approvalGrantModes.session || !resolution.approvalGrantModes.always) {
+            grantModesField = { grantModes: resolution.approvalGrantModes };
+          }
           const summary = await approvalSummary(scopeId, err.command, err.approvalReason);
           try {
             await withManagedRosterVersion(async () => {

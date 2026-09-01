@@ -23,6 +23,7 @@ import type { Delivery } from "../types.ts";
 import type { CoreBridge } from "./core-bridge.ts";
 import type { Mirror } from "./mirror.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
+import { analyticsNativeCardBlocks } from "./native-cards.ts";
 
 const DELIVERY_CLAIM_MS = 15_000;
 
@@ -82,6 +83,8 @@ export function createDeliveryPoller(deps: {
           try {
             const postClient = d.destination.identity ? clientForIdentity(d.destination.identity) : client;
             const { channel, threadTs } = parseDeliveryTarget(d.destination.target);
+            const nativeCard = d.trustedAnalyticsCard ? core.analyticsNativeCard?.(d) : undefined;
+            if (d.trustedAnalyticsCard && !nativeCard) throw new Error("analytics card delivery verification failed");
             if (d.destination.react) {
               const { failed } = await applyReactions(client, channel, d.destination.react.messageTs, [
                 d.destination.react.emoji,
@@ -102,7 +105,10 @@ export function createDeliveryPoller(deps: {
               }
               return undefined;
             }
-            const text = toSlackMrkdwn(runId ? cleanAgentReplyForSlack(d.text).text : stripSlackDirectives(d.text));
+            const sourceText = nativeCard?.fallbackText ?? d.text;
+            const text = toSlackMrkdwn(
+              runId ? cleanAgentReplyForSlack(sourceText).text : stripSlackDirectives(sourceText),
+            );
             const replayAttachments = async (root?: string): Promise<void> => {
               if (!d.attachments?.length) return;
               try {
@@ -113,6 +119,10 @@ export function createDeliveryPoller(deps: {
                   d.attachments,
                   fetchBlobFromCore,
                   fetchFileArtifactFromCore,
+                  {
+                    idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                    verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                  },
                 );
               } catch (err) {
                 console.error(`[slack-plugin] delivery ${d.id} attachment upload failed:`, (err as Error).message);
@@ -131,6 +141,7 @@ export function createDeliveryPoller(deps: {
                     : []),
                 ]
               : undefined;
+            const nativeCardBlocks = nativeCard ? analyticsNativeCardBlocks(nativeCard) : undefined;
             if (!text.trim()) {
               if (taskList) {
                 let preserved = false;
@@ -185,6 +196,7 @@ export function createDeliveryPoller(deps: {
               }
             }
             const footerBlocks =
+              nativeCardBlocks ??
               taskListBlocks ??
               (d.destination.debugFooter && text.length <= 2900
                 ? [
@@ -208,7 +220,11 @@ export function createDeliveryPoller(deps: {
                   d.attachments!,
                   fetchBlobFromCore,
                   fetchFileArtifactFromCore,
-                  { initialComment: text },
+                  {
+                    initialComment: text,
+                    idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                    verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                  },
                 );
                 if (uploaded.uploaded) {
                   const root = threadTs ?? uploaded.messageTs;
@@ -228,7 +244,7 @@ export function createDeliveryPoller(deps: {
                 ...(footerBlocks ? { blocks: footerBlocks } : {}),
               },
               d.idempotencyKey ?? d.id,
-              runId
+              runId || nativeCard
                 ? {
                     verifyFirst: true,
                     ...(typeof d.createdAt === "number" ? { verifyOldest: String((d.createdAt - 5_000) / 1000) } : {}),
@@ -280,7 +296,11 @@ export function createDeliveryPoller(deps: {
                   d.attachments,
                   fetchBlobFromCore,
                   fetchFileArtifactFromCore,
-                  { initialComment: text },
+                  {
+                    initialComment: text,
+                    idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                    verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                  },
                 );
                 if (uploaded.uploaded) {
                   composedUpload = true;
@@ -307,6 +327,10 @@ export function createDeliveryPoller(deps: {
                     d.attachments,
                     fetchBlobFromCore,
                     fetchFileArtifactFromCore,
+                    {
+                      idempotencyKey: `${d.idempotencyKey ?? d.id}:attachments`,
+                      verifyOldest: String(Math.max(0, (d.createdAt - 5_000) / 1_000)),
+                    },
                   );
                 } catch (error) {
                   uploadError = error;

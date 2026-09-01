@@ -13,7 +13,7 @@ test("scope-default buttons render when any runtime setting differs from the sco
 });
 
 test("composer-right keeps its control order: make default, use org default, model, harness, send", () => {
-  const right = composer.slice(composer.indexOf('class="composer-right"'));
+  const right = composer.slice(composer.indexOf("let runtimeControls"));
   const makeDefault = right.indexOf("Make default");
   const orgDefault = right.indexOf("Use org default");
   const model = right.indexOf('kind: "model"');
@@ -32,6 +32,10 @@ test("composer-right keeps its control order: make default, use org default, mod
   assert.ok(orgDefault < model, "Use org default should precede the model picker");
   assert.ok(model < harness, "the model picker should precede the harness picker");
   assert.ok(harness < send, "the harness picker should precede the send controls");
+  const rendered = composer.slice(composer.indexOf('class="composer-right"'));
+  const controlsAt = rendered.indexOf("${runtimeControls}");
+  assert.ok(controlsAt >= 0, "runtimeControls must be rendered inside composer-right");
+  assert.ok(controlsAt < rendered.indexOf("sendControls(agent)"), "runtime controls render before send controls");
 });
 
 test("attaching files is allowed while a turn is streaming", () => {
@@ -86,4 +90,11 @@ test("long model menus stay searchable and show the selected effort", () => {
   assert.match(composer, /placeholder="Search models…"/);
   assert.match(composer, /option\.groupLabel/);
   assert.match(composer, /suffix: `· \$\{effortLabel\(composerState\.effortLevel\)}`/);
+});
+
+test("composer menus stay inside the visible viewport", () => {
+  assert.match(composer, /function placeComposerMenu\(kind: ComposerMenu\)/);
+  assert.match(composer, /window\.visualViewport/);
+  assert.match(composer, /--menu-available-height/);
+  assert.match(composer, /classList\.toggle\("drop-down", placeBelow\)/);
 });

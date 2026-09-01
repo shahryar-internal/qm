@@ -92,24 +92,32 @@ export interface StoredApproval {
   reason?: string;
   purpose?: string;
   summary?: string;
+  grantModes?: { session: boolean; always: boolean };
   request?: Record<string, unknown>;
 }
 
 export interface RecoveredApprovalContext {
   requesterId: string;
+  approvalRequesterUserId?: string;
   channel: string;
   replyThreadTs?: string;
+  nativeAgentSession?: {
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+  };
   threadOnly: boolean;
   approvalChannel: string;
   command: string;
   reason: string;
   purpose?: string;
   summary?: string;
+  grantModes?: { session: boolean; always: boolean };
   turn: Record<string, unknown>;
 }
 
 export function recoveredApprovalContext(
-  stored: Pick<StoredApproval, "command" | "reason" | "purpose" | "summary" | "request">,
+  stored: Pick<StoredApproval, "command" | "reason" | "purpose" | "summary" | "grantModes" | "request">,
   click: { channel: string; threadTs?: string },
 ): RecoveredApprovalContext | null {
   const req = stored.request as
@@ -130,22 +138,41 @@ export function recoveredApprovalContext(
     relayInput: _relayInput,
     intakePreambleMs: _intakePreambleMs,
     clientSentAt: _clientSentAt,
+    verifiedSlack: _verifiedSlack,
+    slackAgentSessionToken: _slackAgentSessionToken,
+    slackAgentSession: _slackAgentSession,
     ...turn
   } = req;
   const origin =
     typeof req.deliveryTarget === "string" && req.deliveryTarget
       ? parseDeliveryTarget(req.deliveryTarget)
       : { channel: click.channel, ...(click.threadTs ? { threadTs: click.threadTs } : {}) };
+  const verified = req.verifiedSlack as
+    { teamId?: unknown; userId?: unknown; channelId?: unknown; threadTs?: unknown } | undefined;
+  const nativeAgentSession =
+    typeof verified?.teamId === "string" &&
+    typeof verified.userId === "string" &&
+    typeof verified.channelId === "string" &&
+    typeof verified.threadTs === "string"
+      ? {
+          teamId: verified.teamId,
+          channelId: verified.channelId,
+          threadTs: verified.threadTs,
+        }
+      : undefined;
   return {
     requesterId: req.actor.externalId,
+    ...(typeof verified?.userId === "string" ? { approvalRequesterUserId: verified.userId } : {}),
     channel: origin.channel,
     ...(origin.threadTs ? { replyThreadTs: origin.threadTs } : {}),
+    ...(nativeAgentSession ? { nativeAgentSession } : {}),
     threadOnly: kind === "channel",
     approvalChannel: click.channel,
     command: stored.command,
     reason: stored.reason ?? "requires approval",
     ...(stored.purpose ? { purpose: stored.purpose } : {}),
     ...(stored.summary ? { summary: stored.summary } : {}),
+    ...(stored.grantModes ? { grantModes: stored.grantModes } : {}),
     turn,
   };
 }

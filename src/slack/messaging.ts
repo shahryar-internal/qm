@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import {
   type ActorAssertion,
   type AgentRequestDirective,
   type ReactionDirective,
+  type ReactionCompensationVerdict,
   AGENT_REQUEST_INSTRUCTION,
   MAX_REACTIONS_PER_TURN,
   REACTION_INSTRUCTION,
@@ -79,17 +81,128 @@ export async function applyAndLogReactions(
   channel: string,
   defaultTs: string | undefined,
   directives: readonly ReactionDirective[],
+  opts: {
+    isCancelled?: () => boolean | Promise<boolean>;
+    compensateCreatedReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      sequence: number;
+    }) => Promise<ReactionCompensationVerdict>;
+    reactionEffectScopeId?: string;
+    reactionEffectSequenceBase?: number;
+    admitDesiredReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      sequence: number;
+    }) => Promise<boolean>;
+    withdrawDesiredReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      sequence: number;
+    }) => Promise<void>;
+    cancelDesiredReaction?: (input: {
+      channel: string;
+      timestamp: string;
+      name: string;
+      effectId: string;
+      sequence: number;
+    }) => Promise<void>;
+  } = {},
 ): Promise<void> {
+  const hasEffectLifecycle =
+    !!opts.reactionEffectScopeId ||
+    !!opts.compensateCreatedReaction ||
+    !!opts.admitDesiredReaction ||
+    !!opts.withdrawDesiredReaction ||
+    !!opts.cancelDesiredReaction;
+  if (
+    hasEffectLifecycle &&
+    (!opts.reactionEffectScopeId ||
+      !opts.compensateCreatedReaction ||
+      !opts.admitDesiredReaction ||
+      !opts.withdrawDesiredReaction ||
+      !opts.cancelDesiredReaction)
+  ) {
+    throw new Error(
+      "Slack reaction effect lifecycle requires identity, desire, withdrawal, cancellation, and cleanup adapters",
+    );
+  }
   let budget = MAX_REACTIONS_PER_TURN;
-  for (const d of directives) {
+  for (const [directiveOrdinal, d] of directives.entries()) {
     if (budget <= 0) break;
     const timestamp = d.target ?? defaultTs;
     if (!d.names.length || !timestamp) continue;
-    const { added, failed } = await applyReactions(client, channel, timestamp, d.names.slice(0, budget));
+    const { added, failed, pendingRemoval } = await applyReactions(
+      client,
+      channel,
+      timestamp,
+      d.names.slice(0, budget),
+      {
+        ...opts,
+        compensateCreatedReaction: opts.compensateCreatedReaction
+          ? (input) =>
+              opts.compensateCreatedReaction!({
+                ...input,
+                sequence:
+                  (opts.reactionEffectSequenceBase ?? 0) + directiveOrdinal * MAX_REACTIONS_PER_TURN + input.ordinal,
+              })
+          : undefined,
+        compensationEffectId: opts.reactionEffectScopeId
+          ? ({ channel: effectChannel, timestamp, name, ordinal }) =>
+              `reaction-effect:${createHash("sha256")
+                .update(
+                  JSON.stringify([
+                    opts.reactionEffectScopeId,
+                    directiveOrdinal,
+                    ordinal,
+                    effectChannel,
+                    timestamp,
+                    name,
+                  ]),
+                )
+                .digest("hex")}`
+          : undefined,
+        admitDesiredReaction: opts.admitDesiredReaction
+          ? (input) =>
+              opts.admitDesiredReaction!({
+                ...input,
+                sequence:
+                  (opts.reactionEffectSequenceBase ?? 0) + directiveOrdinal * MAX_REACTIONS_PER_TURN + input.ordinal,
+              })
+          : undefined,
+        withdrawDesiredReaction: opts.withdrawDesiredReaction
+          ? (input) =>
+              opts.withdrawDesiredReaction!({
+                ...input,
+                sequence:
+                  (opts.reactionEffectSequenceBase ?? 0) + directiveOrdinal * MAX_REACTIONS_PER_TURN + input.ordinal,
+              })
+          : undefined,
+        cancelDesiredReaction: opts.cancelDesiredReaction
+          ? (input) =>
+              opts.cancelDesiredReaction!({
+                ...input,
+                sequence:
+                  (opts.reactionEffectSequenceBase ?? 0) + directiveOrdinal * MAX_REACTIONS_PER_TURN + input.ordinal,
+              })
+          : undefined,
+      },
+    );
     budget -= added.length + failed.length;
     if (failed.length) {
       console.error(
         `[slack-plugin] couldn't add reaction(s): ${failed.join(", ")} on ${timestamp} (check the reactions:write scope / message ts)`,
+      );
+    }
+    if (pendingRemoval?.length) {
+      console.error(
+        `[slack-plugin] cancellation cleanup pending for reaction(s): ${pendingRemoval.join(", ")} on ${timestamp}`,
       );
     }
   }
