@@ -93,6 +93,7 @@ const brainToolNames = [
   "brain_slipped_initiatives",
   "brain_analytics_targetable_deployments",
 ] as const;
+const clarifyToolNames = ["clarify_search_meetings", "clarify_read_meeting"] as const;
 const brainInputSchema = {
   type: "object",
   properties: { query: { type: "string", minLength: 1 } },
@@ -204,7 +205,7 @@ test("founder-DM signer binds canonical body and rejects every other user, team,
     status: "ready",
     algorithm: "Ed25519",
     authority: MCP_FOUNDER_DM_AUTHORITY,
-    tools: ["analytics_query", ...brainToolNames],
+    tools: ["analytics_query", ...brainToolNames, ...clarifyToolNames],
     profileSha256: createHash("sha256")
       .update(
         JSON.stringify({
@@ -266,11 +267,11 @@ test("founder-DM signer binds canonical body and rejects every other user, team,
   );
 });
 
-test("founder-DM signer closes authority to Analytics and every reviewed Brain tool with fresh exact envelopes", () => {
+test("founder-DM signer closes authority to Analytics, Brain, and Clarify reads with fresh exact envelopes", () => {
   const signer = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
   const bodies = new Set<string>();
   const jtis = new Set<string>();
-  for (const tool of ["analytics_query", ...brainToolNames]) {
+  for (const tool of ["analytics_query", ...brainToolNames, ...clarifyToolNames]) {
     const body = { query: tool };
     const first = decodeAuthority(signer.sign(tool, body, context).token);
     const second = decodeAuthority(signer.sign(tool, body, context).token);
@@ -281,8 +282,8 @@ test("founder-DM signer closes authority to Analytics and every reviewed Brain t
     jtis.add(first.jti);
     jtis.add(second.jti);
   }
-  assert.equal(bodies.size, brainToolNames.length + 1);
-  assert.equal(jtis.size, (brainToolNames.length + 1) * 2);
+  assert.equal(bodies.size, brainToolNames.length + clarifyToolNames.length + 1);
+  assert.equal(jtis.size, (brainToolNames.length + clarifyToolNames.length + 1) * 2);
   for (const changed of [
     { principalId: "attacker@example.com" },
     { slackUserId: "U999" },

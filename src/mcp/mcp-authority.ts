@@ -44,7 +44,9 @@ type McpFounderDmAuthorityTool =
   | "brain_open_commitments_for_account"
   | "brain_open_risks_for_account"
   | "brain_slipped_initiatives"
-  | "brain_analytics_targetable_deployments";
+  | "brain_analytics_targetable_deployments"
+  | "clarify_search_meetings"
+  | "clarify_read_meeting";
 
 export const MCP_FOUNDER_DM_AUTHORITY = "qm.ed25519.founder-dm.v1" as const;
 
@@ -101,6 +103,8 @@ const FOUNDER_DM_AUTHORITY_TOOL_NAMES = Object.freeze([
   "brain_open_risks_for_account",
   "brain_slipped_initiatives",
   "brain_analytics_targetable_deployments",
+  "clarify_search_meetings",
+  "clarify_read_meeting",
 ] as const satisfies readonly McpFounderDmAuthorityTool[]);
 const FOUNDER_DM_AUTHORITY_TOOLS = new Set<McpFounderDmAuthorityTool>(FOUNDER_DM_AUTHORITY_TOOL_NAMES);
 
