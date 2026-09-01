@@ -180,7 +180,7 @@ function normalizedBundle(input: DeploymentLayerBundle): DeploymentLayerBundle {
           path,
           content: file.content,
           ...(file.executable === true ? { executable: true } : {}),
-          ...(kind === "background-jobs" && file.enabled !== undefined ? { enabled: file.enabled } : {}),
+          ...(kind === "background-jobs" && file.enabled === false ? { enabled: false } : {}),
         };
       })
       .sort(pathOrder);
@@ -556,7 +556,7 @@ export function createDeploymentLayerStore(opts: {
 
   const apply = async (record: StoredDeploymentLayer): Promise<void> => {
     retiredBackgroundJobs(record.retiredBackgroundJobs);
-    if (/^[a-f0-9]{64}$/.test(record.contentHash) && contentHash(record.bundle) !== record.contentHash) {
+    if (contentHash(record.bundle) !== record.contentHash) {
       throw new Error("deployment layer durable record hash is invalid");
     }
     const { manifests, runtime: nextRuntime } = validateBundle(record.bundle, `durable:${record.contentHash}`);

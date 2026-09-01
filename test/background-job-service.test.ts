@@ -835,6 +835,13 @@ test("the deployment store durably tombstones removals and restores owner contro
   const installed = await deployment.put({ contract: 1, tools: [], skills: [], backgroundJobs: [job] }, "signed-admin");
   assert.equal(installed.contentHash, createHash("sha256").update(JSON.stringify(installed.bundle)).digest("hex"));
   assert.equal(runtime.backgroundJobs[0]!.enabled, true);
+  const explicitEnabled = await deployment.put(
+    { contract: 1, tools: [], skills: [], backgroundJobs: [{ ...job, enabled: true }] },
+    "signed-admin",
+  );
+  assert.equal(explicitEnabled.version, installed.version);
+  assert.equal(explicitEnabled.contentHash, installed.contentHash);
+  assert.deepEqual(explicitEnabled.bundle, installed.bundle);
   const originalDescriptorSha256 = runtime.backgroundJobs[0]!.binding.descriptorSha256;
   const changed = manifest();
   changed.definition.status.path = "/api/jobs/report-preview/changed-status";

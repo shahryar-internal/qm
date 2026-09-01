@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   createDeploymentLayerStore,
   DeploymentLayerPersistedError,
@@ -14,6 +15,7 @@ import { scopeId } from "../src/types.ts";
 import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { computeBundleHash, createSkillBundleStore } from "../src/skills/skill-bundle-store.ts";
+import { deploymentLayerCanonicalBody } from "../cli/src/deployment-layer.ts";
 
 const tool = (advertise: string): DeploymentLayerBundle["tools"][number] => ({
   path: "tools/acme/tool.json",
@@ -41,6 +43,9 @@ const publicRuntime = (runtime: ReturnType<typeof resolvedDeploymentLayer>) => {
   const { dir: _dir, ...resolved } = runtime;
   return resolved;
 };
+
+const deploymentLayerHash = (bundle: DeploymentLayerBundle): string =>
+  createHash("sha256").update(deploymentLayerCanonicalBody(bundle)).digest("hex");
 
 test("the durable deployment layer versions by content, hydrates runtime state, and archives removed skills", async () => {
   const backing = createMemoryMap<StoredDeploymentLayer>();
@@ -128,6 +133,26 @@ test("durable hydration accepts JSONB object-key reordering without weakening th
   assert.equal((await recovered.hydrate())?.contentHash, stored.contentHash);
   assert.equal(await recovered.isApplied(stored.contentHash), true);
   assert.deepEqual(runtime.advertisedTools, ["jsonb-safe"]);
+});
+
+test("durable hydration rejects a non-digest record even when its bundle is valid", async (t) => {
+  t.mock.method(console, "error", () => undefined);
+  const backing = createMemoryMap<StoredDeploymentLayer>();
+  const skills = createSkillStore({ signingSecret: "layer-test" });
+  const org = scopeId("org", "default-org");
+  const stored = await createDeploymentLayerStore({
+    backing,
+    runtime: emptyDeploymentLayer(),
+    skills,
+    scopeId: org,
+  }).put({ contract: 1, tools: [tool("must-not-apply")], skills: [] }, "test");
+  await backing.put("current", { ...stored, contentHash: "invalid-hash" });
+
+  const runtime = emptyDeploymentLayer();
+  const recovered = createDeploymentLayerStore({ backing, runtime, skills, scopeId: org });
+  assert.equal((await recovered.hydrate())?.contentHash, "invalid-hash");
+  assert.equal(await recovered.isApplied("invalid-hash"), false);
+  assert.deepEqual(runtime.advertisedTools, []);
 });
 
 test("invalid descriptors never replace the durable current layer", async () => {
@@ -302,12 +327,18 @@ test("a stored record that no longer applies degrades to the seed instead of fai
   const errors: string[] = [];
   t.mock.method(console, "error", (...args: unknown[]) => errors.push(args.map(String).join(" ")));
   const backing = createMemoryMap<StoredDeploymentLayer>();
+  const bundle = {
+    contract: 1 as const,
+    tools: [],
+    skills: [{ path: "skills/broken/README.md", content: "no SKILL.md here" }],
+  };
+  const hash = deploymentLayerHash(bundle);
   await backing.put("current", {
-    contentHash: "poisoned",
+    contentHash: hash,
     version: 1,
     updatedAt: 1,
     updatedBy: "old-cli",
-    bundle: { contract: 1, tools: [], skills: [{ path: "skills/broken/README.md", content: "no SKILL.md here" }] },
+    bundle,
     resolved: (() => {
       const { dir: _dir, ...r } = emptyDeploymentLayer();
       return r;
@@ -328,9 +359,9 @@ test("a stored record that no longer applies degrades to the seed instead of fai
   });
   const record = await store.hydrate();
   const logged = errors.length;
-  assert.equal(record?.contentHash, "poisoned", "hydrate resolves — boot is not bricked");
+  assert.equal(record?.contentHash, hash, "hydrate resolves — boot is not bricked");
   assert.equal(seeded, 1, "the baked-in seed serves until a valid layer is PUT");
-  assert.equal((await store.get())?.contentHash, "poisoned", "status reads do not retry the failed apply as a 500");
+  assert.equal((await store.get())?.contentHash, hash, "status reads do not retry the failed apply as a 500");
   assert.equal(store.live().source, "filesystem", "status reads leave the fallback runtime in place");
   await store.hydrate();
   assert.equal(errors.length, logged, "later sweeps retry once without repeating the backoff or failure logs");
@@ -358,12 +389,18 @@ test("a failed seed is retried on the next hydrate (seeded only latches on succe
 test("a failed fallback seed after an incompatible stored layer fails boot and retries", async (t) => {
   t.mock.method(console, "error", () => undefined);
   const backing = createMemoryMap<StoredDeploymentLayer>();
+  const bundle = {
+    contract: 1 as const,
+    tools: [],
+    skills: [{ path: "skills/broken/README.md", content: "no SKILL.md here" }],
+  };
+  const hash = deploymentLayerHash(bundle);
   await backing.put("current", {
-    contentHash: "poisoned-seed",
+    contentHash: hash,
     version: 1,
     updatedAt: 1,
     updatedBy: "old-cli",
-    bundle: { contract: 1, tools: [], skills: [{ path: "skills/broken/README.md", content: "no SKILL.md here" }] },
+    bundle,
     resolved: (() => {
       const { dir: _dir, ...resolved } = emptyDeploymentLayer();
       return resolved;
@@ -382,7 +419,7 @@ test("a failed fallback seed after an incompatible stored layer fails boot and r
   });
 
   await assert.rejects(store.hydrate(), /fallback write failed/);
-  assert.equal((await store.hydrate())?.contentHash, "poisoned-seed");
+  assert.equal((await store.hydrate())?.contentHash, hash);
   assert.equal(attempts, 2);
 });
 
@@ -431,6 +468,12 @@ test("a layer that appears mid-seed but fails to apply leaves the fallback live 
   t.mock.method(console, "error", (...args: unknown[]) => errors.push(args.map(String).join(" ")));
   const backing = createMemoryMap<StoredDeploymentLayer>();
   const runtime = resolvedDeploymentLayer("/fallback", []);
+  const bundle = {
+    contract: 1 as const,
+    tools: [],
+    skills: [{ path: "skills/broken/README.md", content: "no SKILL.md here" }],
+  };
+  const hash = deploymentLayerHash(bundle);
   const store = createDeploymentLayerStore({
     backing,
     runtime,
@@ -439,11 +482,11 @@ test("a layer that appears mid-seed but fails to apply leaves the fallback live 
     retryDelaysMs: [],
     seedFallback: async () => {
       await backing.put("current", {
-        contentHash: "appeared-poisoned",
+        contentHash: hash,
         version: 1,
         updatedAt: 1,
         updatedBy: "other-instance",
-        bundle: { contract: 1, tools: [], skills: [{ path: "skills/broken/README.md", content: "no SKILL.md here" }] },
+        bundle,
         resolved: (() => {
           const { dir: _dir, ...resolved } = emptyDeploymentLayer();
           return resolved;
@@ -452,10 +495,10 @@ test("a layer that appears mid-seed but fails to apply leaves the fallback live 
     },
   });
 
-  assert.equal((await store.hydrate())?.contentHash, "appeared-poisoned");
+  assert.equal((await store.hydrate())?.contentHash, hash);
   assert.equal(store.live().source, "filesystem");
-  assert.equal((await store.get())?.contentHash, "appeared-poisoned");
-  assert.ok(errors.some((line) => line.includes("appeared-poisoned failed to apply")));
+  assert.equal((await store.get())?.contentHash, hash);
+  assert.ok(errors.some((line) => line.includes(`${hash} failed to apply`)));
 });
 
 test("a mid-seed layer that fails during skill mutation keeps the fallback live and retries later", async () => {
@@ -470,6 +513,15 @@ test("a mid-seed layer that fails during skill mutation keeps the fallback live 
     },
   };
   const runtime = resolvedDeploymentLayer("/fallback", []);
+  const bundle = {
+    contract: 1 as const,
+    tools: [],
+    skills: [
+      { path: "skills/a/SKILL.md", content: "---\nname: a\ndescription: A.\n---\na\n" },
+      { path: "skills/b/SKILL.md", content: "---\nname: b\ndescription: B.\n---\nb\n" },
+    ],
+  };
+  const hash = deploymentLayerHash(bundle);
   const store = createDeploymentLayerStore({
     backing,
     runtime,
@@ -478,18 +530,11 @@ test("a mid-seed layer that fails during skill mutation keeps the fallback live 
     retryDelaysMs: [],
     seedFallback: async () => {
       await backing.put("current", {
-        contentHash: "appeared-partial",
+        contentHash: hash,
         version: 1,
         updatedAt: 1,
         updatedBy: "other-instance",
-        bundle: {
-          contract: 1,
-          tools: [],
-          skills: [
-            { path: "skills/a/SKILL.md", content: "---\nname: a\ndescription: A.\n---\na\n" },
-            { path: "skills/b/SKILL.md", content: "---\nname: b\ndescription: B.\n---\nb\n" },
-          ],
-        },
+        bundle,
         resolved: (() => {
           const { dir: _dir, ...resolved } = emptyDeploymentLayer();
           return resolved;
@@ -498,9 +543,9 @@ test("a mid-seed layer that fails during skill mutation keeps the fallback live 
     },
   });
 
-  assert.equal((await store.hydrate())?.contentHash, "appeared-partial");
+  assert.equal((await store.hydrate())?.contentHash, hash);
   assert.equal(store.live().source, "filesystem");
-  assert.equal((await store.hydrate())?.contentHash, "appeared-partial");
+  assert.equal((await store.hydrate())?.contentHash, hash);
   assert.equal(store.live().source, "durable", "the refresh retry applies once the transient skill-store error clears");
 });
 
@@ -652,18 +697,20 @@ test("PUT validates cross-tool credential paths before persisting", async () => 
 test("hydrate reparses bundle descriptors instead of trusting stored resolved fields", async (t) => {
   t.mock.method(console, "error", () => undefined);
   const backing = createMemoryMap<StoredDeploymentLayer>();
+  const bundle = {
+    contract: 1 as const,
+    tools: [
+      { path: "tools/bad/tool.json", content: JSON.stringify({ id: "BAD; touch /tmp/pwned", advertise: "unsafe" }) },
+    ],
+    skills: [],
+  };
+  const hash = deploymentLayerHash(bundle);
   await backing.put("current", {
-    contentHash: "legacy-unvalidated",
+    contentHash: hash,
     version: 7,
     updatedAt: 1,
     updatedBy: "legacy",
-    bundle: {
-      contract: 1,
-      tools: [
-        { path: "tools/bad/tool.json", content: JSON.stringify({ id: "BAD; touch /tmp/pwned", advertise: "unsafe" }) },
-      ],
-      skills: [],
-    },
+    bundle,
     resolved: {
       ...publicRuntime(resolvedDeploymentLayer("legacy", [{ id: "safe", advertise: "tampered cache" }])),
     },
@@ -677,7 +724,7 @@ test("hydrate reparses bundle descriptors instead of trusting stored resolved fi
     retryDelaysMs: [],
   });
   assert.equal((await store.hydrate())?.version, 7);
-  assert.equal(await store.isApplied("legacy-unvalidated"), false);
+  assert.equal(await store.isApplied(hash), false);
   assert.equal(store.live().source, "filesystem");
   assert.deepEqual(runtime.advertisedTools, []);
 });
