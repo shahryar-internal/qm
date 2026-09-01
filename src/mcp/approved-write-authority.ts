@@ -466,19 +466,39 @@ export function loadApprovedWriteAuthoritySigner(
   env: Readonly<Record<string, string | undefined>>,
   now = () => Date.now(),
 ): McpApprovedWriteAuthoritySigner | undefined {
-  const dir = join(layerDir, "mcp-authorities");
-  if (!existsSync(dir)) return undefined;
-  const dirStat = lstatSync(dir);
-  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
-    throw new Error(`${dir} must be a regular directory`);
+  const directories = [join(layerDir, "mcp-authorities")];
+  const skillsDir = join(layerDir, "skills");
+  if (existsSync(skillsDir)) {
+    const skillsStat = lstatSync(skillsDir);
+    if (skillsStat.isSymbolicLink() || !skillsStat.isDirectory()) {
+      throw new Error(`${skillsDir} must be a regular directory`);
+    }
+    for (const entry of readdirSync(skillsDir, { withFileTypes: true })
+      .filter((candidate) => !JUNK_FILE.test(candidate.name))
+      .sort((left, right) => left.name.localeCompare(right.name, "en"))) {
+      const skillDir = join(skillsDir, entry.name);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error(`${skillDir} must be a regular directory`);
+      }
+      directories.push(join(skillDir, "mcp-authorities"));
+    }
   }
-  const entries = readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => !JUNK_FILE.test(entry.name))
-    .sort((left, right) => left.name.localeCompare(right.name, "en"));
-  if (entries.length === 0 || entries.length > 16) {
+  const descriptorFiles = directories.flatMap((dir) => {
+    if (!existsSync(dir)) return [];
+    const dirStat = lstatSync(dir);
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+      throw new Error(`${dir} must be a regular directory`);
+    }
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => !JUNK_FILE.test(entry.name))
+      .sort((left, right) => left.name.localeCompare(right.name, "en"))
+      .map((entry) => ({ dir, entry }));
+  });
+  if (descriptorFiles.length === 0) return undefined;
+  if (descriptorFiles.length > 16) {
     throw new Error("approved write authority layer must contain 1 through 16 descriptors");
   }
-  const descriptors = entries.map((entry) => {
+  const descriptors = descriptorFiles.map(({ dir, entry }) => {
     const path = join(dir, entry.name);
     if (!entry.isFile() || !entry.name.endsWith(".json")) {
       throw new Error(`${path} must be a regular JSON file`);

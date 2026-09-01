@@ -368,3 +368,21 @@ test("deployment authority signer binds a fresh founder DM click and emits order
   const lateSigner = loadApprovedWriteAuthoritySigner(dir, env, () => 1_788_291_154_000)!;
   assert.throws(() => lateSigner.sign("append_note", callerArgs, callContext), /no longer fresh/);
 });
+
+test("deployment authority signer loads a descriptor delivered inside one deployment skill", () => {
+  const dir = mkdtempSync(join(tmpdir(), "approved-write-layer-skill-"));
+  const descriptorDir = join(dir, "skills", "governed-write", "mcp-authorities");
+  mkdirSync(descriptorDir, { recursive: true });
+  writeFileSync(join(descriptorDir, "append-note.json"), JSON.stringify(authorityDescriptor()));
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const signer = loadApprovedWriteAuthoritySigner(dir, {
+    WRITE_ISSUER: "https://issuer.example.com/",
+    WRITE_KEY_ID: "write-key-1",
+    WRITE_PRIVATE_KEY: privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    WRITE_PRINCIPAL: "founder@example.com",
+    WRITE_TEAM_ID: "T12345678",
+    WRITE_USER_ID: "U12345678",
+    WRITE_DM_ID: "D12345678",
+  });
+  assert.ok(signer);
+});
