@@ -167,6 +167,20 @@ test("admin tier (derived gate): non-admin sub is 403 before the upstream; admin
   assert.equal(body.cookie, "admin=U-admin");
 });
 
+test("authority readiness traverses the exact Portal-to-Admin path without exposing a public route", async () => {
+  const response = await fetch(`${base}/admin/api/mcp-authority-readiness`, {
+    headers: { cookie: sessionCookie("U-admin"), accept: "application/json" },
+  });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { url: string; cookie: string };
+  assert.equal(body.url, "/api/mcp-authority-readiness");
+  assert.equal(body.cookie, "admin=U-admin");
+  assert.equal(
+    (await fetch(`${base}/mcp-authority-readiness`, { headers: { accept: "application/json" } })).status,
+    401,
+  );
+});
+
 test("admin gate fails closed for an unknown sub (whoami false ⇒ 403)", async () => {
   const r = await fetch(`${base}/admin/api/me`, { headers: { cookie: sessionCookie("U-ghost") } });
   assert.equal(r.status, 403);

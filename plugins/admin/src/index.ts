@@ -318,6 +318,7 @@ const READS = [
   "model-providers",
   "custom-providers",
   "mcp-servers",
+  "mcp-authority-readiness",
 ];
 
 const server = createServer((req, res) => {
@@ -466,7 +467,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       : forward(req, res, principal, m, corePath, await readBody(req));
   }
 
-  if (method === "GET" && READS.includes(first)) {
+  const exactReadPath = first !== "mcp-authority-readiness" || rest === "mcp-authority-readiness";
+  if (method === "GET" && READS.includes(first) && exactReadPath) {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", `/v1/admin/${rest}${url.search}`);
   }

@@ -104,6 +104,25 @@ test("the MCP registry is reachable only through the signed Admin proxy", async 
   assert.equal(calls.length, before);
 });
 
+test("the exact authority readiness read reaches Core while adjacent paths and methods stay closed", async () => {
+  const response = await fetch(`${base}/api/mcp-authority-readiness`, { headers: { cookie: ADMIN } });
+  assert.equal(response.status, 200);
+  const call = calls.at(-1)!;
+  assert.equal(call.method, "GET");
+  assert.equal(call.url, "/v1/admin/mcp-authority-readiness");
+  assert.equal(call.actor, "U-admin@acme");
+  assert.equal(call.signed, true);
+
+  const before = calls.length;
+  assert.equal((await fetch(`${base}/api/mcp-authority-readiness`)).status, 401);
+  assert.equal(
+    (await fetch(`${base}/api/mcp-authority-readiness`, { method: "POST", headers: { cookie: ADMIN } })).status,
+    404,
+  );
+  assert.equal((await fetch(`${base}/api/mcp-authority-readiness/extra`, { headers: { cookie: ADMIN } })).status, 404);
+  assert.equal(calls.length, before);
+});
+
 test("an exact safe-id runtime self-check POST is proxied, while adjacent runtime paths stay closed", async () => {
   const response = await fetch(`${base}/api/runtime/tools/sample-tool/self-check`, {
     method: "POST",
