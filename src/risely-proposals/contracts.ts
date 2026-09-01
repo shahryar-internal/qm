@@ -25,13 +25,13 @@ const SOURCE_TRUST = ["verified_source", "untrusted_source_data", "unavailable_s
 const AVAILABILITY = ["available", "unavailable"] as const;
 const SOURCE_AVAILABILITY = ["available", "unavailable", "unresolved"] as const;
 
-export type RiselyProposalSectionKey = (typeof SECTION_KEYS)[number];
-export type RiselyProposalEvidenceSource = (typeof SOURCE_KINDS)[number];
-export type RiselyProposalEvidenceStatus = (typeof EVIDENCE_STATUSES)[number];
-export type RiselyProposalEvidenceTrust = (typeof EVIDENCE_TRUST)[number];
-export type RiselyProposalSourceTrust = (typeof SOURCE_TRUST)[number];
+type RiselyProposalSectionKey = (typeof SECTION_KEYS)[number];
+type RiselyProposalEvidenceSource = (typeof SOURCE_KINDS)[number];
+type RiselyProposalEvidenceStatus = (typeof EVIDENCE_STATUSES)[number];
+type RiselyProposalEvidenceTrust = (typeof EVIDENCE_TRUST)[number];
+type RiselyProposalSourceTrust = (typeof SOURCE_TRUST)[number];
 
-export interface RiselyProposalEvidence {
+interface RiselyProposalEvidence {
   id: string;
   source: RiselyProposalEvidenceSource;
   sourceRecordRef: string;
@@ -50,14 +50,14 @@ export interface RiselyProposalEvidence {
   summary: string;
 }
 
-export interface RiselyProposalSection {
+interface RiselyProposalSection {
   key: RiselyProposalSectionKey;
   heading: string;
   content: string;
   evidenceRefs: readonly string[];
 }
 
-export interface RiselyProposalEmailDraft {
+interface RiselyProposalEmailDraft {
   to: string;
   subject: string;
   body: string;

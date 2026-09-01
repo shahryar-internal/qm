@@ -31,7 +31,7 @@ export interface BackgroundJobHttpResponse {
   cancel(): Promise<void>;
 }
 
-export type BackgroundJobResolveHost = (hostname: string) => Promise<readonly string[]>;
+type BackgroundJobResolveHost = (hostname: string) => Promise<readonly string[]>;
 
 export type BackgroundJobPinnedRequest = (
   url: string,

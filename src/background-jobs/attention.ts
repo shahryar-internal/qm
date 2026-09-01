@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BackgroundJobDeliveryOutbox, BackgroundJobReceiptStore } from "./types.ts";
 
-export interface BackgroundJobAttentionView {
+interface BackgroundJobAttentionView {
   source: "admission" | "control" | "completion" | "delivery";
   recordRef: string;
   jobId: string;

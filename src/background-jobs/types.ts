@@ -1,6 +1,6 @@
 import type { JsonWebKey } from "node:crypto";
 
-export interface VerifiedSlackTurn {
+interface VerifiedSlackTurn {
   teamId: string;
   userId: string;
   channelId: string;
@@ -383,7 +383,7 @@ export type BackgroundJobOutcome =
       approvalKey?: string;
     }>;
 
-export interface CompiledBackgroundJob {
+interface CompiledBackgroundJob {
   bodyBytes: Uint8Array;
   idempotencyKey: string;
 }

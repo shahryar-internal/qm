@@ -32,7 +32,7 @@ export interface McpAuthorityPayload {
   exp: number;
 }
 
-export type McpFounderDmAuthorityTool =
+type McpFounderDmAuthorityTool =
   | "analytics_query"
   | "brain_search"
   | "brain_who_owns"

@@ -13,7 +13,7 @@ export interface BackgroundJobProductionComposition {
   profiles: () => readonly Readonly<BackgroundJobDeploymentProfile>[];
 }
 
-export interface BackgroundJobAuthorityDependency {
+interface BackgroundJobAuthorityDependency {
   active: Readonly<BackgroundJobKmsGeneration>;
   next?: Readonly<BackgroundJobKmsGeneration>;
   kms?: import("./kms-signer.ts").BackgroundJobKmsSignerDependencies;
