@@ -799,7 +799,7 @@ test("MCP schema patterns accept only anchored non-branching bounded expressions
   assert.equal(validateMcpToolArguments(inputSchema!, { id: "Ab_123" }), true);
   assert.equal(validateMcpToolArguments(inputSchema!, { id: "a" }), false);
   assert.equal(validateMcpToolArguments(inputSchema!, { id: "Ab_123\n" }), false);
-  for (const pattern of ["(a+)+$", "^(a+)+$", "^a+$", "^a|b$", "^a(?=b)$", "^a{2,1}$"]) {
+  for (const pattern of ["(a+)+$", "^(a+)+$", "^a+$", "^a|b$", "^a(?=b)$", "^a{2,1}$", "^[z-a]$", "^[A--]$"]) {
     assert.throws(() =>
       parseMcpAllowedTools([
         {
@@ -812,6 +812,13 @@ test("MCP schema patterns accept only anchored non-branching bounded expressions
       ]),
     );
   }
+  assert.equal(
+    validateMcpToolArguments(
+      { type: "object", properties: { id: { type: "string", pattern: "^[z-a]$" } } },
+      { id: "a" },
+    ),
+    false,
+  );
 });
 
 test("tool namespace collisions fail the entire server closed", async () => {

@@ -321,7 +321,13 @@ function safeSchemaPattern(value: unknown): value is string {
       index = end + 1;
     }
   }
-  return index === value.length - 1;
+  if (index !== value.length - 1) return false;
+  try {
+    new RegExp(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function parseMcpInputSchema(value: unknown): Record<string, unknown> | null {
@@ -489,7 +495,12 @@ export function validateMcpToolArguments(
       if (typeof node.minLength === "number" && length < node.minLength) return false;
       if (typeof node.maxLength === "number" && length > node.maxLength) return false;
       if (typeof node.pattern === "string") {
-        const match = new RegExp(node.pattern).exec(input);
+        let match: RegExpExecArray | null;
+        try {
+          match = new RegExp(node.pattern).exec(input);
+        } catch {
+          return false;
+        }
         if (!match || match[0] !== input) return false;
       }
     }
