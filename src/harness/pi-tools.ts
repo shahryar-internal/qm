@@ -91,8 +91,9 @@ function text(s: string) {
 
 const toolPresentations = new WeakMap<
   ToolDefinition,
-  { label: string; status: string; approvalTool?: string; exactApproval?: boolean; readOnlyMcp?: boolean }
+  { label: string; status: string; approvalTool?: string; exactApproval?: boolean }
 >();
+const toolApprovalEffects = new WeakMap<ToolDefinition, "none" | "read">();
 
 function isPolicyNotice(summary: Record<string, unknown>): boolean {
   return summary.blocked !== undefined || summary.denied !== undefined;
@@ -2700,6 +2701,8 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       }
     },
   });
+  toolApprovalEffects.set(staySilent, "none");
+  toolApprovalEffects.set(finishSilently, "none");
 
   const credentialExec = defineTool({
     name: "credential_exec",
@@ -2812,9 +2815,9 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         label: d.label,
         status: d.status,
         ...(!d.readOnly ? { approvalTool: exactMcpApprovalTool(d.serverContractSha256, d.name) } : {}),
-        ...(d.readOnly ? { readOnlyMcp: true } : {}),
         ...(!d.readOnly ? { exactApproval: true } : {}),
       });
+      if (d.readOnly) toolApprovalEffects.set(tool, "read");
       return tool;
     });
 
@@ -3009,7 +3012,6 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   return active.map((t) => withToolBodyTiming(withToolApprovalGate(t, ref, { recordCall, recordResult }), ref));
 }
 
-const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently", "stay_silent"]);
 const STRICT_TOOL_APPROVAL_REASON = "strict posture: this tool call requires human approval";
 const EXACT_WRITE_APPROVAL_REASON = "external write: this exact request requires fresh one-time human approval";
 
@@ -3026,7 +3028,8 @@ function withToolApprovalGate(
     ) => Promise<T>;
   },
 ): ToolDefinition {
-  if (TOOL_APPROVAL_EXEMPT.has(tool.name)) return tool;
+  const effect = toolApprovalEffects.get(tool);
+  if (effect === "none") return tool;
   const inner = tool.execute.bind(tool);
   return {
     ...tool,
@@ -3036,7 +3039,7 @@ function withToolApprovalGate(
       const approvalTool = presentation?.approvalTool ?? tool.name;
       const exactApproval = presentation?.exactApproval === true;
       const blocked =
-        presentation?.readOnlyMcp !== true &&
+        effect !== "read" &&
         (exactApproval ? !gate || !gate(approvalTool, params) : !!gate && !gate(approvalTool, params));
       if (blocked) {
         const approvalKey = toolApprovalKey(approvalTool, params);

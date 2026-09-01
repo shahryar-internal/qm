@@ -1479,26 +1479,27 @@ test("MCP output screening receives only the configured human presentation", asy
   assert.doesNotMatch(JSON.stringify({ seen, output }), /kb_raw_tool|kb_raw_server|raw_tool/);
 });
 
-test("an MCP-shaped dynamic surface name cannot impersonate trusted read-only metadata", async () => {
-  const name = `mcp:${"d".repeat(64)}:surface_post`;
-  const pending: NonNullable<ToolContextRef["pendingApprovals"]> = [];
-  const ref: ToolContextRef = {
-    current: fakeToolContext(),
-    pendingApprovals: pending,
-    toolApprovalGate: () => false,
-  };
-  const tool = createPiTools(ref, { surfaceTools: true, surfaceName: name }).find(
-    (candidate) => candidate.name === name,
-  );
-  await call(tool, { action: "post", text: "must not be sent" });
-  assert.deepEqual(pending, [
-    {
-      command: name,
-      reason: "strict posture: this tool call requires human approval",
-      kind: "approval",
-      approvalKey: `tool:${name}`,
-    },
-  ]);
+test("dynamic surface names cannot impersonate trusted approval effects", async () => {
+  for (const name of [`mcp:${"d".repeat(64)}:surface_post`, "finish_silently", "stay_silent"]) {
+    const pending: NonNullable<ToolContextRef["pendingApprovals"]> = [];
+    const ref: ToolContextRef = {
+      current: fakeToolContext(),
+      pendingApprovals: pending,
+      toolApprovalGate: () => false,
+    };
+    const tool = createPiTools(ref, { surfaceTools: true, surfaceName: name }).find(
+      (candidate) => candidate.name === name,
+    );
+    await call(tool, { action: "post", text: "must not be sent" });
+    assert.deepEqual(pending, [
+      {
+        command: name,
+        reason: "strict posture: this tool call requires human approval",
+        kind: "approval",
+        approvalKey: `tool:${name}`,
+      },
+    ]);
+  }
 });
 
 test("MCP writes require exact one-time argument approvals with a visible preview", async () => {
