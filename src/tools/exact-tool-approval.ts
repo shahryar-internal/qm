@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 const EXACT_MCP_TOOL_PREFIX = "mcp-exact:";
+const EXACT_MCP_TOOL = /^mcp-exact:[a-f0-9]{64}:[A-Za-z0-9_-]{1,128}$/;
 const EXACT_MCP_KEY = /^tool:mcp-exact:[a-f0-9]{64}:[A-Za-z0-9_-]{1,128}:([a-f0-9]{64})$/;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
@@ -26,6 +27,10 @@ export function exactMcpApprovalTool(serverContractSha256: string, name: string)
     throw new Error("exact MCP approval contract is invalid");
   }
   return `${EXACT_MCP_TOOL_PREFIX}${serverContractSha256}:${name}`;
+}
+
+export function isExactMcpApprovalTool(tool: string): boolean {
+  return EXACT_MCP_TOOL.test(tool);
 }
 
 export function exactToolApprovalArguments(args: unknown): { canonical: string; sha256: string } {

@@ -1540,7 +1540,6 @@ test("MCP writes require exact one-time argument approvals with a visible previe
         },
       },
       pendingApprovals: pending,
-      toolApprovalGate: () => false,
     },
     { mcpTools: () => [descriptor] },
   ).find((candidate) => candidate.name === descriptor.name);

@@ -3012,6 +3012,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
 
 const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently", "stay_silent"]);
 const STRICT_TOOL_APPROVAL_REASON = "strict posture: this tool call requires human approval";
+const EXACT_WRITE_APPROVAL_REASON = "external write: this exact request requires fresh one-time human approval";
 
 function withToolApprovalGate(
   tool: ToolDefinition,
@@ -3034,36 +3035,37 @@ function withToolApprovalGate(
       const gate = ref.toolApprovalGate;
       const presentation = toolPresentations.get(tool);
       const approvalTool = presentation?.approvalTool ?? tool.name;
-      if (gate && !gate(approvalTool, params)) {
+      const exactApproval = presentation?.exactApproval === true;
+      const blocked = exactApproval ? !gate || !gate(approvalTool, params) : !!gate && !gate(approvalTool, params);
+      if (blocked) {
         const approvalKey = toolApprovalKey(approvalTool, params);
-        const preview = presentation?.exactApproval ? exactToolApprovalPreview(params) : undefined;
+        const preview = exactApproval ? exactToolApprovalPreview(params) : undefined;
+        const approvalReason = exactApproval ? EXACT_WRITE_APPROVAL_REASON : STRICT_TOOL_APPROVAL_REASON;
         ref.pendingApprovals?.push({
           command: presentation?.label ?? tool.name,
-          reason: STRICT_TOOL_APPROVAL_REASON,
+          reason: approvalReason,
           ...(presentation ? { purpose: presentation.status } : {}),
           kind: "approval",
           approvalKey,
           ...(preview ? preview : {}),
-          ...(presentation?.exactApproval ? { grantModes: { session: false, always: false } } : {}),
+          ...(exactApproval ? { grantModes: { session: false, always: false } } : {}),
         });
         ref.pausedOnApproval = true;
         await rec.recordCall(callId, {
           tool: presentation?.label ?? tool.name,
           ...(presentation ? { status: presentation.status } : {}),
           blocked: "needs_approval",
-          reason: STRICT_TOOL_APPROVAL_REASON,
+          reason: approvalReason,
         });
         return rec.recordResult(
           callId,
           {
             tool: presentation?.label ?? tool.name,
             blocked: "needs_approval",
-            reason: STRICT_TOOL_APPROVAL_REASON,
+            reason: approvalReason,
           },
           {
-            content: [
-              { type: "text" as const, text: `[blocked: needs human approval] ${STRICT_TOOL_APPROVAL_REASON}` },
-            ],
+            content: [{ type: "text" as const, text: `[blocked: needs human approval] ${approvalReason}` }],
             details: {},
             terminate: true,
           },

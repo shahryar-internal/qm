@@ -78,7 +78,11 @@ import {
 } from "../onboarding/onboarding.ts";
 import { createToolContext, NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
-import { exactToolApprovalArgumentsSha256, toolApprovalKey } from "../tools/exact-tool-approval.ts";
+import {
+  exactToolApprovalArgumentsSha256,
+  isExactMcpApprovalTool,
+  toolApprovalKey,
+} from "../tools/exact-tool-approval.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createSecretValueMasker } from "../security/secret-masking.ts";
 import { shq } from "../util/shell.ts";
@@ -2679,7 +2683,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   },
                 }
               : {}),
-            ...(securityPolicy.toolApprovals === "all" ? { toolApprovalGate: authorizeToolCall } : {}),
+            toolApprovalGate: (tool: string, params?: unknown) =>
+              securityPolicy.toolApprovals !== "all" && !isExactMcpApprovalTool(tool)
+                ? true
+                : authorizeToolCall(tool, params),
             systemPrompt,
             systemCacheBoundary: stableSystemBytes,
             history: continuation?.history ?? history,
