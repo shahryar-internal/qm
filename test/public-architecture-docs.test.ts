@@ -52,7 +52,11 @@ test("README names the frameworks the shipped surfaces use", () => {
 });
 
 test("Strict posture describes its approval gate, exemptions, and direct-mutation boundary", () => {
-  assert.match(piTools, /TOOL_APPROVAL_EXEMPT = new Set\(\["finish_silently", "stay_silent"\]\)/);
+  assert.match(piTools, /toolApprovalEffects = new WeakMap<ToolDefinition, "none" \| "read">\(\)/);
+  assert.match(piTools, /toolApprovalEffects\.set\(staySilent, "none"\)/);
+  assert.match(piTools, /toolApprovalEffects\.set\(finishSilently, "none"\)/);
+  assert.match(piTools, /if \(d\.readOnly\) toolApprovalEffects\.set\(tool, "read"\)/);
+  assert.doesNotMatch(piTools, /TOOL_APPROVAL_EXEMPT/);
   assert.match(
     server,
     /pathname === "\/v1\/surface-context".*pathname === "\/v1\/memory\/search".*pathname\.startsWith\("\/v1\/run-signals\/"\)/s,
