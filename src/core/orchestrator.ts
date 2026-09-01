@@ -81,7 +81,6 @@ import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
 import {
   exactToolApprovalArgumentsSha256,
   isExactMcpApprovalTool,
-  isReadOnlyMcpApprovalTool,
   toolApprovalKey,
 } from "../tools/exact-tool-approval.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
@@ -2686,8 +2685,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 }
               : {}),
             toolApprovalGate: (tool: string, params?: unknown) =>
-              isReadOnlyMcpApprovalTool(tool) ||
-              (securityPolicy.toolApprovals !== "all" && !isExactMcpApprovalTool(tool))
+              securityPolicy.toolApprovals !== "all" && !isExactMcpApprovalTool(tool)
                 ? true
                 : authorizeToolCall(tool, params),
             systemPrompt,

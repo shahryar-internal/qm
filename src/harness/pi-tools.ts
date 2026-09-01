@@ -7,12 +7,7 @@ import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
-import {
-  exactMcpApprovalTool,
-  exactToolApprovalPreview,
-  readOnlyMcpApprovalTool,
-  toolApprovalKey,
-} from "../tools/exact-tool-approval.ts";
+import { exactMcpApprovalTool, exactToolApprovalPreview, toolApprovalKey } from "../tools/exact-tool-approval.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage } from "../util/errors.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
@@ -96,7 +91,7 @@ function text(s: string) {
 
 const toolPresentations = new WeakMap<
   ToolDefinition,
-  { label: string; status: string; approvalTool?: string; exactApproval?: boolean }
+  { label: string; status: string; approvalTool?: string; exactApproval?: boolean; readOnlyMcp?: boolean }
 >();
 
 function isPolicyNotice(summary: Record<string, unknown>): boolean {
@@ -2816,9 +2811,8 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       toolPresentations.set(tool, {
         label: d.label,
         status: d.status,
-        approvalTool: d.readOnly
-          ? readOnlyMcpApprovalTool(d.serverContractSha256, d.name)
-          : exactMcpApprovalTool(d.serverContractSha256, d.name),
+        ...(!d.readOnly ? { approvalTool: exactMcpApprovalTool(d.serverContractSha256, d.name) } : {}),
+        ...(d.readOnly ? { readOnlyMcp: true } : {}),
         ...(!d.readOnly ? { exactApproval: true } : {}),
       });
       return tool;
@@ -3041,7 +3035,9 @@ function withToolApprovalGate(
       const presentation = toolPresentations.get(tool);
       const approvalTool = presentation?.approvalTool ?? tool.name;
       const exactApproval = presentation?.exactApproval === true;
-      const blocked = exactApproval ? !gate || !gate(approvalTool, params) : !!gate && !gate(approvalTool, params);
+      const blocked =
+        presentation?.readOnlyMcp !== true &&
+        (exactApproval ? !gate || !gate(approvalTool, params) : !!gate && !gate(approvalTool, params));
       if (blocked) {
         const approvalKey = toolApprovalKey(approvalTool, params);
         const preview = exactApproval ? exactToolApprovalPreview(params) : undefined;

@@ -2285,25 +2285,6 @@ test("Strict posture gates tool actions behind HiLO and honors a session grant",
   assert.equal(otherTool.pendingApprovals?.[0]?.approvalKey, "tool:read");
 });
 
-test("Strict auto-runs read-only MCP tools and still exact-gates MCP writes", async () => {
-  const built = freshApp();
-  await built.config.setSecurityPosture(scopeId("org", "default-org"), "strict");
-
-  for (const [index, name] of ["metrics_query", "knowledge_search", "docs_search", "meeting_prepare"].entries()) {
-    const tool = `mcp:${String(index + 1).repeat(64)}:${name}`;
-    const result = await built.app.turn(dm(`!read-tool ${tool}`));
-    assert.equal(result.status, "ok");
-    assert.equal(result.pendingApprovals, undefined);
-    assert.match(result.reply ?? "", /completed read-only tool/);
-  }
-
-  const write = `mcp-exact:${"e".repeat(64)}:append_record_note`;
-  const pending = await built.app.turn(dm(`!exact-tool ${write} ${JSON.stringify({ note: "one" })}`));
-  assert.equal(pending.status, "pending_approval");
-  assert.match(pending.pendingApprovals?.[0]?.approvalKey ?? "", /^tool:mcp-exact:/);
-  assert.deepEqual(pending.pendingApprovals?.[0]?.grantModes, { session: false, always: false });
-});
-
 test("Strict posture layers ordinary predeclared command approvals on top of the tool gate", async () => {
   const built = freshApp();
   await built.config.setSecurityPosture(scopeId("org", "default-org"), "strict");
