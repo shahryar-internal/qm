@@ -1956,7 +1956,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           );
 
         const backgroundJobs =
-          surfaceToolDeps && deps.backgroundJobs
+          input.surfaceTools && surfaceToolDeps && deps.backgroundJobs
             ? await deps.backgroundJobs.bind({
                 surface: input.surface,
                 actorId: actor.id,

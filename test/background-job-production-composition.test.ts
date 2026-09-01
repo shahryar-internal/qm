@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createBackgroundJobProductionComposition } from "../src/background-jobs/composition.ts";
 import { invalidatePendingBackgroundJobApprovals } from "../src/background-jobs/pending-approvals.ts";
@@ -6,6 +7,20 @@ import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import type { PendingApprovalRecord } from "../src/types.ts";
 import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
+
+const orchestratorSource = readFileSync(new URL("../src/core/orchestrator.ts", import.meta.url), "utf8");
+
+test("workflow jobs require full surface tools while native result cards keep their narrow primary-turn bridge", () => {
+  assert.match(
+    orchestratorSource,
+    /const backgroundJobs =\s+input\.surfaceTools && surfaceToolDeps && deps\.backgroundJobs/,
+  );
+  assert.match(orchestratorSource, /input\.surfaceTools && surfaceToolDeps \? \{ surface: surfaceToolDeps \} : \{\}/);
+  assert.match(
+    orchestratorSource,
+    /surfaceToolDeps\?\.postNativeCard \? \{ postNativeCard: surfaceToolDeps\.postNativeCard \} : \{\}/,
+  );
+});
 
 test("canonical buildApp constructs the core registry and remains hidden without private dependencies", async () => {
   const built = buildApp(testConfig({ backgroundWorkEnabled: true }));
