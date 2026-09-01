@@ -39,7 +39,7 @@ import {
 } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
-import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
+import { deleteMcpServer, getMcpAuthorityReadiness, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { listSecurityFlags, releaseSecurityTaint } from "./admin/security.ts";
 import { runtimeToolSelfCheck } from "./admin/runtime-self-check.ts";
 import { listBackgroundJobAttention } from "./admin/background-job-attention.ts";
@@ -69,6 +69,7 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/model-providers", auth: "either", handle: getModelProviders },
   { method: "PUT", path: "/v1/admin/model-providers/:provider", auth: "either", handle: putModelProvider },
   { method: "GET", path: "/v1/admin/mcp-servers", auth: "either", handle: getMcpServers },
+  { method: "GET", path: "/v1/admin/mcp-authority-readiness", auth: "either", handle: getMcpAuthorityReadiness },
   { method: "PUT", path: "/v1/admin/mcp-servers/:id", auth: "either", handle: putMcpServer },
   { method: "DELETE", path: "/v1/admin/mcp-servers/:id", auth: "either", handle: deleteMcpServer },
   { method: "DELETE", path: "/v1/admin/model-providers/:provider", auth: "either", handle: deleteModelProvider },

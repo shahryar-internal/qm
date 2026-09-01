@@ -92,6 +92,21 @@ export async function getMcpServers(ctx: ApiCtx): Promise<void> {
   });
 }
 
+export async function getMcpAuthorityReadiness(ctx: ApiCtx): Promise<void> {
+  const authorized = await actor(ctx);
+  if (!authorized) return;
+  audit(ctx.deps, {
+    principalId: authorized.id,
+    action: "mcp-authority-readiness.read",
+    resource: "mcp-authority-readiness",
+    scopeLabel: orgScope(ctx.deps),
+  });
+  return sendJson(ctx.res, 200, {
+    mcpFounderDm: ctx.deps.mcpAuthorityPublic?.readiness ?? null,
+    notionRead: ctx.deps.notionAuthorityPublic?.readiness ?? null,
+  });
+}
+
 export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   const authorized = await actor(ctx);
   if (!authorized) return;

@@ -1,19 +1,27 @@
 import "./support/auto-fake-sprites.ts";
 
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createInsecureTestServer } from "../src/api/server.ts";
+import { createMcpAuthoritySigner, type McpAuthorityPublicState } from "../src/mcp/mcp-authority.ts";
+import { createNotionAuthoritySigner, type NotionAuthorityPublicState } from "../src/mcp/notion-authority.ts";
 import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 const SEARCH_SCHEMA = { type: "object", properties: { query: { type: "string" } } };
 
-function start() {
+function start(
+  authorityPublic: Readonly<{
+    mcpAuthorityPublic?: McpAuthorityPublicState;
+    notionAuthorityPublic?: NotionAuthorityPublicState;
+  }> = {},
+) {
   const built = buildApp(
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "admin-mcp-")),
@@ -26,11 +34,73 @@ function start() {
     auditLog: built.auditLog,
     mcpServers: built.mcpServers,
     mcpToolService: built.mcpToolService,
+    ...authorityPublic,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
   return { base, built, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
+
+test("MCP authority readiness is hash-only and available only through authenticated Admin topology", async () => {
+  const mcpKeys = generateKeyPairSync("ed25519");
+  const notionKeys = generateKeyPairSync("rsa", { modulusLength: 2_048, publicExponent: 65_537 });
+  const mcpConfig = {
+    issuer: "qm:test",
+    organizationId: "org-founder",
+    principalId: "founder@example.com",
+    slackTeamId: "T123",
+    slackUserId: "U123",
+    slackDmChannelId: "D123",
+    privateKey: mcpKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    ttlSeconds: 30,
+  };
+  const notionConfig = {
+    issuer: "https://qm.example.com/",
+    audience: "https://command.example.com/notion",
+    keyId: "notion-test-key",
+    organizationId: "org-founder",
+    actorPrincipalId: "founder@example.com",
+    slackTeamId: "T123",
+    slackUserId: "U123",
+    slackDmChannelId: "D123",
+    privateKey: notionKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    ttlSeconds: 30,
+  };
+  const mcpSigner = createMcpAuthoritySigner(mcpConfig);
+  const notionSigner = createNotionAuthoritySigner(notionConfig);
+  const instance = start({
+    mcpAuthorityPublic: mcpSigner.publicState(),
+    notionAuthorityPublic: notionSigner.publicState(),
+  });
+  try {
+    const denied = await fetch(`${instance.base}/v1/admin/mcp-authority-readiness`);
+    assert.equal(denied.status, 403);
+    const response = await fetch(`${instance.base}/v1/admin/mcp-authority-readiness`, { headers: ADMIN });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body, {
+      mcpFounderDm: mcpSigner.publicState().readiness,
+      notionRead: notionSigner.publicState().readiness,
+    });
+    const serialized = JSON.stringify(body);
+    for (const secretOrIdentity of [
+      mcpConfig.privateKey,
+      notionConfig.privateKey,
+      mcpConfig.principalId,
+      mcpConfig.slackTeamId,
+      mcpConfig.slackUserId,
+      mcpConfig.slackDmChannelId,
+      notionConfig.issuer,
+      notionConfig.audience,
+      notionConfig.keyId,
+    ]) {
+      assert.equal(serialized.includes(secretOrIdentity), false);
+    }
+  } finally {
+    instance.built.mcpToolService.close();
+    await instance.close();
+  }
+});
 
 async function put(base: string, body: Record<string, unknown>) {
   const response = await fetch(`${base}/v1/admin/mcp-servers/kb`, {
