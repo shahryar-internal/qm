@@ -9,7 +9,7 @@ import { createServer } from "../src/api/server.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { MCP_REQUEST_AUTHORITY_HEADER, type McpFetch } from "../src/mcp/mcp-client.ts";
-import type { McpHumanCallContext } from "../src/mcp/mcp-authority.ts";
+import { createMcpAuthoritySigner, type McpHumanCallContext } from "../src/mcp/mcp-authority.ts";
 import {
   createMcpServerStore,
   notionAuthorityServerContract,
@@ -29,6 +29,7 @@ import {
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 2_048, publicExponent: 0x10001 });
+const mcpKeys = generateKeyPairSync("ed25519");
 const privateKey = keys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
 const config = {
   issuer: "https://qm.example.com/",
@@ -272,6 +273,36 @@ test("RS256 Notion authority binds the exact founder DM, tool, canonical body, i
     algorithm: "RS256",
     authority: NOTION_READ_AUTHORITY,
     tools: ["notion_search", "notion_read_page"],
+    profileSha256: createHash("sha256")
+      .update(
+        JSON.stringify({
+          actorPrincipalId: config.actorPrincipalId,
+          audience: config.audience,
+          authority: NOTION_READ_AUTHORITY,
+          issuer: config.issuer,
+          keyId: config.keyId,
+          organizationId: config.organizationId,
+          slackDmChannelId: config.slackDmChannelId,
+          slackTeamId: config.slackTeamId,
+          slackUserId: config.slackUserId,
+          ttlSeconds: config.ttlSeconds,
+        }),
+      )
+      .digest("hex"),
+    identitySha256: createHash("sha256")
+      .update(
+        JSON.stringify({
+          actorPrincipalId: config.actorPrincipalId,
+          organizationId: config.organizationId,
+          slackDmChannelId: config.slackDmChannelId,
+          slackTeamId: config.slackTeamId,
+          slackUserId: config.slackUserId,
+        }),
+      )
+      .digest("hex"),
+    publicKeySha256: createHash("sha256")
+      .update(keys.publicKey.export({ format: "der", type: "spki" }))
+      .digest("hex"),
   });
   assert.equal(JSON.stringify(signer.publicState().readiness).includes(config.issuer), false);
   assert.equal(JSON.stringify(signer.publicState().readiness).includes(config.audience), false);
@@ -644,8 +675,22 @@ test("missing runtime signer fails before a Notion tools/call", async () => {
 
 test("public JWKS endpoint exposes only the configured RSA verification key and stays absent by default", async (t) => {
   const signer = createNotionAuthoritySigner(config);
+  const mcpSigner = createMcpAuthoritySigner({
+    issuer: "qm:test",
+    organizationId: "org-founder",
+    principalId: "founder@example.com",
+    slackTeamId: "T123",
+    slackUserId: "U123",
+    slackDmChannelId: "D123",
+    privateKey: mcpKeys.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    ttlSeconds: 30,
+  });
   const signingSecret = "notion-jwks-route-test-secret".repeat(3);
-  const configured = createServer({} as App, { signingSecret, notionAuthorityPublic: signer.publicState() });
+  const configured = createServer({} as App, {
+    signingSecret,
+    mcpAuthorityPublic: mcpSigner.publicState(),
+    notionAuthorityPublic: signer.publicState(),
+  });
   const absent = createServer({} as App, { signingSecret });
   t.after(() => {
     configured.close();
@@ -664,22 +709,33 @@ test("public JWKS endpoint exposes only the configured RSA verification key and 
   const readiness = await fetch(`http://127.0.0.1:${configuredPort}/.well-known/notion-read-authority-readiness.json`);
   assert.equal(readiness.status, 200);
   assert.deepEqual(await readiness.json(), signer.publicState().readiness);
+  const mcpReadiness = await fetch(
+    `http://127.0.0.1:${configuredPort}/.well-known/mcp-founder-dm-authority-readiness.json`,
+  );
+  assert.equal(mcpReadiness.status, 200);
+  assert.deepEqual(await mcpReadiness.json(), mcpSigner.publicState().readiness);
   assert.equal(
     (await fetch(`http://127.0.0.1:${absentPort}/.well-known/notion-read-authority-readiness.json`)).status,
+    404,
+  );
+  assert.equal(
+    (await fetch(`http://127.0.0.1:${absentPort}/.well-known/mcp-founder-dm-authority-readiness.json`)).status,
     404,
   );
   assert.equal((await fetch(`http://127.0.0.1:${absentPort}/.well-known/jwks.json`)).status, 404);
 });
 
-test("BuiltApp and ServerDeps expose public Notion state without a callable signer", () => {
+test("BuiltApp and ServerDeps expose only public connector authority state", () => {
   const wiring = readFileSync(new URL("../src/wiring.ts", import.meta.url), "utf8");
   const builtApp = wiring.slice(
     wiring.indexOf("export interface BuiltApp"),
     wiring.indexOf("export function buildApp"),
   );
   const deps = readFileSync(new URL("../src/api/deps.ts", import.meta.url), "utf8");
+  assert.match(builtApp, /mcpAuthorityPublic\?: McpAuthorityPublicState/u);
   assert.match(builtApp, /notionAuthorityPublic\?: NotionAuthorityPublicState/u);
-  assert.doesNotMatch(builtApp, /NotionAuthoritySigner|notionAuthoritySigner/u);
+  assert.doesNotMatch(builtApp, /McpAuthoritySigner|mcpAuthoritySigner|NotionAuthoritySigner|notionAuthoritySigner/u);
+  assert.match(deps, /mcpAuthorityPublic\?: McpAuthorityPublicState/u);
   assert.match(deps, /notionAuthorityPublic\?: NotionAuthorityPublicState/u);
-  assert.doesNotMatch(deps, /NotionAuthoritySigner|notionAuthoritySigner/u);
+  assert.doesNotMatch(deps, /McpAuthoritySigner|mcpAuthoritySigner|NotionAuthoritySigner|notionAuthoritySigner/u);
 });

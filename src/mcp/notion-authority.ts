@@ -74,6 +74,9 @@ export interface NotionAuthorityPublicState {
     algorithm: typeof NOTION_READ_AUTHORITY_ALGORITHM;
     authority: typeof NOTION_READ_AUTHORITY;
     tools: readonly NotionReadToolName[];
+    profileSha256: string;
+    identitySha256: string;
+    publicKeySha256: string;
   }>;
 }
 
@@ -258,6 +261,20 @@ function encode(value: unknown): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 }
 
+function codeUnitOrder(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function sha256Record(value: Record<string, unknown>): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(Object.fromEntries(Object.entries(value).sort(([left], [right]) => codeUnitOrder(left, right)))),
+    )
+    .digest("hex");
+}
+
 export function createNotionAuthoritySigner(
   configInput: NotionAuthoritySignerConfig,
   options: Readonly<{ now?: () => number; random?: (size: number) => Buffer }> = {},
@@ -268,11 +285,34 @@ export function createNotionAuthoritySigner(
   const jwks = Object.freeze({ keys: Object.freeze([jwk]) });
   const now = options.now ?? Date.now;
   const random = options.random ?? randomBytes;
+  const identity = {
+    organizationId: config.organizationId,
+    actorPrincipalId: config.actorPrincipalId,
+    slackTeamId: config.slackTeamId,
+    slackUserId: config.slackUserId,
+    slackDmChannelId: config.slackDmChannelId,
+  };
   const readiness = Object.freeze({
     status: "ready" as const,
     algorithm: NOTION_READ_AUTHORITY_ALGORITHM,
     authority: NOTION_READ_AUTHORITY,
     tools: TOOLS,
+    profileSha256: sha256Record({
+      actorPrincipalId: config.actorPrincipalId,
+      audience: config.audience,
+      authority: NOTION_READ_AUTHORITY,
+      issuer: config.issuer,
+      keyId: config.keyId,
+      organizationId: config.organizationId,
+      slackDmChannelId: config.slackDmChannelId,
+      slackTeamId: config.slackTeamId,
+      slackUserId: config.slackUserId,
+      ttlSeconds: config.ttlSeconds,
+    }),
+    identitySha256: sha256Record(identity),
+    publicKeySha256: createHash("sha256")
+      .update(createPublicKey(key).export({ format: "der", type: "spki" }))
+      .digest("hex"),
   });
   const publicState = Object.freeze({ jwks, readiness });
   const challenge = Buffer.from("qm-notion-read-authority-readiness-v1", "ascii");

@@ -114,7 +114,7 @@ import { createMemoryService, type MemoryService } from "./memory/memory-service
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
 import { createMcpServerStore, type McpServerStore, type StoredMcpServer } from "./mcp/mcp-server-store.ts";
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
-import { createMcpAuthoritySigner } from "./mcp/mcp-authority.ts";
+import { createMcpAuthoritySigner, type McpAuthorityPublicState } from "./mcp/mcp-authority.ts";
 import { createNotionAuthoritySigner, type NotionAuthorityPublicState } from "./mcp/notion-authority.ts";
 import {
   createLocalBlobTransferStore,
@@ -413,6 +413,7 @@ export interface BuiltApp {
   refreshCustomProviders: () => Promise<void>;
   mcpServers: McpServerStore;
   mcpToolService: McpToolService;
+  mcpAuthorityPublic?: McpAuthorityPublicState;
   notionAuthorityPublic?: NotionAuthorityPublicState;
   acl: AclStore;
   skills: SkillStore;
@@ -1888,6 +1889,7 @@ export function buildApp(
     refreshCustomProviders,
     mcpServers,
     mcpToolService,
+    ...(mcpAuthoritySigner ? { mcpAuthorityPublic: mcpAuthoritySigner.publicState() } : {}),
     ...(notionAuthoritySigner ? { notionAuthorityPublic: notionAuthoritySigner.publicState() } : {}),
     acl,
     skills,
@@ -1975,6 +1977,7 @@ export function serverDeps(
     refreshCustomProviders: built.refreshCustomProviders,
     mcpServers: built.mcpServers,
     mcpToolService: built.mcpToolService,
+    ...(built.mcpAuthorityPublic ? { mcpAuthorityPublic: built.mcpAuthorityPublic } : {}),
     ...(built.notionAuthorityPublic ? { notionAuthorityPublic: built.notionAuthorityPublic } : {}),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     harnessId: config.harness,

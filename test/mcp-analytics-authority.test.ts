@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import {
+  MCP_FOUNDER_DM_AUTHORITY,
   createMcpAuthoritySigner,
   mcpAuthoritySignerConfigFromEnv,
   type McpAuthoritySigner,
@@ -191,6 +192,41 @@ async function serviceWith(
 
 test("founder-DM signer binds canonical body and rejects every other user, team, channel, or surface", () => {
   const signer = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
+  const readiness = signer.publicState().readiness;
+  const identity = {
+    organizationId: signerConfig.organizationId,
+    principalId: signerConfig.principalId,
+    slackDmChannelId: signerConfig.slackDmChannelId,
+    slackTeamId: signerConfig.slackTeamId,
+    slackUserId: signerConfig.slackUserId,
+  };
+  assert.deepEqual(readiness, {
+    status: "ready",
+    algorithm: "Ed25519",
+    authority: MCP_FOUNDER_DM_AUTHORITY,
+    tools: ["analytics_query", ...brainToolNames],
+    profileSha256: createHash("sha256")
+      .update(
+        JSON.stringify({
+          authority: MCP_FOUNDER_DM_AUTHORITY,
+          issuer: signerConfig.issuer,
+          ...identity,
+          ttlSeconds: signerConfig.ttlSeconds,
+        }),
+      )
+      .digest("hex"),
+    identitySha256: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
+    publicKeySha256: createHash("sha256")
+      .update(keys.publicKey.export({ format: "der", type: "spki" }))
+      .digest("hex"),
+  });
+  assert.equal(Object.isFrozen(signer.publicState()), true);
+  assert.equal(Object.isFrozen(readiness), true);
+  assert.equal(Object.isFrozen(readiness.tools), true);
+  const serializedReadiness = JSON.stringify(readiness);
+  assert.equal(serializedReadiness.includes(signerConfig.issuer), false);
+  assert.equal(serializedReadiness.includes(signerConfig.principalId), false);
+  assert.equal(serializedReadiness.includes(signerConfig.slackUserId), false);
   const envelope = signer.sign("analytics_query", { question: "How is Example University doing?" }, context);
   const payload = decodeAuthority(envelope.token);
   assert.equal(payload.bodySha256, "3eae7c9ffc4b908488b29ae83055a53835b8d21823ff7c6a85f7f2df9d24c4f6");

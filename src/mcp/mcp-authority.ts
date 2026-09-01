@@ -46,6 +46,20 @@ export type McpFounderDmAuthorityTool =
   | "brain_slipped_initiatives"
   | "brain_analytics_targetable_deployments";
 
+export const MCP_FOUNDER_DM_AUTHORITY = "qm.ed25519.founder-dm.v1" as const;
+
+export interface McpAuthorityPublicState {
+  readonly readiness: Readonly<{
+    status: "ready";
+    algorithm: "Ed25519";
+    authority: typeof MCP_FOUNDER_DM_AUTHORITY;
+    tools: readonly McpFounderDmAuthorityTool[];
+    profileSha256: string;
+    identitySha256: string;
+    publicKeySha256: string;
+  }>;
+}
+
 interface McpAuthorityEnvelope {
   token: string;
   payload: McpAuthorityPayload;
@@ -55,6 +69,7 @@ export interface McpAuthoritySigner {
   sign(tool: string, body: Record<string, unknown>, context: McpHumanCallContext | undefined): McpAuthorityEnvelope;
   sealAnalyticsCard(card: QmAnalyticsNativeCard, authority: McpAuthorityPayload, target: string): TrustedAnalyticsCard;
   verifyAnalyticsCard(token: unknown, target: string): QmAnalyticsNativeCard | null;
+  publicState(): McpAuthorityPublicState;
 }
 
 export interface McpAuthoritySignerConfig {
@@ -73,7 +88,7 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 const CANONICAL_EMAIL =
   /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLACK_TS = /^\d{10,12}\.\d{6}$/;
-const FOUNDER_DM_AUTHORITY_TOOLS = new Set<McpFounderDmAuthorityTool>([
+const FOUNDER_DM_AUTHORITY_TOOL_NAMES = Object.freeze([
   "analytics_query",
   "brain_search",
   "brain_who_owns",
@@ -86,7 +101,8 @@ const FOUNDER_DM_AUTHORITY_TOOLS = new Set<McpFounderDmAuthorityTool>([
   "brain_open_risks_for_account",
   "brain_slipped_initiatives",
   "brain_analytics_targetable_deployments",
-]);
+] as const satisfies readonly McpFounderDmAuthorityTool[]);
+const FOUNDER_DM_AUTHORITY_TOOLS = new Set<McpFounderDmAuthorityTool>(FOUNDER_DM_AUTHORITY_TOOL_NAMES);
 
 function isFounderDmAuthorityTool(tool: string): tool is McpFounderDmAuthorityTool {
   return FOUNDER_DM_AUTHORITY_TOOLS.has(tool as McpFounderDmAuthorityTool);
@@ -125,6 +141,10 @@ function canonicalValue(value: unknown): unknown {
 
 function canonicalJson(value: unknown): string {
   return JSON.stringify(canonicalValue(value));
+}
+
+function sha256(value: string | Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function cardAuthority(authority: McpAuthorityPayload): Record<string, unknown> {
@@ -200,7 +220,36 @@ export function createMcpAuthoritySigner(
   } catch {
     throw new Error("QM MCP authority signer previous public key is invalid");
   }
-  return {
+  const identity = {
+    organizationId: config.organizationId,
+    principalId: config.principalId,
+    slackTeamId: config.slackTeamId,
+    slackUserId: config.slackUserId,
+    slackDmChannelId: config.slackDmChannelId,
+  };
+  const readiness = Object.freeze({
+    status: "ready" as const,
+    algorithm: "Ed25519" as const,
+    authority: MCP_FOUNDER_DM_AUTHORITY,
+    tools: FOUNDER_DM_AUTHORITY_TOOL_NAMES,
+    profileSha256: sha256(
+      canonicalJson({
+        authority: MCP_FOUNDER_DM_AUTHORITY,
+        issuer: config.issuer,
+        ...identity,
+        ttlSeconds: config.ttlSeconds,
+      }),
+    ),
+    identitySha256: sha256(canonicalJson(identity)),
+    publicKeySha256: sha256(publicKey.export({ format: "der", type: "spki" })),
+  });
+  const publicState = Object.freeze({ readiness });
+  const challenge = Buffer.from("qm-mcp-founder-dm-authority-readiness-v1", "ascii");
+  const challengeSignature = sign(null, challenge, key);
+  if (!verify(null, challenge, publicKey, challengeSignature)) {
+    throw new Error("QM MCP authority signer readiness check failed");
+  }
+  const authoritySigner: McpAuthoritySigner = {
     sign(tool, body, context) {
       if (
         !isFounderDmAuthorityTool(tool) ||
@@ -301,7 +350,9 @@ export function createMcpAuthoritySigner(
         return null;
       }
     },
+    publicState: () => publicState,
   };
+  return Object.freeze(authoritySigner);
 }
 
 export function mcpAuthoritySignerConfigFromEnv(env: NodeJS.ProcessEnv): McpAuthoritySignerConfig | undefined {
