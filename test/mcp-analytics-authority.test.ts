@@ -79,6 +79,47 @@ const server: McpServer = {
   updatedAt: 1,
   updatedBy: "UADMIN",
 };
+const brainToolNames = [
+  "brain_search",
+  "brain_who_owns",
+  "brain_project_status",
+  "brain_what_changed_since",
+  "brain_as_of",
+  "brain_person_context",
+  "brain_episodes_about",
+  "brain_open_commitments_for_account",
+  "brain_open_risks_for_account",
+  "brain_slipped_initiatives",
+  "brain_analytics_targetable_deployments",
+] as const;
+const brainInputSchema = {
+  type: "object",
+  properties: { query: { type: "string", minLength: 1 } },
+  required: ["query"],
+  additionalProperties: false,
+};
+const brainRemoteTool = {
+  name: "brain_search",
+  description: "Bounded Brain search",
+  inputSchema: brainInputSchema,
+  annotations: { readOnlyHint: true, destructiveHint: false },
+};
+const brainServer: McpServer = {
+  ...server,
+  id: "brain",
+  name: "Brain",
+  url: "https://brain.example.com/api/mcp/brain/mcp",
+  allowedTools: [
+    {
+      name: "brain_search",
+      label: "Search Brain",
+      status: "Searching Brain",
+      readOnly: true,
+      inputSchema: brainInputSchema,
+      requestAuthority: "qm.ed25519.founder-dm.v1",
+    },
+  ],
+};
 
 function response(id: number, result: unknown) {
   return {
@@ -187,6 +228,40 @@ test("founder-DM signer binds canonical body and rejects every other user, team,
       .update(JSON.stringify({ "😀": "surrogate", "\uE000": "private" }))
       .digest("hex"),
   );
+});
+
+test("founder-DM signer closes authority to Analytics and every reviewed Brain tool with fresh exact envelopes", () => {
+  const signer = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
+  const bodies = new Set<string>();
+  const jtis = new Set<string>();
+  for (const tool of ["analytics_query", ...brainToolNames]) {
+    const body = { query: tool };
+    const first = decodeAuthority(signer.sign(tool, body, context).token);
+    const second = decodeAuthority(signer.sign(tool, body, context).token);
+    assert.equal(first.tool, tool);
+    assert.equal(first.bodySha256, createHash("sha256").update(JSON.stringify(body)).digest("hex"));
+    assert.notEqual(first.jti, second.jti);
+    bodies.add(first.bodySha256);
+    jtis.add(first.jti);
+    jtis.add(second.jti);
+  }
+  assert.equal(bodies.size, brainToolNames.length + 1);
+  assert.equal(jtis.size, (brainToolNames.length + 1) * 2);
+  for (const changed of [
+    { principalId: "attacker@example.com" },
+    { slackUserId: "U999" },
+    { slackTeamId: "T999" },
+    { slackChannelId: "D999" },
+    { slackMessageTs: "bad" },
+    { deliveryTarget: "D999" },
+    { conversationType: "group" },
+    { surface: "web" },
+  ]) {
+    assert.throws(() =>
+      signer.sign("brain_search", { query: "account" }, { ...context, ...changed } as McpHumanCallContext),
+    );
+  }
+  assert.throws(() => signer.sign("brain_write", { query: "account" }, context));
 });
 
 test("authority environment loading is default-off and rejects partial configuration", () => {
@@ -359,6 +434,54 @@ test("tool service injects authority only on tools/call and accepts one exact au
   assert.equal(seen.filter((entry) => entry.method === "tools/call").length, 1);
   assert.ok(seen.find((entry) => entry.method === "tools/call")?.authority);
   service.close();
+});
+
+test("Brain dispatch injects one QM-generated founder-DM authority and fails closed without its signer", async () => {
+  let calls = 0;
+  const seen: McpAuthorityPayload[] = [];
+  const fetchImpl: McpFetch = async (_url, init) => {
+    const request = JSON.parse(init.body) as {
+      id: number;
+      method: string;
+      params?: { arguments?: Record<string, unknown> };
+    };
+    if (request.method === "tools/list") {
+      assert.equal(init.headers[MCP_REQUEST_AUTHORITY_HEADER], undefined);
+      return response(request.id, { tools: [brainRemoteTool] });
+    }
+    calls += 1;
+    assert.deepEqual(request.params?.arguments, { query: "Example University" });
+    const token = init.headers[MCP_REQUEST_AUTHORITY_HEADER];
+    assert.ok(token);
+    seen.push(decodeAuthority(token));
+    return response(request.id, { content: [{ type: "text", text: "bounded result" }] });
+  };
+  const service = await serviceWith(fetchImpl, true, createMcpAuthoritySigner(signerConfig), brainServer);
+  const result = await service.callWithContext(
+    "brain_brain_search",
+    { query: "Example University" },
+    context,
+    "founder@example.com",
+  );
+  assert.equal(result.text, "bounded result");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.tool, "brain_search");
+  assert.equal(
+    seen[0]?.bodySha256,
+    createHash("sha256")
+      .update(JSON.stringify({ query: "Example University" }))
+      .digest("hex"),
+  );
+  service.close();
+
+  const noSigner = await serviceWith(fetchImpl, false, createMcpAuthoritySigner(signerConfig), brainServer);
+  await assert.rejects(
+    () =>
+      noSigner.callWithContext("brain_brain_search", { query: "Example University" }, context, "founder@example.com"),
+    /authority is unavailable/,
+  );
+  assert.equal(calls, 1);
+  noSigner.close();
 });
 
 test("cold discovery delay cannot age the authority envelope before tools/call dispatch", async () => {
