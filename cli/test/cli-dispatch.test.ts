@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { CONFIG_FILENAME, loadConfigAt } from "../src/config.ts";
 import { main } from "../src/cli.ts";
 import { renderTaskDefinition } from "../src/backends/aws.ts";
+import { deploymentLayerCanonicalBody } from "../src/deployment-layer.ts";
 import { computedSecrets } from "../src/secrets.ts";
 
 const PINNED_SANDBOX_IMAGE = `registry.fly.io/acme-sandboxes@sha256:${"b".repeat(64)}`;
@@ -260,7 +261,7 @@ test("successful check --json --live reports the live-drift clause", async () =>
   const arns = Object.fromEntries(computedSecrets(config).map((secret) => [secret.name, "arn"]));
   const image = `123456789012.dkr.ecr.us-west-2.amazonaws.com/repo@${digest}`;
   const task = renderTaskDefinition(config, "core", image, arns);
-  const layerBody = JSON.stringify({ contract: 1, tools: [], skills: [] });
+  const layerBody = deploymentLayerCanonicalBody({ contract: 1, tools: [], skills: [], backgroundJobs: [] });
   const layerHash = createHash("sha256").update(layerBody).digest("hex");
   const targetGroupName = `c-core-${createHash("sha1").update("c:core").digest("hex").slice(0, 6)}`;
   const manifest = {
