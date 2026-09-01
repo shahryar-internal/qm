@@ -5,12 +5,12 @@ import { errMessage } from "./util/errors.ts";
 import { slackPluginConfigFromEnv, startSlackPlugin } from "./slack/index.ts";
 import { createSlackRuntimeReconciler } from "./surfaces/slack-runtime.ts";
 import { takeDevGeminiApiKey } from "./model/dev-gemini-provider.ts";
-import { createBackgroundJobProductionComposition } from "./background-jobs/composition.ts";
+import { createRiselyProposalComposition } from "./risely-proposals/composition.ts";
 
 const config = loadConfig();
 if (config.devGeminiProvider) takeDevGeminiApiKey(process.env);
 
-const built = buildApp(config, { backgroundJobs: createBackgroundJobProductionComposition() });
+const built = buildApp(config, { backgroundJobs: createRiselyProposalComposition });
 const envSlackConfig = slackPluginConfigFromEnv(process.env);
 const slackConfig = envSlackConfig;
 const envSlackAttempted = Boolean(process.env.SLACK_BOT_TOKEN || process.env.SLACK_APP_TOKEN);
