@@ -304,7 +304,9 @@ function retiredBackgroundJobs(value: unknown): RetiredBackgroundJob[] {
 }
 
 function contentHash(bundle: DeploymentLayerBundle): string {
-  return createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
+  return createHash("sha256")
+    .update(JSON.stringify(normalizedBundle(bundle)))
+    .digest("hex");
 }
 
 const sameRetirementLedger = (

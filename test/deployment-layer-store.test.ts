@@ -88,6 +88,48 @@ test("the durable deployment layer versions by content, hydrates runtime state, 
   assert.equal((await hydrated.hydrate())?.version, 2);
 });
 
+test("durable hydration accepts JSONB object-key reordering without weakening the content hash", async () => {
+  const backing = createMemoryMap<StoredDeploymentLayer>();
+  const skills = createSkillStore({ signingSecret: "layer-test" });
+  const org = scopeId("org", "default-org");
+  const stored = await createDeploymentLayerStore({
+    backing,
+    runtime: emptyDeploymentLayer(),
+    skills,
+    scopeId: org,
+  }).put(
+    {
+      contract: 1,
+      tools: [{ ...tool("jsonb-safe"), executable: true }],
+      skills: [],
+      backgroundJobs: [],
+    },
+    "test",
+  );
+  const persistedTool = stored.bundle.tools[0]!;
+  await backing.put("current", {
+    ...stored,
+    bundle: {
+      backgroundJobs: [],
+      skills: [],
+      tools: [
+        {
+          executable: persistedTool.executable,
+          content: persistedTool.content,
+          path: persistedTool.path,
+        },
+      ],
+      contract: 1,
+    },
+  });
+
+  const runtime = emptyDeploymentLayer();
+  const recovered = createDeploymentLayerStore({ backing, runtime, skills, scopeId: org });
+  assert.equal((await recovered.hydrate())?.contentHash, stored.contentHash);
+  assert.equal(await recovered.isApplied(stored.contentHash), true);
+  assert.deepEqual(runtime.advertisedTools, ["jsonb-safe"]);
+});
+
 test("invalid descriptors never replace the durable current layer", async () => {
   const backing = createMemoryMap<StoredDeploymentLayer>();
   const store = createDeploymentLayerStore({
