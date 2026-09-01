@@ -1052,7 +1052,6 @@ export function buildApp(
         signals: runSignals,
         tasks,
         mcpTools,
-        backgroundJobProfiles: visibleBackgroundJobProfiles,
       }),
     ],
     [

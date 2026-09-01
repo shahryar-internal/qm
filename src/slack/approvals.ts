@@ -885,6 +885,7 @@ export function createApprovals(deps: {
     const channel = String((body as any)?.channel?.id ?? ctx?.channel ?? "");
     const messageTs = (body as any)?.message?.ts as string | undefined;
     const messageThreadTs = (body as any)?.message?.thread_ts as string | undefined;
+    const actionTs = String(a.action_ts ?? "");
     let durableAuthority: SlackApprovalAuthority | null | undefined;
     const readDurableAuthority = async (requesterUserId: string): Promise<SlackApprovalAuthority | null> => {
       try {

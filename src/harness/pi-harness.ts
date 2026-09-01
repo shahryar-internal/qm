@@ -1511,7 +1511,6 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeFold,
           turn.tape,
           turn.providerKeys,
-          turn.providerKeys,
           turn.tools,
         );
         try {
