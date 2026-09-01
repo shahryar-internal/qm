@@ -180,13 +180,40 @@ test("MCP native cards are consumed by the current surface and never returned as
         };
       },
     } as never,
-    surface: {
-      async postNativeCard(received: unknown, idempotencyKey: string) {
-        posted.push(received, idempotencyKey);
-        return { ok: true, deliveryId: "delivery-1" };
-      },
-    } as never,
+    async postNativeCard(received: unknown, idempotencyKey: string) {
+      posted.push(received, idempotencyKey);
+      return { ok: true, deliveryId: "delivery-1" };
+    },
   });
   assert.equal(await ctx.callMcpTool("analytics", {}), "model-safe result");
   assert.deepEqual(posted, ["sealed-card", `mcp-card:${card.receiptId}`]);
+});
+
+test("a native-card delivery failure preserves the successful model-safe MCP result", async () => {
+  const { sandbox } = recordingSandbox();
+  for (const postNativeCard of [
+    undefined,
+    async () => ({ ok: false as const, message: "private delivery failure" }),
+    async () => {
+      throw new Error("private delivery exception");
+    },
+  ]) {
+    const ctx = ctxFor(sandbox, {
+      mcp: {
+        toolDefs: () => [],
+        async callWithContext() {
+          return {
+            text: "model-safe successful result",
+            trustedAnalyticsCard: "sealed-card" as never,
+            nativeCardIdempotencyKey: "mcp-card:receipt",
+          };
+        },
+      } as never,
+      ...(postNativeCard ? { postNativeCard } : {}),
+    });
+    const result = await ctx.callMcpTool("metrics", {});
+    assert.match(result, /^model-safe successful result/);
+    assert.match(result, /Native result card delivery (?:unavailable|failed)/);
+    assert.doesNotMatch(result, /private delivery/);
+  }
 });

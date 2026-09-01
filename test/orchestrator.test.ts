@@ -2250,7 +2250,7 @@ test("Strict posture gates tool actions behind HiLO and honors a session grant",
 
   const prompt = await built.app.turn(dm("!sysprompt"));
   assert.match(prompt.reply ?? "", /Security posture: Strict/);
-  assert.match(prompt.reply ?? "", /Every harness tool except the no-effect/);
+  assert.match(prompt.reply ?? "", /Read-only MCP tools run automatically without human approval/);
   assert.match(prompt.reply ?? "", /Direct capability-token HTTP mutations are blocked/);
 
   const first = await built.app.turn(dm("!write notes.md strict-hello"));

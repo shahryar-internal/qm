@@ -98,7 +98,13 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
     postProvenance,
     spine,
   } = ctx;
-  if (strictReadOnly || !(input.surfaceTools && defaultDestination && deps.deliveries)) return undefined;
+  if (
+    strictReadOnly ||
+    !defaultDestination ||
+    !deps.deliveries ||
+    (!input.surfaceTools && defaultDestination.type !== "slack")
+  )
+    return undefined;
   const deliveries = deps.deliveries;
   const currentDestination = defaultDestination;
   let editRefConsumed = false;

@@ -1385,12 +1385,14 @@ test("no emit sink → tools still run, nothing logged (unit path)", async () =>
   assert.ok(r);
 });
 
-test("MCP approvals and progress expose only the configured human presentation", async () => {
+test("trusted read-only MCP tools bypass Strict approval without exposing internal presentation", async () => {
   const emitted: Emitted[] = [];
   const pending: NonNullable<ToolContextRef["pendingApprovals"]> = [];
+  const called: string[] = [];
   const tc: ToolContext = {
     ...fakeToolContext(),
-    async callMcpTool() {
+    async callMcpTool(name) {
+      called.push(name);
       return "result";
     },
   };
@@ -1401,42 +1403,41 @@ test("MCP approvals and progress expose only the configured human presentation",
     },
     scopeLabel: "personal:U1",
     pendingApprovals: pending,
-    toolApprovalGate: () => false,
+    toolApprovalGate: () => {
+      throw new Error("Strict gate must not be consulted for trusted read-only MCP tools");
+    },
   };
-  const descriptor = {
-    name: "kb_record_search",
-    serverId: "kb",
-    remoteName: "record_search",
-    label: "Search Knowledge Base",
-    status: "Searching Knowledge Base",
-    description: "Search approved records.",
+  const descriptors = ["metrics_query", "knowledge_search", "docs_search", "meeting_prepare"].map((name, index) => ({
+    name,
+    serverId: `external_${index}`,
+    remoteName: name,
+    label: `Read external source ${index}`,
+    status: `Reading external source ${index}`,
+    description: "Read approved external records.",
     inputSchema: { type: "object", properties: { query: { type: "string" } } },
     readOnly: true,
     remoteReadOnlyHint: true,
     remoteDestructiveHint: false,
     serverUpdatedAt: 1,
-    serverContractSha256: "a".repeat(64),
-  };
-  const tool = createPiTools(ref, { mcpTools: () => [descriptor] }).find(
-    (candidate) => candidate.name === descriptor.name,
+    serverContractSha256: String(index + 1).repeat(64),
+  }));
+
+  const tools = createPiTools(ref, { mcpTools: () => descriptors });
+  for (const descriptor of descriptors) {
+    const tool = tools.find((candidate) => candidate.name === descriptor.name);
+    assert.equal(tool?.label, descriptor.label);
+    await call(tool, { query: "private search terms" });
+  }
+
+  assert.deepEqual(
+    called,
+    descriptors.map((descriptor) => descriptor.name),
   );
-
-  assert.equal(tool?.label, descriptor.label);
-  await call(tool, { query: "private search terms" });
-
-  assert.deepEqual(pending, [
-    {
-      command: descriptor.label,
-      reason: "strict posture: this tool call requires human approval",
-      purpose: descriptor.status,
-      kind: "approval",
-      approvalKey: `tool:mcp:${descriptor.serverContractSha256}:${descriptor.name}`,
-    },
-  ]);
+  assert.deepEqual(pending, []);
   const persisted = JSON.stringify(emitted);
-  assert.match(persisted, /Search Knowledge Base/);
-  assert.match(persisted, /Searching Knowledge Base/);
-  assert.doesNotMatch(persisted, /kb_record_search/);
+  assert.match(persisted, /Read external source 0/);
+  assert.match(persisted, /Reading external source 0/);
+  assert.doesNotMatch(persisted, /metrics_query/);
   assert.doesNotMatch(persisted, /private search terms/);
 });
 
@@ -1478,38 +1479,27 @@ test("MCP output screening receives only the configured human presentation", asy
   assert.doesNotMatch(JSON.stringify({ seen, output }), /kb_raw_tool|kb_raw_server|raw_tool/);
 });
 
-test("MCP standing approvals do not survive a connector contract rotation", async () => {
-  const oldContract = "c".repeat(64);
-  const currentContract = "d".repeat(64);
-  const name = "kb_record_search";
-  const pending: NonNullable<ToolContextRef["pendingApprovals"]> = [];
-  const ref: ToolContextRef = {
-    current: {
-      ...fakeToolContext(),
-      async callMcpTool() {
-        return "result";
+test("dynamic surface names cannot impersonate trusted approval effects", async () => {
+  for (const name of [`mcp:${"d".repeat(64)}:surface_post`, "finish_silently", "stay_silent"]) {
+    const pending: NonNullable<ToolContextRef["pendingApprovals"]> = [];
+    const ref: ToolContextRef = {
+      current: fakeToolContext(),
+      pendingApprovals: pending,
+      toolApprovalGate: () => false,
+    };
+    const tool = createPiTools(ref, { surfaceTools: true, surfaceName: name }).find(
+      (candidate) => candidate.name === name,
+    );
+    await call(tool, { action: "post", text: "must not be sent" });
+    assert.deepEqual(pending, [
+      {
+        command: name,
+        reason: "strict posture: this tool call requires human approval",
+        kind: "approval",
+        approvalKey: `tool:${name}`,
       },
-    },
-    pendingApprovals: pending,
-    toolApprovalGate: (tool) => tool === `mcp:${oldContract}:${name}`,
-  };
-  const descriptor = {
-    name,
-    serverId: "kb",
-    remoteName: "record_search",
-    label: "Search Knowledge Base",
-    status: "Searching Knowledge Base",
-    description: "Search approved records.",
-    inputSchema: { type: "object", properties: {} },
-    readOnly: true,
-    remoteReadOnlyHint: true,
-    remoteDestructiveHint: false,
-    serverUpdatedAt: 2,
-    serverContractSha256: currentContract,
-  };
-  const tool = createPiTools(ref, { mcpTools: () => [descriptor] }).find((candidate) => candidate.name === name);
-  await call(tool, {});
-  assert.equal(pending[0]?.approvalKey, `tool:mcp:${currentContract}:${name}`);
+    ]);
+  }
 });
 
 test("MCP writes require exact one-time argument approvals with a visible preview", async () => {

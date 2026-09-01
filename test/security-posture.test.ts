@@ -51,7 +51,10 @@ test("the posture prompt names the active mechanism", () => {
   assert.match(renderSecurityPolicyPrompt(resolveSecurityPolicy("dangerous")), /Predeclared command approvals/);
   assert.match(renderSecurityPolicyPrompt(resolveSecurityPolicy("auto")), /Auto/);
   assert.match(renderSecurityPolicyPrompt(resolveSecurityPolicy("strict")), /Strict/);
-  assert.match(renderSecurityPolicyPrompt(resolveSecurityPolicy("strict")), /Every harness tool except the no-effect/);
+  assert.match(
+    renderSecurityPolicyPrompt(resolveSecurityPolicy("strict")),
+    /Read-only MCP tools run automatically without human approval/,
+  );
   assert.match(renderSecurityPolicyPrompt(resolveSecurityPolicy("strict")), /exact, predeclared safe command/);
   assert.match(renderSecurityPolicyPrompt(resolveSecurityPolicy("strict")), /bounded unshared request-file write/);
   assert.match(
