@@ -9,7 +9,14 @@ import { isObj } from "./shared.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
 function bundleFrom(body: unknown): DeploymentLayerBundle | null {
-  if (!isObj(body) || body.contract !== 1 || !Array.isArray(body.tools) || !Array.isArray(body.skills)) return null;
+  if (
+    !isObj(body) ||
+    body.contract !== 1 ||
+    !Array.isArray(body.tools) ||
+    !Array.isArray(body.skills) ||
+    (body.backgroundJobs !== undefined && !Array.isArray(body.backgroundJobs))
+  )
+    return null;
   return body as unknown as DeploymentLayerBundle;
 }
 
@@ -32,6 +39,8 @@ async function getDeploymentLayer(ctx: ApiCtx): Promise<void> {
     contract: 1,
     version: record.version,
     contentHash: record.contentHash,
+    requestedContentHash: record.requestedContentHash ?? record.contentHash,
+    transformed: (record.requestedContentHash ?? record.contentHash) !== record.contentHash,
     updatedAt: record.updatedAt,
     updatedBy: record.updatedBy,
     status: (await store.isApplied(record.contentHash)) ? "applied" : "degraded",
@@ -52,22 +61,33 @@ async function putDeploymentLayer(ctx: ApiCtx): Promise<void> {
   const updatedBy = "source-authenticated deployment CLI";
   try {
     const record = await store.put(bundle, updatedBy);
+    const live = store.live();
     return sendJson(ctx.res, 200, {
       ok: true,
       version: record.version,
       contentHash: record.contentHash,
+      requestedContentHash: record.requestedContentHash ?? record.contentHash,
+      transformed: (record.requestedContentHash ?? record.contentHash) !== record.contentHash,
+      status: (await store.isApplied(record.contentHash)) ? "applied" : "degraded",
+      runtimeContentHash: live.contentHash,
+      bundle: record.bundle,
       durable: store.durable,
       resolved: record.resolved,
     });
   } catch (error) {
     if (error instanceof DeploymentLayerPersistedError) {
       const record = error.record;
+      const live = store.live();
       return sendJson(ctx.res, 202, {
         ok: true,
         status: "degraded",
         message: errMessage(error),
         version: record.version,
         contentHash: record.contentHash,
+        requestedContentHash: record.requestedContentHash ?? record.contentHash,
+        transformed: (record.requestedContentHash ?? record.contentHash) !== record.contentHash,
+        runtimeContentHash: live.contentHash,
+        bundle: record.bundle,
         durable: store.durable,
         resolved: record.resolved,
       });

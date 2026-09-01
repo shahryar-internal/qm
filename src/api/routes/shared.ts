@@ -49,4 +49,17 @@ export async function requireScopedAdmin(
   return actor ? { actor, scope } : null;
 }
 
+export async function requireRuntimeOrgAdmin(
+  ctx: Pick<ApiCtx, "req" | "res" | "deps" | "capability" | "actor" | "url">,
+): Promise<{ actor: Principal; scope: string } | null> {
+  const authz = await requireScopedAdmin(ctx);
+  if (!authz) return null;
+  if (ctx.deps.runtimeOrgScope && authz.scope === ctx.deps.runtimeOrgScope) return authz;
+  sendJson(ctx.res, 403, {
+    error: "forbidden",
+    message: "admin route requires the configured org scope",
+  });
+  return null;
+}
+
 export { resolveCapabilityDestination } from "../capability-destination.ts";

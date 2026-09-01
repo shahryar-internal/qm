@@ -53,6 +53,7 @@ import { doctorCommon } from "./doctor.ts";
 import { awsObjectStoreBucket, declaredVariables, terraformVarsDrift } from "../terraform.ts";
 import {
   currentDeploymentLayerState,
+  deploymentLayerCanonicalBody,
   deploymentLayerBody,
   syncDeploymentLayerBody,
   type DeploymentLayerSyncResult,
@@ -1272,14 +1273,21 @@ function getDeploymentLayerArtifact(config: QmConfig, layer: DeploymentManifest[
   }
 }
 
-function assertAwsLayerApplied(
-  result: DeploymentLayerSyncResult | undefined,
-  expected: NonNullable<DeploymentManifest["layer"]> | string,
-): void {
-  const expectedHash = typeof expected === "string" ? expected : expected.sha256;
-  if (!result || result.status === "degraded" || result.durable !== true || result.contentHash !== expectedHash) {
-    throw new CliError("AWS deployment layer was not durably applied with the expected content hash");
+function assertAwsLayerApplied(result: DeploymentLayerSyncResult | undefined, requestedBody: string): string {
+  const expectedHash = createHash("sha256")
+    .update(deploymentLayerCanonicalBody(JSON.parse(requestedBody) as unknown))
+    .digest("hex");
+  if (
+    !result ||
+    result.status === "degraded" ||
+    result.durable !== true ||
+    result.requestedContentHash !== expectedHash ||
+    typeof result.body !== "string" ||
+    result.runtimeContentHash !== result.contentHash
+  ) {
+    throw new CliError("AWS deployment layer was not durably applied from the requested content hash");
   }
+  return result.body;
 }
 
 async function retryLiveProbe<T>(probe: () => Promise<T>): Promise<T> {
@@ -1299,10 +1307,15 @@ async function syncAwsLayerAfterRoll(
   args: Parameters<typeof syncDeploymentLayerBody>[0],
   body: string,
   expected: NonNullable<DeploymentManifest["layer"]> | string,
-): Promise<void> {
-  await retryLiveProbe(async () => {
-    assertAwsLayerApplied(await syncDeploymentLayerBody(args, body), expected);
+): Promise<NonNullable<DeploymentManifest["layer"]>> {
+  const canonicalBody = await retryLiveProbe(async () => {
+    return assertAwsLayerApplied(await syncDeploymentLayerBody(args, body), body);
   });
+  const expectedLayer = typeof expected === "string" ? undefined : expected;
+  const canonicalHash = createHash("sha256").update(canonicalBody).digest("hex");
+  return expectedLayer?.sha256 === canonicalHash
+    ? expectedLayer
+    : putDeploymentLayerArtifact(args.config, canonicalBody);
 }
 
 function throwAfterCompensation(error: unknown, failures: string[]): never {
@@ -1849,7 +1862,7 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
     );
     if (desiredLayerBody) {
       layerAttempted = true;
-      await syncAwsLayerAfterRoll(
+      desiredLayer = await syncAwsLayerAfterRoll(
         {
           config,
           transport: awsDeploymentLayerTransport,
@@ -1859,6 +1872,7 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
         desiredLayerBody,
         desiredLayer!,
       );
+      layerChanged = desiredLayer.sha256 !== current?.layer?.sha256;
     }
     const releaseTasks = { ...before.tasks, ...targets };
     const releaseImageProvenance = { ...current?.imageProvenance, ...selectedImageProvenance };
@@ -2064,6 +2078,7 @@ export async function awsRollback(
     }
     let targetLayerBody: string | undefined;
     let layerNeedsSync = false;
+    let appliedTargetLayer = targetManifest.layer;
     if (layerOpts) {
       targetLayerBody = getDeploymentLayerArtifact(config, targetManifest.layer);
       if (currentManifest?.layer) currentLayerBody = getDeploymentLayerArtifact(config, currentManifest.layer);
@@ -2101,7 +2116,7 @@ export async function awsRollback(
         );
       } else {
         layerAttempted = true;
-        await syncAwsLayerAfterRoll(
+        appliedTargetLayer = await syncAwsLayerAfterRoll(
           {
             config,
             transport: awsDeploymentLayerTransport,
@@ -2115,7 +2130,16 @@ export async function awsRollback(
     }
     rolledBack = true;
     if (currentManifest?.id !== targetManifest.id) {
-      manifestTransaction(aws, undefined, targetManifest.id);
+      if (appliedTargetLayer?.sha256 !== targetManifest.layer?.sha256) {
+        recordDeploymentManifest(aws, targetManifest.tasks, {
+          ...(targetManifest.sandboxImage ? { sandboxImage: targetManifest.sandboxImage } : {}),
+          ...(targetManifest.imageLabel ? { imageLabel: targetManifest.imageLabel } : {}),
+          ...(appliedTargetLayer ? { layer: appliedTargetLayer } : {}),
+          ...(targetManifest.imageProvenance ? { imageProvenance: targetManifest.imageProvenance } : {}),
+        });
+      } else {
+        manifestTransaction(aws, undefined, targetManifest.id);
+      }
       const dbSnapshot = currentManifest && firstRolledBackDbSnapshot(aws, currentManifest, targetManifest.id);
       if (dbSnapshot) {
         note(
@@ -3405,7 +3429,7 @@ export async function awsPinSandbox(
     await awaitServiceTargets(config, { core: { taskDefinition, desiredCount: before.counts.core! } });
     if (desiredLayerBody && layerOpts) {
       layerAttempted = true;
-      await syncAwsLayerAfterRoll(
+      desiredLayer = await syncAwsLayerAfterRoll(
         {
           config,
           transport: awsDeploymentLayerTransport,
@@ -3415,6 +3439,7 @@ export async function awsPinSandbox(
         desiredLayerBody,
         desiredLayer!,
       );
+      layerChanged = desiredLayer.sha256 !== baseline.layer?.sha256;
     }
     pinned = true;
     if (taskChanged || layerChanged || !coreCarried || baseline.sandboxImage !== image) {

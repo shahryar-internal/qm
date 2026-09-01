@@ -882,6 +882,7 @@ export interface SandboxValidation {
   hasDockerfile: boolean;
   tools: ToolEntry[];
   skills: SkillEntry[];
+  backgroundJobs: string[];
   errors: string[];
   warnings: string[];
 }
@@ -911,6 +912,7 @@ export function validateSandboxLayer(sandboxDir: string): SandboxValidation {
     hasDockerfile: existsSync(join(sandboxDir, "Dockerfile")),
     tools: [],
     skills: [],
+    backgroundJobs: [],
     errors: [],
     warnings: [],
   };
@@ -965,6 +967,25 @@ export function validateSandboxLayer(sandboxDir: string): SandboxValidation {
   }
   for (const [id, count] of idCounts) {
     if (count > 1) out.errors.push(`duplicate tool id "${id}" (declared by ${count} tool.json files)`);
+  }
+
+  const backgroundJobsDir = join(sandboxDir, "background-jobs");
+  if (existsSync(backgroundJobsDir)) {
+    for (const entry of readdirSync(backgroundJobsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() && !JUNK_FILE.test(entry.name)) {
+        out.errors.push(
+          `background-jobs/${entry.name} is not a background job directory; the core only accepts background-jobs/<id>/job.json paths`,
+        );
+      }
+    }
+  }
+  for (const name of subdirs(backgroundJobsDir)) {
+    const descriptorPath = join(backgroundJobsDir, name, "job.json");
+    if (!isFile(descriptorPath)) {
+      out.errors.push(`background-jobs/${name}/ has no regular job.json`);
+      continue;
+    }
+    out.backgroundJobs.push(name);
   }
   const layerLinks = out.tools.flatMap((t) =>
     (t.descriptor.auth?.credentialPaths ?? []).map((entry) => ({ id: t.descriptor.id, ...entry })),

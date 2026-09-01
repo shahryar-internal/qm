@@ -66,6 +66,9 @@ export function parseToolDescriptor(raw: string, sourcePath: string): ToolDescri
     throw new Error(`${sourcePath} must be a JSON object`);
   }
   const d = parsed as Record<string, unknown>;
+  if (d["backgroundJob"] !== undefined) {
+    throw new Error(`${sourcePath}: background jobs must use background-jobs/<id>/job.json`);
+  }
   if (typeof d["id"] !== "string" || !d["id"].trim()) {
     throw new Error(`${sourcePath}: "id" is required and must be a non-empty string`);
   }

@@ -504,8 +504,8 @@ function skillMounts(ctx: DockerCtx): string[] {
   return ctx.config.skills.map((s, i) => `${resolve(ctx.configDir, s)}:/app/plugins/deployment-skills-${i}/skills:ro`);
 }
 
-function existingLayerSubdirs(ctx: DockerCtx): Array<"skills" | "tools"> {
-  return (["skills", "tools"] as const).filter((s) => existsSync(join(ctx.sandboxDir, s)));
+function existingLayerSubdirs(ctx: DockerCtx): Array<"skills" | "tools" | "background-jobs"> {
+  return (["skills", "tools", "background-jobs"] as const).filter((s) => existsSync(join(ctx.sandboxDir, s)));
 }
 
 function layerMounts(ctx: DockerCtx): string[] {

@@ -63,6 +63,7 @@ import type { AclStore } from "../../acl/acl-store.ts";
 import type { ChannelPolicyStore } from "../../surface-cache/channel-policy-store.ts";
 import type { SurfaceCache } from "../../surface-cache/types.ts";
 import type { CurrentScheduleRunInvocation } from "../../cron/postgres-schedule-authority.ts";
+import type { BackgroundJobService } from "../../background-jobs/types.ts";
 
 export interface OrchestratorInput extends Omit<
   TurnRequest,
@@ -182,6 +183,8 @@ export interface OrchestratorDeps {
   surfaceCache?: SurfaceCache;
   channelPolicy?: ChannelPolicyStore;
   surfaceDebugFooter?: boolean;
+  backgroundJobs?: BackgroundJobService;
+  backgroundJobsEnabled?: boolean;
 }
 
 export interface SurfaceContextPuller {

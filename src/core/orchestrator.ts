@@ -80,6 +80,7 @@ import { createToolContext, NeedsApproval, CommandDenied } from "../tools/primit
 import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createSecretValueMasker } from "../security/secret-masking.ts";
+import type { BackgroundJobInvocationAuthority } from "../background-jobs/types.ts";
 import { shq } from "../util/shell.ts";
 import type { FileArtifact } from "../files/file-artifact-store.ts";
 import { filterHistoryForAudience, principalEntitledToScope } from "../resolution/context-filter.ts";
@@ -1042,6 +1043,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       });
 
       const commandUses = new Map<string, number>();
+      let backgroundJobInvocationAuthority: Readonly<BackgroundJobInvocationAuthority> | undefined;
       for (const grant of await approvalGrants.all()) {
         if (!samePerson(grant.actorId, actor.id)) continue;
         if (grant.scope === "session" && grant.sessionId !== session.id) continue;
@@ -1484,6 +1486,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
         if (input.approval) {
           const p = await pending.get(input.approval.requestId);
+          if (p?.kind === "background_job" && deps.backgroundJobsEnabled === false) {
+            await pending.delete(input.approval.requestId);
+            return {
+              status: "refused",
+              sessionId: session.id,
+              reason: "background jobs are disabled",
+            };
+          }
           if (!input.approval.approved) {
             await pending.delete(input.approval.requestId);
             deps.auditLog.record({
@@ -1548,6 +1558,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
             const useKey = p.approvalKey ?? p.command;
             commandUses.set(useKey, (commandUses.get(useKey) ?? 0) + (scope === "once" ? 1 : Infinity));
+            if (
+              scope === "once" &&
+              p.kind === "background_job" &&
+              p.approvalKey?.startsWith("background-job-approval:") &&
+              input.origin.kind === "human" &&
+              input.verifiedSlack?.liveHuman === true &&
+              input.verifiedSlack.actionTs !== undefined &&
+              input.verifiedSlack.messageTs === input.origin.messageTs
+            ) {
+              backgroundJobInvocationAuthority = Object.freeze({
+                receiptId: input.approval.requestId,
+                approvalKey: p.approvalKey,
+                actionTs: input.verifiedSlack.actionTs,
+                slack: Object.freeze({ ...input.verifiedSlack }),
+              });
+            }
             if (scope === "session" || scope === "always") {
               const grant: CommandApprovalGrant = {
                 actorId: actor.id,
@@ -1895,6 +1921,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             `[orchestrator] trigger delivery has no surface tools (missing deliveries store?) — reply would be lost session=${session.id}`,
           );
 
+        const backgroundJobs =
+          surfaceToolDeps && deps.backgroundJobs
+            ? await deps.backgroundJobs.bind({
+                surface: input.surface,
+                actorId: actor.id,
+                actorType: actor.type,
+                conversationKind: conversation.kind,
+                conversationThreadRef: conversation.threadRef,
+                conversationAudienceIds: conversation.audience.map((principal) => principal.id),
+                originKind: input.origin.kind,
+                originMessageTs: messageTs,
+                verifiedSlack: input.verifiedSlack,
+              })
+            : undefined;
         const tools = createToolContext({
           sandbox: deps.sandbox,
           ...(assertScheduleEffectCurrent ? { assertEffectCurrent: assertScheduleEffectCurrent } : {}),
@@ -2064,6 +2104,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(deps.control && controlClaims ? { control: deps.control, controlClaims } : {}),
           ...(deps.webhookPublicUrl ? { webhookPublicUrl: deps.webhookPublicUrl } : {}),
           ...(surfaceToolDeps ? { surface: surfaceToolDeps } : {}),
+          ...(backgroundJobInvocationAuthority ? { backgroundJobInvocationAuthority } : {}),
+          ...(backgroundJobs?.length ? { backgroundJobs } : {}),
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),

@@ -34,7 +34,7 @@ export interface ToolContextRef {
   pendingApprovals?: Array<{
     command: string;
     reason: string;
-    kind?: "approval";
+    kind?: "approval" | "background_job";
     matched?: string;
     purpose?: string;
     approvalKey?: string;
@@ -338,6 +338,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
   const controlTools = !!opts?.controlTools;
   const credentialExecServices = opts?.credentialExecServices ?? ref.current?.credentialExecServices ?? [];
   const surfaceTools = !!opts?.surfaceTools;
+  const backgroundJobProfiles = ref.current?.backgroundJobProfiles ?? [];
   const execTimeoutSec = Math.round((opts?.execTimeoutMs ?? CONFIG_DEFAULTS.execTimeoutDefaultSec * 1000) / 1000);
   const execCeilingSec = Math.round((opts?.execTimeoutCeilingMs ?? CONFIG_DEFAULTS.execTimeoutMaxSec * 1000) / 1000);
   const bgTtlSec = Math.round((opts?.backgroundJobTtlMs ?? CONFIG_DEFAULTS.backgroundJobTtlSec * 1000) / 1000);
@@ -2652,6 +2653,62 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     },
   });
 
+  const workflowJob = defineTool({
+    name: "workflow_job",
+    label: "Workflow job",
+    description:
+      "Start, inspect, or cancel a configured durable workflow job. Start and cancel require a fresh Slack approval click bound to this exact action.",
+    parameters: Type.Union(
+      backgroundJobProfiles.map((profile) =>
+        Type.Object({
+          profile_id: Type.Literal(profile.profileId),
+          action: Type.String({ enum: [...profile.actions] }),
+          input: Type.Optional(Type.Unknown()),
+        }),
+      ),
+    ),
+    async execute(callId, params: { profile_id: string; action: string; input?: unknown }) {
+      const tc = ref.current;
+      await recordCall(callId, { tool: "workflow_job", profileId: params.profile_id, action: params.action });
+      if (!tc)
+        return recordResult(
+          callId,
+          { tool: "workflow_job", unavailable: true },
+          text("[error] no active tool context"),
+          true,
+        );
+      let run;
+      if (params.action === "start") run = tc.backgroundJobStart?.(params.profile_id, params.input);
+      else if (params.action === "status") run = tc.backgroundJobStatus?.(params.profile_id);
+      else run = tc.backgroundJobCancel?.(params.profile_id);
+      if (!run) {
+        return recordResult(
+          callId,
+          { tool: "workflow_job", profileId: params.profile_id, action: params.action, unavailable: true },
+          text("[error] workflow job is unavailable on this turn"),
+          true,
+        );
+      }
+      const result = await run;
+      if (!result.ok && result.state === "denied" && result.approvalKey) {
+        throw new NeedsApproval(
+          `${params.action} ${params.profile_id}`,
+          `${params.action} this workflow job`,
+          "background_job",
+          undefined,
+          result.approvalKey,
+          { session: false, always: false },
+        );
+      }
+      return recordResult(
+        callId,
+        { tool: "workflow_job", profileId: params.profile_id, action: params.action, state: result.state },
+        text(result.message),
+        !result.ok,
+      );
+    },
+  });
+
   const finishSilently = defineTool({
     name: "finish_silently",
     label: "finish_silently",
@@ -2988,6 +3045,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
     memory,
     history,
     background,
+    ...(backgroundJobProfiles.length ? [workflowJob] : []),
     ...(controlTools ? [cron, webhook, share] : []),
     ...(controlTools || surfaceTools ? [guidance] : []),
     ...(surfaceTools ? [surface, staySilent] : [finishSilently]),

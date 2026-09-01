@@ -11,6 +11,7 @@ for (const [network, prefix] of [
   ["172.16.0.0", 12],
   ["192.0.0.0", 24],
   ["192.0.2.0", 24],
+  ["192.88.99.0", 24],
   ["192.168.0.0", 16],
   ["198.18.0.0", 15],
   ["198.51.100.0", 24],
@@ -28,7 +29,11 @@ for (const [network, prefix] of [
   ["fec0::", 10],
   ["fe80::", 10],
   ["ff00::", 8],
+  ["2001::", 23],
   ["2001:db8::", 32],
+  ["2002::", 16],
+  ["3fff::", 20],
+  ["2620:4f:8000::", 48],
 ] as const)
   PRIVATE_NETWORKS.addSubnet(network, prefix, "ipv6");
 
@@ -45,4 +50,13 @@ export function isPrivateNetworkIp(raw: string): boolean {
   const value = normalizedIp(raw);
   if (!value) return false;
   return PRIVATE_NETWORKS.check(value, isIP(value) === 4 ? "ipv4" : "ipv6");
+}
+
+export function isPublicNetworkIp(raw: string): boolean {
+  const value = normalizedIp(raw);
+  if (!value || raw.includes("%") || isPrivateNetworkIp(value)) return false;
+  const family = isIP(value);
+  if (family === 4) return true;
+  const first = Number.parseInt(value.split(":", 1)[0] ?? "", 16);
+  return Number.isInteger(first) && first >= 0x2000 && first <= 0x3fff;
 }

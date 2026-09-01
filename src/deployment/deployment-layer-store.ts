@@ -22,27 +22,41 @@ import { createKeyedQueue, sleep } from "../util/async.ts";
 import { errMessage } from "../util/errors.ts";
 import { parseToolDescriptor, type ToolDescriptor } from "./deployment-layer.ts";
 import { replaceDeploymentLayer, resolvedDeploymentLayer, type DeploymentLayerRuntime } from "./load-layer.ts";
+import { parseBackgroundJobDeploymentProfile } from "../background-jobs/deployment-profile.ts";
+import type { BackgroundJobDeploymentProfile } from "../background-jobs/types.ts";
 
 interface DeploymentLayerFile {
   path: string;
   content: string;
   executable?: boolean;
+  enabled?: boolean;
 }
 
 export interface DeploymentLayerBundle {
   contract: 1;
   tools: DeploymentLayerFile[];
   skills: DeploymentLayerFile[];
+  backgroundJobs?: DeploymentLayerFile[];
 }
 
 export interface StoredDeploymentLayer {
   contentHash: string;
+  requestedContentHash?: string;
   version: number;
   updatedAt: number;
   updatedBy: string;
   bundle: DeploymentLayerBundle;
   resolved: Omit<DeploymentLayerRuntime, "dir">;
   pendingAudits?: DeploymentLayerAuditRevision[];
+  retiredBackgroundJobs?: RetiredBackgroundJob[];
+}
+
+export interface RetiredBackgroundJob {
+  jobId: string;
+  descriptorSha256: string;
+  approvalFenceDigest: string;
+  retiredAt: number;
+  terminalAndExpired: boolean;
 }
 
 interface DeploymentLayerAuditRevision {
@@ -63,6 +77,17 @@ export interface DeploymentLayerStore {
     contentHash: string | null;
     resolved: Omit<DeploymentLayerRuntime, "dir"> | null;
   };
+}
+
+export interface BackgroundJobRetirementStore {
+  durability: "durable";
+  receiptCoverage: "all_owned";
+  approvalCoverage: "all_unused";
+  retiredIdLedger: "permanent";
+  approvalIssuanceFence: "atomic";
+  retireAndFenceApprovalIssuance(
+    profile: Readonly<BackgroundJobDeploymentProfile>,
+  ): Promise<Readonly<RetiredBackgroundJob>>;
 }
 
 export class DeploymentLayerValidationError extends Error {}
@@ -100,14 +125,37 @@ function hasLoneSurrogate(value: string): boolean {
 }
 
 function normalizedBundle(input: DeploymentLayerBundle): DeploymentLayerBundle {
-  if (input.contract !== 1 || !Array.isArray(input.tools) || !Array.isArray(input.skills)) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some((key) => !["contract", "tools", "skills", "backgroundJobs"].includes(key)) ||
+    input.contract !== 1 ||
+    !Array.isArray(input.tools) ||
+    !Array.isArray(input.skills) ||
+    (input.backgroundJobs !== undefined && !Array.isArray(input.backgroundJobs))
+  ) {
     throw new Error("deployment layer requires contract: 1, tools[], and skills[]");
   }
-  const normalize = (kind: "tools" | "skills", files: DeploymentLayerFile[]): DeploymentLayerFile[] => {
+  const normalize = (
+    kind: "tools" | "skills" | "background-jobs",
+    files: DeploymentLayerFile[],
+  ): DeploymentLayerFile[] => {
     const seen = new Set<string>();
     return files
       .map((file) => {
-        if (!file || typeof file.path !== "string" || typeof file.content !== "string") {
+        if (
+          !file ||
+          typeof file !== "object" ||
+          Array.isArray(file) ||
+          Object.keys(file).some((key) =>
+            kind === "background-jobs"
+              ? !["path", "content", "enabled"].includes(key)
+              : !["path", "content", "executable"].includes(key),
+          ) ||
+          typeof file.path !== "string" ||
+          typeof file.content !== "string"
+        ) {
           throw new Error(`deployment layer ${kind} entries require string path and content`);
         }
         if (file.path.includes("\u0000") || file.content.includes("\u0000")) {
@@ -125,11 +173,24 @@ function normalizedBundle(input: DeploymentLayerBundle): DeploymentLayerBundle {
           throw new Error(`deployment layer ${kind} path must start with ${kind}/: ${path}`);
         if (seen.has(path)) throw new Error(`duplicate deployment layer path: ${path}`);
         seen.add(path);
-        return { path, content: file.content, ...(file.executable === true ? { executable: true } : {}) };
+        if (file.enabled !== undefined && (kind !== "background-jobs" || typeof file.enabled !== "boolean")) {
+          throw new Error(`deployment layer ${kind} entry has invalid enabled state: ${path}`);
+        }
+        return {
+          path,
+          content: file.content,
+          ...(file.executable === true ? { executable: true } : {}),
+          ...(kind === "background-jobs" && file.enabled !== undefined ? { enabled: file.enabled } : {}),
+        };
       })
       .sort(pathOrder);
   };
-  return { contract: 1, tools: normalize("tools", input.tools), skills: normalize("skills", input.skills) };
+  return {
+    contract: 1,
+    tools: normalize("tools", input.tools),
+    skills: normalize("skills", input.skills),
+    backgroundJobs: normalize("background-jobs", input.backgroundJobs ?? []),
+  };
 }
 
 function toolDescriptors(files: DeploymentLayerFile[]): ToolDescriptor[] {
@@ -145,6 +206,22 @@ function toolDescriptors(files: DeploymentLayerFile[]): ToolDescriptor[] {
     ids.add(tool.id);
   }
   return tools;
+}
+
+function backgroundJobProfiles(files: DeploymentLayerFile[]): BackgroundJobDeploymentProfile[] {
+  const profiles = files.map((file) => {
+    if (!/^background-jobs\/[^/]+\/job\.json$/.test(file.path)) {
+      throw new Error(`deployment layer background job path must be background-jobs/<id>/job.json: ${file.path}`);
+    }
+    return parseBackgroundJobDeploymentProfile(file.content, file.path, file.enabled !== false);
+  });
+  const ids = new Set<string>();
+  for (const profile of profiles) {
+    if (ids.has(profile.definition.id))
+      throw new Error(`duplicate deployment background job id: ${profile.definition.id}`);
+    ids.add(profile.definition.id);
+  }
+  return profiles;
 }
 
 function skillManifests(files: DeploymentLayerFile[]): SkillManifest[] {
@@ -193,8 +270,152 @@ function skillManifests(files: DeploymentLayerFile[]): SkillManifest[] {
   return manifests;
 }
 
+function retiredBackgroundJobs(value: unknown): RetiredBackgroundJob[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 1_000) throw new Error("retired background job ledger is invalid");
+  const ids = new Set<string>();
+  return value
+    .map((entry) => {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        Array.isArray(entry) ||
+        Object.keys(entry).sort().join(",") !==
+          "approvalFenceDigest,descriptorSha256,jobId,retiredAt,terminalAndExpired"
+      ) {
+        throw new Error("retired background job ledger is invalid");
+      }
+      const item = entry as RetiredBackgroundJob;
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}$/.test(item.jobId) ||
+        !/^[a-f0-9]{64}$/.test(item.descriptorSha256) ||
+        !/^[a-f0-9]{64}$/.test(item.approvalFenceDigest) ||
+        !Number.isSafeInteger(item.retiredAt) ||
+        item.retiredAt < 1 ||
+        typeof item.terminalAndExpired !== "boolean" ||
+        ids.has(item.jobId)
+      ) {
+        throw new Error("retired background job ledger is invalid");
+      }
+      ids.add(item.jobId);
+      return { ...item };
+    })
+    .sort((left, right) => left.jobId.localeCompare(right.jobId));
+}
+
 function contentHash(bundle: DeploymentLayerBundle): string {
   return createHash("sha256").update(JSON.stringify(bundle)).digest("hex");
+}
+
+const sameRetirementLedger = (
+  left: readonly RetiredBackgroundJob[] | undefined,
+  right: readonly RetiredBackgroundJob[] | undefined,
+): boolean => JSON.stringify(retiredBackgroundJobs(left)) === JSON.stringify(retiredBackgroundJobs(right));
+
+function validRetirementStore(
+  retirement: BackgroundJobRetirementStore | undefined,
+): retirement is BackgroundJobRetirementStore {
+  return (
+    retirement?.durability === "durable" &&
+    retirement.receiptCoverage === "all_owned" &&
+    retirement.approvalCoverage === "all_unused" &&
+    retirement.retiredIdLedger === "permanent" &&
+    retirement.approvalIssuanceFence === "atomic"
+  );
+}
+
+function validatedRetirement(
+  profile: Readonly<BackgroundJobDeploymentProfile>,
+  value: Readonly<RetiredBackgroundJob>,
+): RetiredBackgroundJob {
+  const [entry] = retiredBackgroundJobs([value]);
+  if (entry!.jobId !== profile.definition.id || entry!.descriptorSha256 !== profile.binding.descriptorSha256) {
+    throw new Error("background job retirement fence is invalid");
+  }
+  return entry!;
+}
+
+async function retainBackgroundJobControls(
+  input: DeploymentLayerBundle,
+  current: StoredDeploymentLayer | null | undefined,
+  retirement: BackgroundJobRetirementStore | undefined,
+): Promise<{ input: DeploymentLayerBundle; retired: RetiredBackgroundJob[] }> {
+  const requested = input.backgroundJobs ?? [];
+  const retired = retiredBackgroundJobs(current?.retiredBackgroundJobs);
+  const retiredById = new Map(retired.map((entry) => [entry.jobId, entry]));
+  const currentByPath = new Map((current?.bundle.backgroundJobs ?? []).map((file) => [file.path, file]));
+  for (const file of requested) {
+    const candidate = parseBackgroundJobDeploymentProfile(file.content, file.path, file.enabled !== false);
+    const prior = currentByPath.get(file.path);
+    const retiredEntry = retiredById.get(candidate.definition.id);
+    const retainedControl =
+      file.enabled === false &&
+      ((prior?.enabled === false &&
+        parseBackgroundJobDeploymentProfile(prior.content, prior.path, false).binding.descriptorSha256 ===
+          candidate.binding.descriptorSha256) ||
+        retiredEntry?.descriptorSha256 === candidate.binding.descriptorSha256);
+    if (retiredEntry && !retainedControl) {
+      throw new Error(`background job ${candidate.definition.id} is permanently retired; register a new id`);
+    }
+  }
+  if (!current?.bundle.backgroundJobs?.length) return { input, retired };
+  const requestedByPath = new Map(requested.map((file) => [file.path, file]));
+  const retained: DeploymentLayerFile[] = [];
+  for (const file of current.bundle.backgroundJobs) {
+    const requestedFile = requestedByPath.get(file.path);
+    const disabling = requestedFile?.enabled === false && file.enabled !== false;
+    const removing = !requestedFile;
+    if (!disabling && !removing) continue;
+    const profile = parseBackgroundJobDeploymentProfile(file.content, file.path, false);
+    let retirementEntry = retiredById.get(profile.definition.id);
+    if (!validRetirementStore(retirement)) {
+      throw new Error("background job retirement requires a durable atomic approval fence");
+    }
+    const refreshed = validatedRetirement(profile, await retirement.retireAndFenceApprovalIssuance(profile));
+    if (retirementEntry) {
+      if (
+        retirementEntry.descriptorSha256 !== refreshed.descriptorSha256 ||
+        retirementEntry.approvalFenceDigest !== refreshed.approvalFenceDigest ||
+        retirementEntry.retiredAt !== refreshed.retiredAt ||
+        (retirementEntry.terminalAndExpired && !refreshed.terminalAndExpired)
+      ) {
+        throw new Error("background job permanent retirement ledger changed");
+      }
+      retirementEntry.terminalAndExpired = refreshed.terminalAndExpired;
+    } else {
+      retirementEntry = refreshed;
+      retired.push(retirementEntry);
+      retiredById.set(retirementEntry.jobId, retirementEntry);
+    }
+    if (removing && retirementEntry.terminalAndExpired) continue;
+    if (removing) retained.push({ ...file, enabled: false });
+  }
+  retired.sort((left, right) => left.jobId.localeCompare(right.jobId));
+  return {
+    input: retained.length ? { ...input, backgroundJobs: [...requested, ...retained] } : input,
+    retired,
+  };
+}
+
+function assertBackgroundJobRevisionCompatibility(
+  input: DeploymentLayerBundle,
+  current: StoredDeploymentLayer | null | undefined,
+): void {
+  if (!current?.bundle.backgroundJobs?.length) return;
+  const prior = new Map(current.bundle.backgroundJobs.map((file) => [file.path, file]));
+  for (const file of input.backgroundJobs ?? []) {
+    const existing = prior.get(file.path);
+    if (!existing) continue;
+    if (existing.enabled === false && file.enabled !== false) {
+      throw new Error(`background job at ${file.path} is retired; register a new id`);
+    }
+    if (existing.content === file.content) continue;
+    const before = parseBackgroundJobDeploymentProfile(existing.content, existing.path);
+    const after = parseBackgroundJobDeploymentProfile(file.content, file.path);
+    if (before.binding.descriptorSha256 !== after.binding.descriptorSha256) {
+      throw new Error(`background job ${after.definition.id} contract is immutable; register a new id`);
+    }
+  }
 }
 
 function publicResolved(runtime: DeploymentLayerRuntime): Omit<DeploymentLayerRuntime, "dir"> {
@@ -225,8 +446,9 @@ function validateBundle(
 } {
   const bundle = normalizedBundle(input);
   const tools = toolDescriptors(bundle.tools);
+  const backgroundJobs = backgroundJobProfiles(bundle.backgroundJobs ?? []);
   const manifests = skillManifests(bundle.skills);
-  return { bundle, manifests, runtime: resolvedDeploymentLayer(dir, tools) };
+  return { bundle, manifests, runtime: resolvedDeploymentLayer(dir, tools, backgroundJobs) };
 }
 
 export function createDeploymentLayerStore(opts: {
@@ -241,6 +463,7 @@ export function createDeploymentLayerStore(opts: {
   retryDelaysMs?: readonly number[];
   advisoryLock?: AdvisoryLock;
   auditPersisted?: (record: StoredDeploymentLayer) => Promise<void>;
+  backgroundJobRetirement?: BackgroundJobRetirementStore;
 }): DeploymentLayerStore {
   const now = opts.now ?? Date.now;
   const retryDelaysMs = opts.retryDelaysMs ?? [250, 1000, 4000];
@@ -330,6 +553,10 @@ export function createDeploymentLayerStore(opts: {
   };
 
   const apply = async (record: StoredDeploymentLayer): Promise<void> => {
+    retiredBackgroundJobs(record.retiredBackgroundJobs);
+    if (/^[a-f0-9]{64}$/.test(record.contentHash) && contentHash(record.bundle) !== record.contentHash) {
+      throw new Error("deployment layer durable record hash is invalid");
+    }
     const { manifests, runtime: nextRuntime } = validateBundle(record.bundle, `durable:${record.contentHash}`);
     if (
       appliedHash === record.contentHash &&
@@ -509,9 +736,11 @@ export function createDeploymentLayerStore(opts: {
         } catch (error) {
           throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
         }
-        const hash = contentHash(bundle);
-        const candidate: StoredDeploymentLayer = {
+        let hash = contentHash(bundle);
+        const requestedHash = hash;
+        let candidate: StoredDeploymentLayer = {
           contentHash: hash,
+          requestedContentHash: requestedHash,
           version: 1,
           updatedAt: now(),
           updatedBy,
@@ -520,6 +749,29 @@ export function createDeploymentLayerStore(opts: {
           pendingAudits: [],
         };
         return withFleetLock(async () => {
+          const current = await opts.backing.get(CURRENT);
+          try {
+            assertBackgroundJobRevisionCompatibility(input, current);
+          } catch (error) {
+            throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
+          }
+          try {
+            const retained = await retainBackgroundJobControls(input, current, opts.backgroundJobRetirement);
+            const validated = validateBundle(retained.input, "durable:pending");
+            bundle = validated.bundle;
+            manifests = validated.manifests;
+            runtime = validated.runtime;
+            hash = contentHash(bundle);
+            candidate = {
+              ...candidate,
+              contentHash: hash,
+              bundle,
+              resolved: publicResolved(runtime),
+              ...(retained.retired.length ? { retiredBackgroundJobs: retained.retired } : {}),
+            };
+          } catch (error) {
+            throw new DeploymentLayerValidationError(errMessage(error), { cause: error });
+          }
           const existing = await opts.skills.list();
           const claimed = new Map<string, string>();
           for (const skill of existing) {
@@ -552,10 +804,19 @@ export function createDeploymentLayerStore(opts: {
             },
           ];
           let record = await opts.backing.putIfAbsent(CURRENT, candidate);
-          if (record.contentHash !== hash) {
+          if (
+            record.contentHash !== hash ||
+            record.requestedContentHash !== requestedHash ||
+            !sameRetirementLedger(record.retiredBackgroundJobs, candidate.retiredBackgroundJobs)
+          ) {
             if (!opts.backing.update) throw new Error("deployment layer backing store must support atomic updates");
             const updated = await opts.backing.update(CURRENT, (current) => {
-              if (current.contentHash === hash) return current;
+              if (
+                current.contentHash === hash &&
+                current.requestedContentHash === requestedHash &&
+                sameRetirementLedger(current.retiredBackgroundJobs, candidate.retiredBackgroundJobs)
+              )
+                return current;
               const version = current.version + 1;
               return {
                 ...candidate,

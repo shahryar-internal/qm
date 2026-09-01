@@ -13,7 +13,16 @@ import { agentApiMatches } from "../src/api/agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../src/auth/capability-token.ts";
 import { scopeId } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
-import { DeploymentLayerPersistedError } from "../src/deployment/deployment-layer-store.ts";
+import {
+  createDeploymentLayerStore,
+  DeploymentLayerPersistedError,
+  type StoredDeploymentLayer,
+} from "../src/deployment/deployment-layer-store.ts";
+import { createHash } from "node:crypto";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { emptyDeploymentLayer } from "../src/deployment/load-layer.ts";
+import { createSkillStore } from "../src/skills/skill-store.ts";
+import { backgroundJobProfileJson } from "./support/background-job-profile.ts";
 
 const SECRET = "layer-routes-secret".repeat(3);
 const PATH = "/v1/deployment-layer";
@@ -133,12 +142,98 @@ test("a correctly signed PUT replaces the layer and a signed GET reads it back",
       status: string;
       runtimeContentHash: string | null;
       source: string;
+      bundle: unknown;
     };
     assert.equal(getBody.version, 1);
     assert.equal(getBody.status, "applied");
     assert.equal(getBody.runtimeContentHash, getBody.contentHash);
     assert.equal(getBody.source, "durable");
     assert.ok(getBody.contentHash);
+    assert.equal(getBody.contentHash, createHash("sha256").update(JSON.stringify(getBody.bundle)).digest("hex"));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("PUT signs the requested hash to the exact retained canonical live bundle", async () => {
+  let terminalAndExpired = false;
+  const deploymentLayer = createDeploymentLayerStore({
+    backing: createMemoryMap<StoredDeploymentLayer>(),
+    runtime: emptyDeploymentLayer(),
+    skills: createSkillStore({ signingSecret: SECRET }),
+    scopeId: scopeId("org", "default-org"),
+    durable: true,
+    backgroundJobRetirement: {
+      durability: "durable",
+      receiptCoverage: "all_owned",
+      approvalCoverage: "all_unused",
+      retiredIdLedger: "permanent",
+      approvalIssuanceFence: "atomic",
+      retireAndFenceApprovalIssuance: async (profile) => ({
+        jobId: profile.definition.id,
+        descriptorSha256: profile.binding.descriptorSha256,
+        approvalFenceDigest: "f".repeat(64),
+        retiredAt: 1_788_030_000_000,
+        terminalAndExpired,
+      }),
+    },
+  });
+  const installedBundle = {
+    contract: 1 as const,
+    tools: [],
+    skills: [],
+    backgroundJobs: [
+      {
+        path: "background-jobs/report/job.json",
+        content: backgroundJobProfileJson("report"),
+      },
+    ],
+  };
+  const installed = JSON.stringify(installedBundle);
+  const requestedBundle = { contract: 1 as const, tools: [], skills: [], backgroundJobs: [] };
+  const requested = JSON.stringify(requestedBundle);
+  const requestedContentHash = createHash("sha256").update(requested).digest("hex");
+  const srv = start({}, { deploymentLayer });
+  try {
+    const installResponse = await fetch(`${srv.base}${PATH}`, {
+      method: "PUT",
+      headers: signed("PUT", installed),
+      body: installed,
+    });
+    assert.equal(installResponse.status, 200);
+    const response = await fetch(`${srv.base}${PATH}`, {
+      method: "PUT",
+      headers: signed("PUT", requested, Math.floor(Date.now() / 1000) + 1),
+      body: requested,
+    });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as Record<string, unknown>;
+    const retainedBundle = {
+      ...installedBundle,
+      backgroundJobs: [{ ...installedBundle.backgroundJobs[0]!, enabled: false }],
+    };
+    const contentHash = createHash("sha256").update(JSON.stringify(retainedBundle)).digest("hex");
+    assert.equal(body.requestedContentHash, requestedContentHash);
+    assert.equal(body.contentHash, contentHash);
+    assert.equal(body.transformed, true);
+    assert.equal(body.runtimeContentHash, contentHash);
+    assert.deepEqual(body.bundle, retainedBundle);
+    const current = await fetch(`${srv.base}${PATH}`, { headers: signed("GET", "") });
+    const currentBody = (await current.json()) as Record<string, unknown>;
+    assert.equal(currentBody.requestedContentHash, requestedContentHash);
+    assert.equal(currentBody.contentHash, contentHash);
+    assert.deepEqual(currentBody.bundle, retainedBundle);
+    terminalAndExpired = true;
+    const cleanup = await fetch(`${srv.base}${PATH}`, {
+      method: "PUT",
+      headers: signed("PUT", requested),
+      body: requested,
+    });
+    assert.equal(cleanup.status, 200);
+    const cleanupBody = (await cleanup.json()) as Record<string, unknown>;
+    assert.equal(cleanupBody.transformed, false);
+    assert.equal(cleanupBody.contentHash, requestedContentHash);
+    assert.deepEqual(cleanupBody.bundle, requestedBundle);
   } finally {
     await srv.close();
   }

@@ -2233,6 +2233,71 @@ test("typed control tools emit tool_call then tool_result like every other tool"
   );
 });
 
+test("workflow jobs stay hidden without a healthy profile and expose only a current one-time approval key", async () => {
+  const emptyRef: ToolContextRef = { current: fakeToolContext(), scopeLabel: "personal:U1" };
+  assert.equal(
+    createPiTools(emptyRef).some((tool) => tool.name === "workflow_job"),
+    false,
+  );
+
+  const emitted: Emitted[] = [];
+  const context: ToolContext = {
+    ...fakeToolContext(),
+    backgroundJobProfiles: [
+      { profileId: "report-preview", label: "Report preview", actions: ["start", "status", "cancel"] },
+    ],
+    async backgroundJobStart(profileId) {
+      assert.equal(profileId, "report-preview");
+      return {
+        ok: false,
+        state: "denied",
+        message: "A fresh approval is required.",
+        approvalKey: "background-job-approval:start:report-preview:current-message",
+      };
+    },
+  };
+  const ref: ToolContextRef = {
+    current: context,
+    scopeLabel: "personal:U1",
+    emit: (entry) => {
+      emitted.push(entry as Emitted);
+    },
+  };
+  const workflow = createPiTools(ref).find((tool) => tool.name === "workflow_job");
+  await assert.rejects(
+    () => call(workflow, { profile_id: "report-preview", action: "start", input: { confidential: "never-log" } }),
+    (error: Error) => {
+      assert.ok(error instanceof NeedsApproval);
+      assert.equal(error.kind, "background_job");
+      assert.equal(error.approvalKey, "background-job-approval:start:report-preview:current-message");
+      assert.deepEqual(error.grantModes, { session: false, always: false });
+      return true;
+    },
+  );
+  assert.equal(JSON.stringify(emitted).includes("never-log"), false);
+  assert.deepEqual(
+    emitted.map((entry) => entry.payload),
+    [{ tool: "workflow_job", profileId: "report-preview", action: "start", callId: "t" }],
+  );
+});
+
+test("workflow job schema uses only the current turn's owner-visible actions", () => {
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      backgroundJobProfiles: [
+        { profileId: "retained-report", label: "Retained report", actions: ["status", "cancel"] },
+      ],
+    },
+  };
+  const workflow = createPiTools(ref).find((tool) => tool.name === "workflow_job");
+  const schema = JSON.stringify(workflow?.parameters);
+  assert.match(schema, /retained-report/);
+  assert.match(schema, /status/);
+  assert.match(schema, /cancel/);
+  assert.doesNotMatch(schema, /"start"/);
+});
+
 test("a blocking command approval terminates the agent loop and flags pausedOnApproval", async () => {
   const pauseTC: ToolContext = {
     ...fakeToolContext(),

@@ -63,6 +63,28 @@ import type { ShareArtifactRequest, ShareArtifactResult } from "../api/artifact-
 import type { Cron, Webhook } from "../types.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
+import type {
+  BackgroundJobInvocationAuthority,
+  BackgroundJobOutcome,
+  BoundBackgroundJobTools,
+  WorkflowCardEnvelope,
+} from "../background-jobs/types.ts";
+
+function invalidBackgroundJobProfile(): Promise<BackgroundJobOutcome> {
+  return Promise.resolve(
+    Object.freeze({
+      ok: false as const,
+      state: "unavailable" as const,
+      message: "The background job profile is unavailable.",
+    }),
+  );
+}
+
+function visibleBackgroundJobOutcome(result: BackgroundJobOutcome): BackgroundJobOutcome {
+  return result.ok
+    ? Object.freeze({ ok: true, state: result.state, message: result.message })
+    : Object.freeze({ ok: false, state: result.state, message: result.message });
+}
 
 const SKILL_SKILLMD_RE = /^(?:\.\/)?skills\/([^/]+)\/SKILL\.md$/;
 function skillTreeDirFor(path: string): string | null {
@@ -113,14 +135,14 @@ function deploymentEntrypoint(d: Deployment | null): string | undefined {
 export class NeedsApproval extends Error {
   command: string;
   approvalReason: string;
-  kind: "approval";
+  kind: "approval" | "background_job";
   matched?: string;
   approvalKey?: string;
   grantModes?: { session: boolean; always: boolean };
   constructor(
     command: string,
     reason: string,
-    kind: "approval" = "approval",
+    kind: "approval" | "background_job" = "approval",
     matched?: string,
     approvalKey?: string,
     grantModes?: { session: boolean; always: boolean },
@@ -163,6 +185,11 @@ interface ReachedProvenance {
 }
 
 export interface ToolContext extends SurfaceToolDeps {
+  backgroundJobProfiles?: readonly Readonly<{
+    profileId: string;
+    label: string;
+    actions: readonly ("start" | "status" | "cancel")[];
+  }>[];
   credentialExecServices?: readonly { service: string; binary: string }[];
   credentialExec?(
     service: string,
@@ -249,6 +276,9 @@ export interface ToolContext extends SurfaceToolDeps {
     content: string,
   ): Promise<ControlOk<{ version: number }> | ControlErr<"soul_update_denied"> | ControlUnavailable>;
   shareArtifact(req: ShareArtifactRequest): Promise<ShareArtifactResult | ControlUnavailable>;
+  backgroundJobStart?(profileId: string, input: unknown): Promise<BackgroundJobOutcome>;
+  backgroundJobStatus?(profileId: string): Promise<BackgroundJobOutcome>;
+  backgroundJobCancel?(profileId: string): Promise<BackgroundJobOutcome>;
 }
 
 interface SurfaceSearchToolOpts {
@@ -369,6 +399,7 @@ export interface SurfaceToolDeps {
   ): Promise<SurfaceStandingOrderResult>;
   staySilent(reason: string): Promise<{ ok: true; message: string }>;
   postNativeCard?(card: TrustedAnalyticsCard, idempotencyKey: string): Promise<SurfacePostResult>;
+  postWorkflowCard?(card: Readonly<WorkflowCardEnvelope>, deliveryKey: string): Promise<SurfacePostResult>;
 }
 
 export interface ControlUnavailable {
@@ -442,6 +473,8 @@ export interface ToolContextDeps {
   controlClaims?: CapabilityClaims;
   webhookPublicUrl?: string;
   surface?: SurfaceToolDeps;
+  backgroundJobs?: readonly Readonly<BoundBackgroundJobTools>[];
+  backgroundJobInvocationAuthority?: Readonly<BackgroundJobInvocationAuthority>;
 }
 
 const EFFECT_AUTHORIZATION_EXEMPT = new Set<PropertyKey>(["mcpToolDefs", "soulRead", "staySilent"]);
@@ -554,6 +587,44 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   }
 
   const context: ToolContext = {
+    ...(deps.backgroundJobs?.length
+      ? {
+          backgroundJobProfiles: deps.backgroundJobs.map(({ profileId, label, actions }) => ({
+            profileId,
+            label,
+            actions,
+          })),
+          backgroundJobStart: (profileId: string, input: unknown) => {
+            const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
+            return profile
+              ? profile.start(input, deps.backgroundJobInvocationAuthority)
+              : invalidBackgroundJobProfile();
+          },
+          backgroundJobStatus: async (profileId: string) => {
+            const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
+            if (!profile) return invalidBackgroundJobProfile();
+            const result = await profile.status();
+            if (!result.ok || !result.cardDeliveryKey) return visibleBackgroundJobOutcome(result);
+            if (!result.card)
+              return Object.freeze({
+                ok: false as const,
+                state: "unavailable" as const,
+                message: "The background job result card is unavailable.",
+              });
+            const posted = await deps.surface?.postWorkflowCard?.(result.card, result.cardDeliveryKey);
+            if (posted?.ok) return visibleBackgroundJobOutcome(result);
+            return Object.freeze({
+              ok: false as const,
+              state: "unavailable" as const,
+              message: "The background job result card could not be delivered.",
+            });
+          },
+          backgroundJobCancel: (profileId: string) => {
+            const profile = deps.backgroundJobs!.find((entry) => entry.profileId === profileId);
+            return profile ? profile.cancel(deps.backgroundJobInvocationAuthority) : invalidBackgroundJobProfile();
+          },
+        }
+      : {}),
     ...(deps.credentialExecServices ? { credentialExecServices: deps.credentialExecServices } : {}),
     ...(deps.credentialExec ? { credentialExec: deps.credentialExec } : {}),
     async computerStatus(): Promise<ComputerStatus> {
