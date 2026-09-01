@@ -103,6 +103,7 @@ const RESERVED_CLAIMS = new Set([
   "iat",
   "exp",
   "operation",
+  "approvedArgumentsSha256",
   "approvalId",
   "approvalPayloadSha256",
   "slackTeamId",
@@ -401,7 +402,8 @@ function createSigner(
       if (!profile) throw new Error(`approved write authority has no profile for ${tool}`);
       signingContext(profile, context);
       const approval = context.approval!;
-      if (approval.argumentsSha256 !== exactToolApprovalArguments(args).sha256) {
+      const approvedArgumentsSha256 = exactToolApprovalArguments(args).sha256;
+      if (approval.argumentsSha256 !== approvedArgumentsSha256) {
         throw new Error("approved write authority arguments do not match the approval");
       }
       const iat = Math.floor(now() / 1_000);
@@ -428,6 +430,7 @@ function createSigner(
         iat,
         exp: iat + profile.ttlSeconds,
         operation: profile.operation,
+        approvedArgumentsSha256,
         approvalId: receipt.approvalId,
         approvalPayloadSha256: receipt.approvalPayloadSha256,
         slackTeamId: receipt.slackTeamId,

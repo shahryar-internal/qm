@@ -129,6 +129,17 @@ function notionAuthoritySchema(name: string, schema: Record<string, unknown>): b
   return canonical(schema) === canonical(NOTION_TOOL_SCHEMAS[name]);
 }
 
+function closedMcpObjectSchemas(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  const node = schema as Record<string, unknown>;
+  if (node.type === "object") {
+    if (node.additionalProperties !== false || !node.properties || typeof node.properties !== "object") return false;
+    return Object.values(node.properties).every(closedMcpObjectSchemas);
+  }
+  if (node.type === "array") return closedMcpObjectSchemas(node.items);
+  return typeof node.type === "string";
+}
+
 export function mcpCallerInputSchema(tool: McpAllowedTool): Record<string, unknown> | null {
   if (tool.requestAuthority !== NOTION_READ_AUTHORITY && tool.requestAuthority !== APPROVED_WRITE_AUTHORITY) {
     return tool.inputSchema;
@@ -140,7 +151,8 @@ export function mcpCallerInputSchema(tool: McpAllowedTool): Record<string, unkno
   const hidden = tool.requestAuthority === NOTION_READ_AUTHORITY ? "authorityEnvelope" : "approval";
   if (
     tool.requestAuthority === APPROVED_WRITE_AUTHORITY &&
-    canonical(properties.approval) !== canonical(APPROVED_WRITE_RECEIPT_SCHEMA)
+    (canonical(properties.approval) !== canonical(APPROVED_WRITE_RECEIPT_SCHEMA) ||
+      !closedMcpObjectSchemas(tool.inputSchema))
   ) {
     return null;
   }

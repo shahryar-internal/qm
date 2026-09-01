@@ -106,6 +106,15 @@ test("approved write contracts hide the injected receipt and reject weaker contr
   for (const invalid of [
     { ...allowedTool, readOnly: true },
     { ...allowedTool, inputSchema: { ...remoteInputSchema, required: ["payload"] } },
+    { ...allowedTool, inputSchema: { ...remoteInputSchema, additionalProperties: true } },
+    { ...allowedTool, inputSchema: { ...remoteInputSchema, additionalProperties: undefined } },
+    {
+      ...allowedTool,
+      inputSchema: {
+        ...remoteInputSchema,
+        properties: { ...remoteInputSchema.properties, payload: { ...payloadSchema, additionalProperties: true } },
+      },
+    },
     {
       ...allowedTool,
       inputSchema: {
@@ -328,6 +337,7 @@ test("deployment authority signer binds a fresh founder DM click and emits order
     "iat",
     "exp",
     "operation",
+    "approvedArgumentsSha256",
     "approvalId",
     "approvalPayloadSha256",
     "slackTeamId",
@@ -340,6 +350,7 @@ test("deployment authority signer binds a fresh founder DM click and emits order
     "noteSha256",
   ]);
   assert.equal(claims.recordId, "record-1");
+  assert.equal(claims.approvedArgumentsSha256, exactToolApprovalArguments(callerArgs).sha256);
   assert.equal(claims.noteSha256, "0f1a47bf66b3a86513f78be1f7f4e92612896b647f98981afb6b14499dbf5179");
   assert.equal(
     verify(
