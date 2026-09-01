@@ -364,7 +364,10 @@ test("signed private proposal runtime compiles idempotent owner-scoped artifacts
   const status = await client.status(receipt);
   assert.equal(status.state, "complete");
   assert.equal(status.artifacts?.length, 5);
-  assert.equal(status.artifacts?.every((artifact) => new URL(artifact.href).search === ""), true);
+  assert.equal(
+    status.artifacts?.every((artifact) => new URL(artifact.href).search === ""),
+    true,
+  );
   const outcome = backgroundJobStatusOutcome(deployment, receipt, status);
   assert.equal(outcome.state, "complete");
   assert.ok(outcome.card);
