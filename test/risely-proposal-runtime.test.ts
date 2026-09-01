@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { test } from "node:test";
 import { createBackgroundJobProductionComposition } from "../src/background-jobs/composition.ts";
-import { parseBackgroundJobDeploymentProfile } from "../src/background-jobs/deployment-profile.ts";
+import {
+  parseBackgroundJobDeploymentProfile,
+  validateBackgroundJobSchemaValue,
+} from "../src/background-jobs/deployment-profile.ts";
 import { backgroundJobStatusOutcome } from "../src/background-jobs/service.ts";
 import type {
   BackgroundJobApprovalGrant,
@@ -73,27 +76,58 @@ function profile() {
 }
 
 function proposalInput(): RiselyProposalInput {
+  const sourceEvidence = (
+    id: string,
+    source: "analytics" | "brain",
+    value: unknown,
+    revision: string,
+    observedAt: string,
+    fetchedAt: string,
+    citation: string,
+    summary: string,
+  ) => {
+    const sourceRecord = canonicalJson(value);
+    const contentSha256 = createHash("sha256").update(sourceRecord).digest("hex");
+    return {
+      id,
+      source,
+      sourceRecordRef: `source-record:${contentSha256}`,
+      sourceRecord,
+      contentSha256,
+      relatedContentSha256: [],
+      revision,
+      observedAt,
+      fetchedAt,
+      status: "cited" as const,
+      trust: "verified_source" as const,
+      availability: "available" as const,
+      sourceTrust: "verified_source" as const,
+      sourceAvailability: "available" as const,
+      citation,
+      summary,
+    };
+  };
   const evidence = [
-    {
-      id: "brain-account",
-      source: "brain" as const,
-      recordRef: "account:acme",
-      revision: "brain-r17",
-      sha256: "1".repeat(64),
-      observedAt: "2026-08-31T20:00:00.000Z",
-      citation: "https://brain.example.com/accounts/acme",
-      summary: "Acme requested a private rollout proposal.",
-    },
-    {
-      id: "analytics-usage",
-      source: "analytics" as const,
-      recordRef: "report:acme-usage",
-      revision: "analytics-r4",
-      sha256: "2".repeat(64),
-      observedAt: "2026-08-31T20:01:00.000Z",
-      citation: "https://analytics.example.com/reports/acme-usage",
-      summary: "Verified usage supports the stated outcome.",
-    },
+    sourceEvidence(
+      "brain-account",
+      "brain",
+      { accountId: "acme", request: "private rollout proposal" },
+      "brain-r17",
+      "2026-08-31T20:00:00.000Z",
+      "2026-08-31T20:00:10.000Z",
+      "https://brain.example.com/accounts/acme",
+      "Acme requested a private rollout proposal.",
+    ),
+    sourceEvidence(
+      "analytics-usage",
+      "analytics",
+      { accountId: "acme", activeUsers: 125, report: "usage" },
+      "analytics-r4",
+      "2026-08-31T20:01:00.000Z",
+      "2026-08-31T20:01:10.000Z",
+      "https://analytics.example.com/reports/acme-usage",
+      "Verified usage supports the stated outcome.",
+    ),
   ];
   const keys = [
     "executive_summary",
@@ -224,6 +258,16 @@ test("private proposal adapter requires all evidence-bound decision sections", a
       }),
     /evidence references/,
   );
+  assert.throws(
+    () =>
+      adapter.parseInput({
+        ...input,
+        evidence: input.evidence.map((item, index) =>
+          index === 0 ? { ...item, sourceRecord: canonicalJson({ forged: true }) } : item,
+        ),
+      }),
+    /source record hash/,
+  );
   const prepared = await adapter.prepare(input, {
     jobId: "risely-proposal",
     organizationId: "risely",
@@ -236,7 +280,9 @@ test("private proposal adapter requires all evidence-bound decision sections", a
     conversationThreadRef: "dm:DOWNER1:1788206400.123456",
   });
   assert.match(prepared.idempotencyKey, /^risely-proposal:[a-f0-9]{64}$/);
-  assert.equal(JSON.parse(Buffer.from(prepared.bodyBytes).toString("utf8")).input.proposalId, input.proposalId);
+  const compiled = JSON.parse(Buffer.from(prepared.bodyBytes).toString("utf8"));
+  assert.equal(compiled.proposalId, input.proposalId);
+  assert.doesNotThrow(() => validateBackgroundJobSchemaValue(profile().schema.json, compiled));
 });
 
 test("signed private proposal runtime compiles idempotent owner-scoped artifacts and decision receipts", async () => {
@@ -267,8 +313,19 @@ test("signed private proposal runtime compiles idempotent owner-scoped artifacts
   assert.ok(record);
   assert.equal(record.releaseEligible, false);
   assert.equal(record.decisions.length, 8);
+  assert.match(record.principalBindingSha256, /^[a-f0-9]{64}$/);
+  assert.match(record.evidenceBundleSha256, /^[a-f0-9]{64}$/);
   assert.equal(
     record.decisions.every((receipt) => receipt.approvalDigest === approval.digest),
+    true,
+  );
+  assert.equal(
+    record.decisions.every(
+      (receipt) =>
+        receipt.principalBindingSha256 === record.principalBindingSha256 &&
+        receipt.evidenceBundleSha256 === record.evidenceBundleSha256 &&
+        receipt.evidenceRefs.every((reference) => /^evidence:[a-f0-9]{64}$/.test(reference)),
+    ),
     true,
   );
   assert.equal(record.artifacts.length, 5);
@@ -281,6 +338,11 @@ test("signed private proposal runtime compiles idempotent owner-scoped artifacts
   );
   assert.ok(decisions);
   assert.equal(JSON.parse(decisions.toString("utf8")).releaseEligible, false);
+  const manifest = [...files.bytes.values()].find((value) =>
+    value.includes(Buffer.from("content_addressed_approved_claims")),
+  );
+  assert.ok(manifest);
+  assert.equal(JSON.parse(manifest.toString("utf8")).principalBindingSha256, record.principalBindingSha256);
   const receipt = {
     ...owner,
     ...deployment.binding,

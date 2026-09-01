@@ -24,26 +24,29 @@ export const RISELY_PROPOSAL_ARTIFACTS = Object.freeze([
   Object.freeze({ kind: "email_draft", label: "Email draft", visibility: "private_review" as const }),
 ]);
 
-interface PreparedProposal {
-  contract: 1;
-  jobId: string;
-  owner: Readonly<BackgroundJobCompilerContext>;
-  input: Readonly<RiselyProposalInput>;
-}
-
 interface ProposalDecisionReceipt {
   receiptId: string;
   proposalId: string;
   revision: number;
   sectionKey: string;
   sectionSha256: string;
-  evidenceSha256: readonly string[];
+  principalBindingSha256: string;
+  evidenceBundleSha256: string;
+  evidenceRefs: readonly string[];
   approvalId: string;
   approvalDigest: string;
   approvalActionTs: string;
   decision: "approved_for_private_compile";
   releaseEligible: false;
   decidedAt: string;
+}
+
+interface ProposalEvidenceBundle {
+  contract: 1;
+  disposition: "content_addressed_approved_claims";
+  principalBindingSha256: string;
+  evidence: readonly Readonly<{ id: string; evidenceRef: string; contentSha256: string }>[];
+  bundleSha256: string;
 }
 
 export interface RiselyProposalRunRecord {
@@ -55,6 +58,8 @@ export interface RiselyProposalRunRecord {
   state: "complete" | "cancelled";
   artifacts: readonly Readonly<BackgroundJobResultArtifact>[];
   decisions: readonly Readonly<ProposalDecisionReceipt>[];
+  principalBindingSha256: string;
+  evidenceBundleSha256: string;
   releaseEligible: false;
   createdAt: number;
   completedAt: number;
@@ -82,44 +87,18 @@ function hash(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function decodePrepared(body: Uint8Array, profile: Readonly<BackgroundJobDeploymentProfile>): PreparedProposal {
+function decodePrepared(body: Uint8Array): Readonly<RiselyProposalInput> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
   } catch {
     throw new TypeError("prepared proposal body is invalid");
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new TypeError("prepared proposal body is invalid");
-  const root = parsed as Record<string, unknown>;
-  if (Object.keys(root).sort().join(",") !== "contract,input,jobId,owner" || root.contract !== 1) {
+  const input = parseRiselyProposalInput(parsed);
+  if (!Buffer.from(canonicalJson(input), "utf8").equals(Buffer.from(body))) {
     throw new TypeError("prepared proposal body is invalid");
   }
-  const owner = root.owner as Record<string, unknown>;
-  const expectedOwner = profile.profile;
-  if (
-    !owner ||
-    typeof owner !== "object" ||
-    Array.isArray(owner) ||
-    root.jobId !== profile.definition.id ||
-    owner.jobId !== profile.definition.id ||
-    owner.organizationId !== expectedOwner.organizationId ||
-    owner.actorPrincipalId !== expectedOwner.actorPrincipalId ||
-    owner.actorSlackId !== expectedOwner.actorSlackId ||
-    owner.audienceScopeId !== expectedOwner.audienceScopeId ||
-    owner.slackTeamId !== expectedOwner.slackTeamId ||
-    owner.channelId !== expectedOwner.channelId ||
-    typeof owner.threadTs !== "string" ||
-    typeof owner.conversationThreadRef !== "string"
-  ) {
-    throw new TypeError("prepared proposal owner is invalid");
-  }
-  return Object.freeze({
-    contract: 1,
-    jobId: profile.definition.id,
-    owner: Object.freeze({ ...(owner as unknown as BackgroundJobCompilerContext) }),
-    input: parseRiselyProposalInput(root.input),
-  });
+  return input;
 }
 
 function verifySignedToken(token: string, authority: BackgroundJobAuthoritySigner): void {
@@ -156,20 +135,59 @@ function verifySignedToken(token: string, authority: BackgroundJobAuthoritySigne
   }
 }
 
+function evidenceBundle(
+  input: Readonly<RiselyProposalInput>,
+  grant: Readonly<BackgroundJobApprovalGrant>,
+): Readonly<ProposalEvidenceBundle> {
+  const principalBindingSha256 = hash(
+    canonicalJson({
+      organizationId: grant.organizationId,
+      actorPrincipalId: grant.actorPrincipalId,
+      actorSlackId: grant.actorSlackId,
+      audienceScopeId: grant.audienceScopeId,
+      slackTeamId: grant.slackTeamId,
+      channelId: grant.channelId,
+      threadTs: grant.threadTs,
+      conversationThreadRef: grant.conversationThreadRef,
+    }),
+  );
+  const evidence = Object.freeze(
+    input.evidence
+      .map((item) =>
+        Object.freeze({
+          id: item.id,
+          evidenceRef: `evidence:${hash(canonicalJson(item))}`,
+          contentSha256: item.contentSha256,
+        }),
+      )
+      .sort((left, right) => left.evidenceRef.localeCompare(right.evidenceRef)),
+  );
+  const projection = Object.freeze({
+    contract: 1 as const,
+    disposition: "content_addressed_approved_claims" as const,
+    principalBindingSha256,
+    evidence,
+  });
+  return Object.freeze({ ...projection, bundleSha256: hash(canonicalJson(projection)) });
+}
+
 function decisionReceipts(
   input: Readonly<RiselyProposalInput>,
+  bundle: Readonly<ProposalEvidenceBundle>,
   grant: Readonly<BackgroundJobApprovalGrant>,
   authorizedAt: number,
 ): readonly Readonly<ProposalDecisionReceipt>[] {
-  const byEvidence = new Map(input.evidence.map((item) => [item.id, item]));
+  const byEvidence = new Map(bundle.evidence.map((item) => [item.id, item]));
   return Object.freeze(
     input.sections.map((section) => {
       const sectionSha256 = hash(canonicalJson(section));
-      const evidenceSha256 = Object.freeze(section.evidenceRefs.map((id) => byEvidence.get(id)!.sha256));
+      const evidenceRefs = Object.freeze(section.evidenceRefs.map((id) => byEvidence.get(id)!.evidenceRef));
       const receiptId = `proposal-decision:${hash(
         canonicalJson({
           approvalDigest: grant.digest,
-          evidenceSha256,
+          evidenceBundleSha256: bundle.bundleSha256,
+          evidenceRefs,
+          principalBindingSha256: bundle.principalBindingSha256,
           proposalId: input.proposalId,
           revision: input.revision,
           sectionKey: section.key,
@@ -182,7 +200,9 @@ function decisionReceipts(
         revision: input.revision,
         sectionKey: section.key,
         sectionSha256,
-        evidenceSha256,
+        principalBindingSha256: bundle.principalBindingSha256,
+        evidenceBundleSha256: bundle.bundleSha256,
+        evidenceRefs,
         approvalId: grant.approvalId,
         approvalDigest: grant.digest,
         approvalActionTs: grant.actionTs,
@@ -196,6 +216,7 @@ function decisionReceipts(
 
 function artifactDefinitions(
   input: Readonly<RiselyProposalInput>,
+  bundle: Readonly<ProposalEvidenceBundle>,
   decisions: readonly Readonly<ProposalDecisionReceipt>[],
 ): readonly Readonly<ArtifactDefinition>[] {
   return Object.freeze([
@@ -215,7 +236,7 @@ function artifactDefinitions(
       kind: "evidence_manifest",
       name: `${input.proposalId}-r${input.revision}-evidence.json`,
       mimetype: "application/json",
-      bytes: renderEvidenceManifest(input),
+      bytes: renderEvidenceManifest(input, bundle),
     }),
     Object.freeze({
       kind: "decision_receipts",
@@ -276,13 +297,10 @@ export function createRiselyProposalAdapter(): BackgroundJobAdapter<
     readiness: () => Object.freeze({ ready: true as const }),
     parseInput: parseRiselyProposalInput,
     async prepare(input: RiselyProposalInput, context: Readonly<BackgroundJobCompilerContext>) {
-      const bodyBytes = Buffer.from(
-        canonicalJson({ contract: 1, jobId: context.jobId, owner: context, input }),
-        "utf8",
-      );
+      const bodyBytes = Buffer.from(canonicalJson(input), "utf8");
       return Object.freeze({
         bodyBytes,
-        idempotencyKey: `risely-proposal:${hash(bodyBytes)}`,
+        idempotencyKey: `risely-proposal:${hash(canonicalJson({ context, input }))}`,
       });
     },
     statusView(status: Readonly<RiselyProposalStatus>): Readonly<BackgroundJobStatusView> {
@@ -313,19 +331,20 @@ export function createRiselyProposalClient(dependencies: {
       const exactBody = Uint8Array.from(body);
       const token = await dependencies.authority.signStart(exactBody, grant, idempotencyKey, authorizedAt);
       verifySignedToken(token, dependencies.authority);
-      const prepared = decodePrepared(exactBody, dependencies.profile);
+      const input = decodePrepared(exactBody);
       const runId = `proposal-run:${hash(idempotencyKey).slice(0, 40)}`;
       const existing = await dependencies.records.get(runId);
       if (existing) {
         if (existing.idempotencyKey !== idempotencyKey) throw new Error("proposal idempotency binding changed");
         return Object.freeze({ authorityId: existing.authorityId, runId: existing.runId });
       }
-      const decisions = decisionReceipts(prepared.input, grant, authorizedAt);
+      const bundle = evidenceBundle(input, grant);
+      const decisions = decisionReceipts(input, bundle, grant, authorizedAt);
       const artifacts = await storeArtifacts(
         dependencies.profile,
         dependencies.files,
         runId,
-        artifactDefinitions(prepared.input, decisions),
+        artifactDefinitions(input, bundle, decisions),
         authorizedAt,
       );
       const authorityId = `proposal-authority:${hash(token).slice(0, 40)}`;
@@ -333,11 +352,13 @@ export function createRiselyProposalClient(dependencies: {
         runId,
         authorityId,
         idempotencyKey,
-        proposalId: prepared.input.proposalId,
-        revision: prepared.input.revision,
+        proposalId: input.proposalId,
+        revision: input.revision,
         state: "complete",
         artifacts,
         decisions,
+        principalBindingSha256: bundle.principalBindingSha256,
+        evidenceBundleSha256: bundle.bundleSha256,
         releaseEligible: false,
         createdAt: authorizedAt,
         completedAt: now(),

@@ -14,17 +14,38 @@ const SECTION_KEYS = [
   "next_steps",
 ] as const;
 const SOURCE_KINDS = ["analytics", "brain", "google", "manual", "notion"] as const;
+const EVIDENCE_STATUSES = ["available", "cited", "partial_or_unavailable", "unavailable"] as const;
+const EVIDENCE_TRUST = [
+  "verified_source",
+  "untrusted_source_data",
+  "generated_evidence_cited_update",
+  "unavailable_source",
+] as const;
+const SOURCE_TRUST = ["verified_source", "untrusted_source_data", "unavailable_source", "unresolved"] as const;
+const AVAILABILITY = ["available", "unavailable"] as const;
+const SOURCE_AVAILABILITY = ["available", "unavailable", "unresolved"] as const;
 
 export type RiselyProposalSectionKey = (typeof SECTION_KEYS)[number];
 export type RiselyProposalEvidenceSource = (typeof SOURCE_KINDS)[number];
+export type RiselyProposalEvidenceStatus = (typeof EVIDENCE_STATUSES)[number];
+export type RiselyProposalEvidenceTrust = (typeof EVIDENCE_TRUST)[number];
+export type RiselyProposalSourceTrust = (typeof SOURCE_TRUST)[number];
 
 export interface RiselyProposalEvidence {
   id: string;
   source: RiselyProposalEvidenceSource;
-  recordRef: string;
+  sourceRecordRef: string;
+  sourceRecord: string;
+  contentSha256: string;
+  relatedContentSha256: readonly string[];
   revision: string;
-  sha256: string;
   observedAt: string;
+  fetchedAt: string;
+  status: RiselyProposalEvidenceStatus;
+  trust: RiselyProposalEvidenceTrust;
+  availability: (typeof AVAILABILITY)[number];
+  sourceTrust: RiselyProposalSourceTrust;
+  sourceAvailability: (typeof SOURCE_AVAILABILITY)[number];
   citation: string;
   summary: string;
 }
@@ -72,14 +93,44 @@ export const riselyProposalInputSchema = Object.freeze({
         properties: {
           id: { type: "string", minLength: 1, maxLength: 128 },
           source: { type: "string", enum: [...SOURCE_KINDS] },
-          recordRef: { type: "string", minLength: 1, maxLength: 300 },
+          sourceRecordRef: { type: "string", minLength: 78, maxLength: 78 },
+          sourceRecord: { type: "string", minLength: 2, maxLength: 20000 },
+          contentSha256: { type: "string", minLength: 64, maxLength: 64 },
+          relatedContentSha256: {
+            type: "array",
+            minItems: 0,
+            maxItems: 16,
+            items: { type: "string", minLength: 64, maxLength: 64 },
+          },
           revision: { type: "string", minLength: 1, maxLength: 160 },
-          sha256: { type: "string", minLength: 64, maxLength: 64 },
           observedAt: { type: "string", format: "date-time", maxLength: 40 },
+          fetchedAt: { type: "string", format: "date-time", maxLength: 40 },
+          status: { type: "string", enum: [...EVIDENCE_STATUSES] },
+          trust: { type: "string", enum: [...EVIDENCE_TRUST] },
+          availability: { type: "string", enum: [...AVAILABILITY] },
+          sourceTrust: { type: "string", enum: [...SOURCE_TRUST] },
+          sourceAvailability: { type: "string", enum: [...SOURCE_AVAILABILITY] },
           citation: { type: "string", minLength: 1, maxLength: 1000 },
           summary: { type: "string", minLength: 1, maxLength: 2000 },
         },
-        required: ["id", "source", "recordRef", "revision", "sha256", "observedAt", "citation", "summary"],
+        required: [
+          "id",
+          "source",
+          "sourceRecordRef",
+          "sourceRecord",
+          "contentSha256",
+          "relatedContentSha256",
+          "revision",
+          "observedAt",
+          "fetchedAt",
+          "status",
+          "trust",
+          "availability",
+          "sourceTrust",
+          "sourceAvailability",
+          "citation",
+          "summary",
+        ],
       },
     },
     sections: {
@@ -153,16 +204,88 @@ function instant(value: unknown, name: string): string {
 
 function evidence(value: unknown): RiselyProposalEvidence {
   const item = object(value, "evidence");
-  exact(item, ["id", "source", "recordRef", "revision", "sha256", "observedAt", "citation", "summary"]);
+  exact(item, [
+    "id",
+    "source",
+    "sourceRecordRef",
+    "sourceRecord",
+    "contentSha256",
+    "relatedContentSha256",
+    "revision",
+    "observedAt",
+    "fetchedAt",
+    "status",
+    "trust",
+    "availability",
+    "sourceTrust",
+    "sourceAvailability",
+    "citation",
+    "summary",
+  ]);
   const source = text(item.source, "evidence source", 32);
   if (!(SOURCE_KINDS as readonly string[]).includes(source)) throw new TypeError("evidence source is invalid");
+  const sourceRecord = text(item.sourceRecord, "evidence source record", 20000);
+  let sourceValue: unknown;
+  try {
+    sourceValue = JSON.parse(sourceRecord);
+  } catch {
+    throw new TypeError("evidence source record is invalid");
+  }
+  if (canonicalJson(sourceValue) !== sourceRecord) throw new TypeError("evidence source record is invalid");
+  const contentSha256 = createHash("sha256").update(sourceRecord).digest("hex");
+  const sourceRecordRef = text(item.sourceRecordRef, "evidence source record reference", 78);
+  if (item.contentSha256 !== contentSha256 || sourceRecordRef !== `source-record:${contentSha256}`) {
+    throw new TypeError("evidence source record hash is invalid");
+  }
+  if (!Array.isArray(item.relatedContentSha256) || item.relatedContentSha256.length > 16) {
+    throw new TypeError("evidence related content is invalid");
+  }
+  const relatedContentSha256 = item.relatedContentSha256.map((entry) =>
+    text(entry, "evidence related content hash", 64, HASH),
+  );
+  if (
+    new Set(relatedContentSha256).size !== relatedContentSha256.length ||
+    relatedContentSha256.some((entry, index) => index > 0 && relatedContentSha256[index - 1]! >= entry)
+  ) {
+    throw new TypeError("evidence related content is invalid");
+  }
+  const observedAt = instant(item.observedAt, "evidence observedAt");
+  const fetchedAt = instant(item.fetchedAt, "evidence fetchedAt");
+  if (Date.parse(observedAt) > Date.parse(fetchedAt)) throw new TypeError("evidence observation postdates fetch");
+  const status = text(item.status, "evidence status", 32);
+  const trust = text(item.trust, "evidence trust", 48);
+  const availability = text(item.availability, "evidence availability", 16);
+  const sourceTrust = text(item.sourceTrust, "evidence source trust", 32);
+  const sourceAvailability = text(item.sourceAvailability, "evidence source availability", 16);
+  if (
+    !(EVIDENCE_STATUSES as readonly string[]).includes(status) ||
+    !(EVIDENCE_TRUST as readonly string[]).includes(trust) ||
+    !(AVAILABILITY as readonly string[]).includes(availability) ||
+    !(SOURCE_TRUST as readonly string[]).includes(sourceTrust) ||
+    !(SOURCE_AVAILABILITY as readonly string[]).includes(sourceAvailability) ||
+    (availability === "unavailable") !== (trust === "unavailable_source") ||
+    (sourceAvailability === "unavailable") !== (sourceTrust === "unavailable_source") ||
+    (sourceAvailability === "unresolved") !== (sourceTrust === "unresolved") ||
+    (status === "unavailable") !== (availability === "unavailable") ||
+    (source === "manual" && (trust === "verified_source" || sourceTrust === "verified_source"))
+  ) {
+    throw new TypeError("evidence provenance is invalid");
+  }
   return Object.freeze({
     id: text(item.id, "evidence id", 128, IDENTIFIER),
     source: source as RiselyProposalEvidenceSource,
-    recordRef: text(item.recordRef, "evidence record", 300),
+    sourceRecordRef,
+    sourceRecord,
+    contentSha256,
+    relatedContentSha256: Object.freeze(relatedContentSha256),
     revision: text(item.revision, "evidence revision", 160),
-    sha256: text(item.sha256, "evidence hash", 64, HASH),
-    observedAt: instant(item.observedAt, "evidence observedAt"),
+    observedAt,
+    fetchedAt,
+    status: status as RiselyProposalEvidenceStatus,
+    trust: trust as RiselyProposalEvidenceTrust,
+    availability: availability as (typeof AVAILABILITY)[number],
+    sourceTrust: sourceTrust as RiselyProposalSourceTrust,
+    sourceAvailability: sourceAvailability as (typeof SOURCE_AVAILABILITY)[number],
     citation: text(item.citation, "evidence citation", 1000),
     summary: text(item.summary, "evidence summary", 2000),
   });

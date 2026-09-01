@@ -59,8 +59,8 @@ function proposalLines(input: Readonly<RiselyProposalInput>): string[] {
   }
   lines.push("EVIDENCE REGISTER");
   for (const item of input.evidence) {
-    lines.push(...wrap(`[${item.id}] ${item.source} ${item.recordRef} ${item.revision}`));
-    lines.push(...wrap(`${item.summary} | ${item.citation}`), "");
+    lines.push(...wrap(`[${item.id}] ${item.source} ${item.sourceRecordRef} ${item.revision}`));
+    lines.push(...wrap(`${item.summary} | ${item.trust} | ${item.citation}`), "");
   }
   lines.push("PRIVATE DRAFT", "Release eligible: no", "External publication requires a separate exact QM approval.");
   return lines;
@@ -133,7 +133,7 @@ export function renderProposalHtml(input: Readonly<RiselyProposalInput>): Buffer
   const evidence = input.evidence
     .map(
       (item) =>
-        `<li id="${html(item.id)}"><strong>${html(item.source)}</strong> ${html(item.recordRef)} ${html(item.revision)}<br>${html(item.summary)}<br><span>${html(item.citation)}</span></li>`,
+        `<li id="${html(item.id)}"><strong>${html(item.source)}</strong> ${html(item.sourceRecordRef)} ${html(item.revision)}<br>${html(item.summary)}<br><span>${html(item.trust)} · ${html(item.citation)}</span></li>`,
     )
     .join("");
   return Buffer.from(
@@ -142,13 +142,23 @@ export function renderProposalHtml(input: Readonly<RiselyProposalInput>): Buffer
   );
 }
 
-export function renderEvidenceManifest(input: Readonly<RiselyProposalInput>): Buffer {
+export function renderEvidenceManifest(
+  input: Readonly<RiselyProposalInput>,
+  bundle: Readonly<{
+    disposition: "content_addressed_approved_claims";
+    principalBindingSha256: string;
+    bundleSha256: string;
+  }>,
+): Buffer {
   return Buffer.from(
     canonicalJson({
-      contract: 1,
+      contract: 2,
       proposalId: input.proposalId,
       revision: input.revision,
       releaseEligible: false,
+      disposition: bundle.disposition,
+      principalBindingSha256: bundle.principalBindingSha256,
+      evidenceBundleSha256: bundle.bundleSha256,
       evidence: input.evidence,
       sectionBindings: input.sections.map(({ key, evidenceRefs }) => ({ key, evidenceRefs })),
     }),
