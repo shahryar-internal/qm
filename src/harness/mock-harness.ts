@@ -12,6 +12,7 @@ import { NeedsApproval } from "../tools/primitives.ts";
 import { deterministicCompactSummary, estimateHistoryTokens } from "./context-compaction.ts";
 import { countTokens } from "../util/tokens.ts";
 import { SECURITY_SCREEN_SYSTEM_PROMPT } from "../security/security-posture.ts";
+import { exactToolApprovalPreview, isExactMcpApprovalTool, toolApprovalKey } from "../tools/exact-tool-approval.ts";
 
 const READ_ONLY_BLOCKED_PREFIXES = [
   "!preamble",
@@ -184,15 +185,23 @@ export function createMockHarness(): Harness {
           matched?: string;
           approvalKey?: string;
           grantModes?: { session: boolean; always: boolean };
+          summary?: string;
+          summaryDetail?: string;
         }> = [];
         let pausedOnApproval = false;
         const gateTool = (tool: string, input?: unknown): boolean => {
           if (!turn.toolApprovalGate || turn.toolApprovalGate(tool, input)) return false;
+          const exact = isExactMcpApprovalTool(tool);
+          const preview = exact ? exactToolApprovalPreview(input) : undefined;
           collected.push({
             command: tool,
-            reason: "strict posture: this tool call requires human approval",
+            reason: exact
+              ? "external write: this exact request requires fresh one-time human approval"
+              : "strict posture: this tool call requires human approval",
             kind: "approval",
-            approvalKey: `tool:${tool}`,
+            approvalKey: toolApprovalKey(tool, input),
+            ...(exact ? { grantModes: { session: false, always: false } } : {}),
+            ...preview,
           });
           pausedOnApproval = true;
           return true;
@@ -321,6 +330,16 @@ export function createMockHarness(): Harness {
           turn.onProgress?.({ toolCalls: 1 });
           usedTool = true;
           reply = result.stdout.trim() || result.stderr.trim() || `(exit ${result.code})`;
+        } else if (command0.startsWith("!exact-tool ")) {
+          const rest = cmd.slice(cmd.indexOf("!exact-tool ") + "!exact-tool ".length).trim();
+          const split = rest.indexOf(" ");
+          if (split < 1) throw new Error("invalid exact tool command");
+          const tool = rest.slice(0, split);
+          if (!isExactMcpApprovalTool(tool)) throw new Error("invalid exact tool name");
+          const params = JSON.parse(rest.slice(split + 1)) as unknown;
+          usedTool = true;
+          if (gateTool(tool, params)) reply = "";
+          else reply = `approved exact tool ${tool}`;
         } else if (command0.startsWith("!run ") || command0.startsWith("!scratch ") || command0.startsWith("!owner ")) {
           let tag = "!run ";
           if (command0.startsWith("!scratch ")) tag = "!scratch ";

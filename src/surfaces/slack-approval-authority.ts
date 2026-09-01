@@ -26,6 +26,7 @@ export interface SlackApprovalRecoveryContext {
   reason?: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   grantModes?: { session: boolean; always: boolean };
   approvalRequesterUserId?: string;
   nativeAgentSession?: SlackApprovalNativeAgentSession;

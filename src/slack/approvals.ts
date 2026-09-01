@@ -74,6 +74,7 @@ interface SlackApprovalContext {
   reason: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   grantModes?: { session: boolean; always: boolean };
   turn: Omit<CoreTurnBody, "approval">;
   allowedTs?: Set<string>;
@@ -204,6 +205,7 @@ export function createApprovals(deps: {
       reason?: string;
       purpose?: string;
       summary?: string;
+      summaryDetail?: string;
       grantModes?: { session: boolean; always: boolean };
     },
   ): SlackApprovalRecoveryContext {
@@ -217,6 +219,7 @@ export function createApprovals(deps: {
       ...(approval.reason ? { reason: approval.reason } : {}),
       ...(approval.purpose ? { purpose: approval.purpose } : {}),
       ...(approval.summary ? { summary: approval.summary } : {}),
+      ...(approval.summaryDetail ? { summaryDetail: approval.summaryDetail } : {}),
       ...(approval.grantModes ? { grantModes: approval.grantModes } : {}),
       approvalRequesterUserId,
       ...(ctx.nativeAgentSession ? { nativeAgentSession: { ...ctx.nativeAgentSession } } : {}),
@@ -226,7 +229,10 @@ export function createApprovals(deps: {
   }
 
   function rebuildApprovalContext(
-    stored: Pick<SlackApprovalRecoveryContext, "command" | "reason" | "purpose" | "summary" | "grantModes"> & {
+    stored: Pick<
+      SlackApprovalRecoveryContext,
+      "command" | "reason" | "purpose" | "summary" | "summaryDetail" | "grantModes"
+    > & {
       request?: Record<string, unknown>;
     } & Partial<Pick<SlackApprovalRecoveryContext, "approvalRequesterUserId" | "nativeAgentSession" | "agentRequest">>,
     click: { channel: string; threadTs?: string },
@@ -322,6 +328,7 @@ export function createApprovals(deps: {
         reason: approval.reason,
         ...(approval.purpose ? { purpose: approval.purpose } : {}),
         ...(approval.summary ? { summary: approval.summary } : {}),
+        ...(approval.summaryDetail ? { summaryDetail: approval.summaryDetail } : {}),
         ...(approval.grantModes ? { grantModes: approval.grantModes } : {}),
       });
     }
@@ -1871,6 +1878,7 @@ export function createApprovals(deps: {
           reason: ctx.reason,
           ...(ctx.purpose ? { purpose: ctx.purpose } : {}),
           ...(ctx.summary ? { summary: ctx.summary } : {}),
+          ...(ctx.summaryDetail ? { summaryDetail: ctx.summaryDetail } : {}),
           ...(ctx.grantModes ? { grantModes: ctx.grantModes } : {}),
         },
       ]);

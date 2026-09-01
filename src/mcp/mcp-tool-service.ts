@@ -22,6 +22,8 @@ import type { McpAuthoritySigner, McpHumanCallContext } from "./mcp-authority.ts
 import { parseAnalyticsNativeDelivery } from "./mcp-native-card.ts";
 import type { TrustedAnalyticsCard } from "../types.ts";
 import { NOTION_READ_AUTHORITY, type NotionAuthoritySigner } from "./notion-authority.ts";
+import { APPROVED_WRITE_AUTHORITY, type McpApprovedWriteAuthoritySigner } from "./approved-write-authority.ts";
+import { exactMcpApprovalTool, toolApprovalKey } from "../tools/exact-tool-approval.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const MAX_TOOLS_PER_SERVER = 64;
@@ -30,6 +32,12 @@ const NOTION_DISCOVERY_ANNOTATIONS = Object.freeze({
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: false,
+  openWorldHint: true,
+});
+const APPROVED_WRITE_DISCOVERY_ANNOTATIONS = Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
   openWorldHint: true,
 });
 const RESERVED_TOOL_NAMES = new Set([
@@ -125,6 +133,9 @@ function safetyMatches(allowed: McpAllowedTool, remote: McpRemoteTool): boolean 
   if (allowed.requestAuthority === NOTION_READ_AUTHORITY) {
     return isDeepStrictEqual(remote.annotations, NOTION_DISCOVERY_ANNOTATIONS);
   }
+  if (allowed.requestAuthority === APPROVED_WRITE_AUTHORITY) {
+    return isDeepStrictEqual(remote.annotations, APPROVED_WRITE_DISCOVERY_ANNOTATIONS);
+  }
   return !allowed.readOnly || (remote.readOnlyHint && !remote.destructiveHint);
 }
 
@@ -193,6 +204,7 @@ export function createMcpToolService(opts: {
   refreshIntervalMs?: number;
   authoritySigner?: McpAuthoritySigner;
   notionAuthoritySigner?: NotionAuthoritySigner;
+  approvedWriteAuthoritySigner?: McpApprovedWriteAuthoritySigner;
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
   const clients = new Map<string, { client: McpClient; serverContractSha256: string }>();
@@ -256,6 +268,7 @@ export function createMcpToolService(opts: {
             !remote ||
             !allowed.inputSchema ||
             !callerInputSchema ||
+            (allowed.requestAuthority === APPROVED_WRITE_AUTHORITY && !opts.approvedWriteAuthoritySigner) ||
             !safetyMatches(allowed, remote) ||
             !isDeepStrictEqual(allowed.inputSchema, remote.inputSchema)
           ) {
@@ -354,6 +367,9 @@ export function createMcpToolService(opts: {
       if (def.requestAuthority === NOTION_READ_AUTHORITY && !opts.notionAuthoritySigner) {
         throw new Error(`MCP request authority is unavailable: ${def.remoteName}`);
       }
+      if (def.requestAuthority === APPROVED_WRITE_AUTHORITY && !opts.approvedWriteAuthoritySigner) {
+        throw new Error(`MCP request authority is unavailable: ${def.remoteName}`);
+      }
       const client = clientFor(server);
       const discovered = await client.listTools();
       if (discovered.length > MAX_TOOLS_PER_SERVER) {
@@ -391,6 +407,18 @@ export function createMcpToolService(opts: {
             throw new Error(`MCP injected arguments do not match the pinned contract: ${def.remoteName}`);
           }
           return { arguments: notionAuthority.dispatchArguments };
+        }
+        if (def.requestAuthority === APPROVED_WRITE_AUTHORITY) {
+          if (!context?.approval) throw new Error(`MCP exact approval receipt is unavailable: ${def.remoteName}`);
+          const approvalTool = exactMcpApprovalTool(def.serverContractSha256, def.name);
+          if (context.approval.toolApprovalKey !== toolApprovalKey(approvalTool, args)) {
+            throw new Error(`MCP exact approval receipt does not match: ${def.remoteName}`);
+          }
+          const signed = opts.approvedWriteAuthoritySigner!.sign(def.remoteName, args, context);
+          if (!validateMcpToolArguments(currentAllowed[0]!.inputSchema, signed.dispatchArguments)) {
+            throw new Error(`MCP injected arguments do not match the pinned contract: ${def.remoteName}`);
+          }
+          return { authorityHeader: signed.authorityHeader, arguments: signed.dispatchArguments };
         }
         return undefined;
       });

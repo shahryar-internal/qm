@@ -116,6 +116,7 @@ import { createMcpServerStore, type McpServerStore, type StoredMcpServer } from 
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
 import { createMcpAuthoritySigner, type McpAuthorityPublicState } from "./mcp/mcp-authority.ts";
 import { createNotionAuthoritySigner, type NotionAuthorityPublicState } from "./mcp/notion-authority.ts";
+import { loadApprovedWriteAuthoritySigner } from "./mcp/approved-write-authority.ts";
 import {
   createLocalBlobTransferStore,
   createS3BlobTransferStore,
@@ -797,11 +798,15 @@ export function buildApp(
   const notionAuthoritySigner = config.notionAuthoritySigner
     ? createNotionAuthoritySigner(config.notionAuthoritySigner)
     : undefined;
+  const approvedWriteAuthoritySigner = config.deploymentLayerDir
+    ? loadApprovedWriteAuthoritySigner(config.deploymentLayerDir, config.layerEnv ?? {})
+    : undefined;
   const mcpToolService = createMcpToolService({
     servers: mcpServers,
     audit: auditLog,
     ...(mcpAuthoritySigner ? { authoritySigner: mcpAuthoritySigner } : {}),
     ...(notionAuthoritySigner ? { notionAuthoritySigner } : {}),
+    ...(approvedWriteAuthoritySigner ? { approvedWriteAuthoritySigner } : {}),
   });
   const mcpTools = () => mcpToolService.toolDefs();
   const errors = config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog();

@@ -12,6 +12,17 @@ export interface McpHumanCallContext {
   slackMessageTs: string;
   slackThreadTs: string;
   deliveryTarget: string;
+  approval?: {
+    approvalId: string;
+    toolApprovalKey: string;
+    argumentsSha256: string;
+    actionTs: string;
+    slackTeamId: string;
+    actorSlackUserId: string;
+    channelId: string;
+    messageTs: string;
+    threadTs: string;
+  };
 }
 
 export interface McpAuthorityPayload {

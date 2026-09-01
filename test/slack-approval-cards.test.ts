@@ -109,6 +109,28 @@ test("approvalMessage renders the plain-English summary alongside the raw comman
   assert.match(text, /\*Flagged as:\* recursive delete/);
 });
 
+test("approvalMessage exposes the exact write arguments and only permits a one-time decision", () => {
+  const exact = '{"payload":{"note":"Exact approved note"}}';
+  const msg = approvalMessage([
+    {
+      requestId: "req-exact",
+      command: "Append CRM note",
+      reason: "external write",
+      summary: `Exact request ${"a".repeat(64)}`,
+      summaryDetail: exact,
+      grantModes: { session: false, always: false },
+    },
+  ]);
+  const section = msg.blocks.find((block) => block.type === "section") as any;
+  assert.match(section.text.text, /\*Exact request:\*/);
+  assert.match(section.text.text, /Exact approved note/);
+  const actions = msg.blocks.find((block) => block.type === "actions") as any;
+  assert.deepEqual(
+    actions.elements.map((element: any) => element.action_id),
+    ["hilo_allow_once", "hilo_deny"],
+  );
+});
+
 test("approvalMessage omits the summary line when none was generated (fallback to reason)", () => {
   const msg = approvalMessage([{ requestId: "req-1", command: "rm -rf build", reason: "recursive delete" }]);
   const section = msg.blocks.find((b) => b.type === "section") as any;
@@ -122,6 +144,7 @@ test("recoveredApprovalContext carries the durable summary through a restart", (
       command: "rm -rf build",
       reason: "recursive delete",
       summary: "Deletes the entire build/ directory and everything inside it.",
+      summaryDetail: '{"path":"build"}',
       grantModes: { session: false, always: false },
       request: {
         surface: "slack",
@@ -134,6 +157,7 @@ test("recoveredApprovalContext carries the durable summary through a restart", (
   );
   assert.ok(ctx);
   assert.equal(ctx!.summary, "Deletes the entire build/ directory and everything inside it.");
+  assert.equal(ctx!.summaryDetail, '{"path":"build"}');
   assert.deepEqual(ctx!.grantModes, { session: false, always: false });
 });
 

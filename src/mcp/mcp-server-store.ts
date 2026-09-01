@@ -8,6 +8,7 @@ import {
 import { parseMcpInputSchema } from "./mcp-client.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { NOTION_READ_AUTHORITY } from "./notion-authority.ts";
+import { APPROVED_WRITE_AUTHORITY, APPROVED_WRITE_RECEIPT_SCHEMA } from "./approved-write-authority.ts";
 
 export type McpServerAuthMode = "none" | "bearer" | "client-credentials";
 export type McpTokenAuthMethod = "client_secret_basic" | "client_secret_post";
@@ -20,7 +21,7 @@ export interface McpAllowedTool {
   status: string;
   readOnly: boolean;
   inputSchema: Record<string, unknown>;
-  requestAuthority?: "qm.ed25519.founder-dm.v1" | typeof NOTION_READ_AUTHORITY;
+  requestAuthority?: "qm.ed25519.founder-dm.v1" | typeof NOTION_READ_AUTHORITY | typeof APPROVED_WRITE_AUTHORITY;
   nativeRenderer?: "qm.analytics.card.v1";
 }
 
@@ -128,12 +129,36 @@ function notionAuthoritySchema(name: string, schema: Record<string, unknown>): b
   return canonical(schema) === canonical(NOTION_TOOL_SCHEMAS[name]);
 }
 
+function closedMcpObjectSchemas(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  const node = schema as Record<string, unknown>;
+  if (node.type === "object") {
+    if (node.additionalProperties !== false || !node.properties || typeof node.properties !== "object") return false;
+    return Object.values(node.properties).every(closedMcpObjectSchemas);
+  }
+  if (node.type === "array") return closedMcpObjectSchemas(node.items);
+  return typeof node.type === "string";
+}
+
 export function mcpCallerInputSchema(tool: McpAllowedTool): Record<string, unknown> | null {
-  if (tool.requestAuthority !== NOTION_READ_AUTHORITY) return tool.inputSchema;
-  if (!notionAuthoritySchema(tool.name, tool.inputSchema)) return null;
+  if (tool.requestAuthority !== NOTION_READ_AUTHORITY && tool.requestAuthority !== APPROVED_WRITE_AUTHORITY) {
+    return tool.inputSchema;
+  }
+  if (tool.requestAuthority === NOTION_READ_AUTHORITY && !notionAuthoritySchema(tool.name, tool.inputSchema)) {
+    return null;
+  }
   const properties = { ...(tool.inputSchema.properties as Record<string, unknown>) };
-  delete properties.authorityEnvelope;
-  const required = (tool.inputSchema.required as unknown[]).filter((field) => field !== "authorityEnvelope");
+  const hidden = tool.requestAuthority === NOTION_READ_AUTHORITY ? "authorityEnvelope" : "approval";
+  if (
+    tool.requestAuthority === APPROVED_WRITE_AUTHORITY &&
+    (canonical(properties.approval) !== canonical(APPROVED_WRITE_RECEIPT_SCHEMA) ||
+      !closedMcpObjectSchemas(tool.inputSchema))
+  ) {
+    return null;
+  }
+  delete properties[hidden];
+  const required = (tool.inputSchema.required as unknown[]).filter((field) => field !== hidden);
+  if (!(tool.inputSchema.required as unknown[]).includes(hidden)) return null;
   return parseMcpInputSchema({ ...tool.inputSchema, properties, required });
 }
 
@@ -171,9 +196,14 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       typeof record.readOnly !== "boolean" ||
       (record.requestAuthority !== undefined &&
         record.requestAuthority !== "qm.ed25519.founder-dm.v1" &&
-        record.requestAuthority !== NOTION_READ_AUTHORITY) ||
+        record.requestAuthority !== NOTION_READ_AUTHORITY &&
+        record.requestAuthority !== APPROVED_WRITE_AUTHORITY) ||
       (record.nativeRenderer !== undefined && record.nativeRenderer !== "qm.analytics.card.v1") ||
-      ((record.requestAuthority !== undefined || record.nativeRenderer !== undefined) && record.readOnly !== true) ||
+      ((record.requestAuthority !== undefined || record.nativeRenderer !== undefined) &&
+        record.requestAuthority !== APPROVED_WRITE_AUTHORITY &&
+        record.readOnly !== true) ||
+      (record.requestAuthority === APPROVED_WRITE_AUTHORITY &&
+        (record.readOnly !== false || record.nativeRenderer !== undefined)) ||
       !inputSchema ||
       (record.requestAuthority === NOTION_READ_AUTHORITY &&
         (record.nativeRenderer !== undefined ||
@@ -185,6 +215,15 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
             inputSchema,
             requestAuthority: NOTION_READ_AUTHORITY,
           }))) ||
+      (record.requestAuthority === APPROVED_WRITE_AUTHORITY &&
+        !mcpCallerInputSchema({
+          name: record.name,
+          label: record.label,
+          status: record.status,
+          readOnly: record.readOnly,
+          inputSchema,
+          requestAuthority: APPROVED_WRITE_AUTHORITY,
+        })) ||
       (record.nativeRenderer === "qm.analytics.card.v1" && record.requestAuthority !== "qm.ed25519.founder-dm.v1")
     ) {
       throw new Error("allowedTools entries require exact name, label, status, and readOnly fields");
@@ -201,6 +240,7 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       inputSchema,
       ...(record.requestAuthority === "qm.ed25519.founder-dm.v1" ? { requestAuthority: record.requestAuthority } : {}),
       ...(record.requestAuthority === NOTION_READ_AUTHORITY ? { requestAuthority: record.requestAuthority } : {}),
+      ...(record.requestAuthority === APPROVED_WRITE_AUTHORITY ? { requestAuthority: record.requestAuthority } : {}),
       ...(record.nativeRenderer === "qm.analytics.card.v1" ? { nativeRenderer: record.nativeRenderer } : {}),
     };
   });

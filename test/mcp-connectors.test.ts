@@ -9,6 +9,7 @@ import {
   MCP_USER_AGENT,
   mcpRemoteAddressMatchesPins,
   mcpResultText,
+  validateMcpToolArguments,
   validateMcpHttpsUrl,
   type McpFetch,
 } from "../src/mcp/mcp-client.ts";
@@ -780,6 +781,49 @@ test("allowlist parsing rejects ambiguous or duplicate presentation contracts", 
   ]) {
     assert.throws(() => parseMcpAllowedTools(invalid));
   }
+});
+
+test("MCP schema patterns accept only anchored non-branching bounded expressions", () => {
+  const inputSchema = parseMcpAllowedTools([
+    {
+      ...allowed()[0],
+      inputSchema: {
+        type: "object",
+        properties: { id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$" } },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  ])[0]?.inputSchema;
+  assert.deepEqual(inputSchema, {
+    type: "object",
+    properties: { id: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$" } },
+    required: ["id"],
+    additionalProperties: false,
+  });
+  assert.equal(validateMcpToolArguments(inputSchema!, { id: "Ab_123" }), true);
+  assert.equal(validateMcpToolArguments(inputSchema!, { id: "a" }), false);
+  assert.equal(validateMcpToolArguments(inputSchema!, { id: "Ab_123\n" }), false);
+  for (const pattern of ["(a+)+$", "^(a+)+$", "^a+$", "^a|b$", "^a(?=b)$", "^a{2,1}$", "^[z-a]$", "^[A--]$"]) {
+    assert.throws(() =>
+      parseMcpAllowedTools([
+        {
+          ...allowed()[0],
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string", pattern } },
+          },
+        },
+      ]),
+    );
+  }
+  assert.equal(
+    validateMcpToolArguments(
+      { type: "object", properties: { id: { type: "string", pattern: "^[z-a]$" } } },
+      { id: "a" },
+    ),
+    false,
+  );
 });
 
 test("tool namespace collisions fail the entire server closed", async () => {

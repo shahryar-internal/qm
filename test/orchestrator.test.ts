@@ -2030,6 +2030,101 @@ test("an exact-command approval is once-only, cannot grant a session, and cannot
   assert.equal(sibling.pendingApprovals![0]!.approvalKey, "zz-tool beta");
 });
 
+test("Auto mandates fresh exact once-only Slack approval for every external MCP write", async () => {
+  const built = freshApp();
+  const tool = `mcp-exact:${"a".repeat(64)}:crm_append_note`;
+  const exact = (note: string, extra: Partial<TurnRequest> = {}): TurnRequest =>
+    dm(`!exact-tool ${tool} ${JSON.stringify({ payload: { note } })}`, {
+      surface: "slack",
+      actor: { externalId: "U12345678" },
+      trustedSlackTeamId: "T12345678",
+      trustedSlackUserId: "U12345678",
+      deliveryTarget: "D12345678:1788022800.654321",
+      origin: { kind: "human", messageTs: "1788022860.654321" },
+      verifiedSlack: {
+        teamId: "T12345678",
+        userId: "U12345678",
+        channelId: "D12345678",
+        messageTs: "1788022860.654321",
+        threadTs: "1788022800.654321",
+        threaded: true,
+        liveHuman: true,
+      },
+      ...extra,
+    });
+
+  const first = await built.app.turn(exact("Exact approved note"));
+  assert.equal(first.status, "pending_approval");
+  const pending = first.pendingApprovals![0]!;
+  assert.match(pending.approvalKey ?? "", /^tool:mcp-exact:[a-f0-9]{64}:crm_append_note:[a-f0-9]{64}$/);
+  assert.deepEqual(pending.grantModes, { session: false, always: false });
+  assert.match(pending.summary ?? "", /Exact approved note/);
+
+  const standing = await built.app.turn(
+    exact("Exact approved note", {
+      approval: { requestId: pending.requestId, approved: true, scope: "always" },
+    }),
+  );
+  assert.equal(standing.status, "pending_approval");
+  assert.equal(standing.pendingApprovals?.[0]?.requestId, pending.requestId);
+
+  const unsignedClick = await built.app.turn(
+    exact("Exact approved note", {
+      approval: { requestId: pending.requestId, approved: true, scope: "once" },
+    }),
+  );
+  assert.equal(unsignedClick.status, "refused");
+  assert.match(unsignedClick.reason ?? "", /fresh verified one-time Slack approval/);
+
+  const approved = await built.app.turn(
+    exact("Exact approved note", {
+      approval: { requestId: pending.requestId, approved: true, scope: "once" },
+      verifiedSlack: {
+        teamId: "T12345678",
+        userId: "U12345678",
+        channelId: "D12345678",
+        messageTs: "1788022860.654321",
+        threadTs: "1788022800.654321",
+        threaded: true,
+        liveHuman: true,
+        actionTs: "1788022920.123456",
+      },
+    }),
+  );
+  assert.equal(approved.status, "ok");
+  assert.match(approved.reply ?? "", /approved exact tool/);
+
+  const replay = await built.app.turn(exact("Exact approved note"));
+  assert.equal(replay.status, "pending_approval");
+  assert.notEqual(replay.pendingApprovals![0]!.requestId, pending.requestId);
+
+  const wrongArgs = await built.app.turn(
+    exact("Substituted note", {
+      approval: { requestId: replay.pendingApprovals![0]!.requestId, approved: true, scope: "once" },
+      verifiedSlack: {
+        teamId: "T12345678",
+        userId: "U12345678",
+        channelId: "D12345678",
+        messageTs: "1788022860.654321",
+        threadTs: "1788022800.654321",
+        threaded: true,
+        liveHuman: true,
+        actionTs: "1788022921.123456",
+      },
+    }),
+  );
+  assert.equal(wrongArgs.status, "pending_approval");
+  assert.match(wrongArgs.pendingApprovals![0]!.summary ?? "", /Substituted note/);
+
+  const otherSession = await built.app.turn({
+    ...exact("Session-bound note", {
+      approval: { requestId: wrongArgs.pendingApprovals![0]!.requestId, approved: true, scope: "once" },
+    }),
+    conversation: { kind: "dm", threadRef: "dm:U12345678:other" },
+  });
+  assert.equal(otherSession.status, "pending_approval");
+});
+
 test("harness-collected exact-command approvals preserve once-only grant modes", async () => {
   const { app, config } = freshApp();
   config.setCommandPolicy(scopeId("org", "default-org"), {
