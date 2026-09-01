@@ -93,7 +93,7 @@ const brainToolNames = [
   "brain_slipped_initiatives",
   "brain_analytics_targetable_deployments",
 ] as const;
-const clarifyToolNames = ["clarify_search_meetings", "clarify_read_meeting"] as const;
+const clarifyToolNames = ["clarify_search_meetings", "clarify_read_meeting", "clarify_prepare_deal_comment"] as const;
 const brainInputSchema = {
   type: "object",
   properties: { query: { type: "string", minLength: 1 } },

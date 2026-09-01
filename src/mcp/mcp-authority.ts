@@ -57,7 +57,8 @@ type McpFounderDmAuthorityTool =
   | "brain_slipped_initiatives"
   | "brain_analytics_targetable_deployments"
   | "clarify_search_meetings"
-  | "clarify_read_meeting";
+  | "clarify_read_meeting"
+  | "clarify_prepare_deal_comment";
 
 export const MCP_FOUNDER_DM_AUTHORITY = "qm.ed25519.founder-dm.v1" as const;
 
@@ -116,6 +117,7 @@ const FOUNDER_DM_AUTHORITY_TOOL_NAMES = Object.freeze([
   "brain_analytics_targetable_deployments",
   "clarify_search_meetings",
   "clarify_read_meeting",
+  "clarify_prepare_deal_comment",
 ] as const satisfies readonly McpFounderDmAuthorityTool[]);
 const FOUNDER_DM_AUTHORITY_TOOLS = new Set<McpFounderDmAuthorityTool>(FOUNDER_DM_AUTHORITY_TOOL_NAMES);
 
