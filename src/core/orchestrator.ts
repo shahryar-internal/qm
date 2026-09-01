@@ -78,6 +78,7 @@ import {
 } from "../onboarding/onboarding.ts";
 import { createToolContext, NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
+import { exactToolApprovalArgumentsSha256, toolApprovalKey } from "../tools/exact-tool-approval.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createSecretValueMasker } from "../security/secret-masking.ts";
 import { shq } from "../util/shell.ts";
@@ -1042,6 +1043,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       });
 
       const commandUses = new Map<string, number>();
+      let mcpExactApproval: NonNullable<McpHumanCallContext["approval"]> | undefined;
       for (const grant of await approvalGrants.all()) {
         if (!samePerson(grant.actorId, actor.id)) continue;
         if (grant.scope === "session" && grant.sessionId !== session.id) continue;
@@ -1062,7 +1064,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (tool === "write" && requestWorkspaceWriteAllowed(params, deps.deploymentLayer?.requestWorkspaces ?? [])) {
           return true;
         }
-        const key = `tool:${tool}`;
+        const key = toolApprovalKey(tool, params);
         const n = commandUses.get(key) ?? 0;
         if (n <= 0) return false;
         commandUses.set(key, n - 1);
@@ -1538,6 +1540,34 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     ...(p.kind ? { kind: p.kind } : {}),
                   },
                 ],
+              };
+            }
+            const exactArgumentsSha256 = exactToolApprovalArgumentsSha256(p.approvalKey);
+            if (exactArgumentsSha256) {
+              const verified = input.verifiedSlack;
+              if (
+                scope !== "once" ||
+                p.grantModes?.session !== false ||
+                p.grantModes.always !== false ||
+                !verified?.liveHuman ||
+                !verified.actionTs
+              ) {
+                return {
+                  status: "refused",
+                  sessionId: session.id,
+                  reason: "exact external writes require a fresh verified one-time Slack approval",
+                };
+              }
+              mcpExactApproval = {
+                approvalId: input.approval.requestId,
+                toolApprovalKey: p.approvalKey!,
+                argumentsSha256: exactArgumentsSha256,
+                actionTs: verified.actionTs,
+                slackTeamId: verified.teamId,
+                actorSlackUserId: verified.userId,
+                channelId: verified.channelId,
+                messageTs: verified.messageTs,
+                threadTs: verified.threadTs,
               };
             }
             await pending.delete(input.approval.requestId);
@@ -2092,6 +2122,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               slackMessageTs: messageTs,
               slackThreadTs,
               deliveryTarget: defaultDestination.target,
+              ...(mcpExactApproval ? { approval: mcpExactApproval } : {}),
             };
             return { mcpCallContext };
           })(),

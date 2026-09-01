@@ -10,6 +10,7 @@ export interface PendingApproval {
   reason: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   kind?: "approval" | "input";
   grantModes?: { session: boolean; always: boolean };
 }
@@ -65,6 +66,7 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
         : ":lock: *Approval needed.*",
     ];
     if (p.summary) lines.push(clip(p.summary, 400));
+    if (p.summaryDetail) lines.push(`*Exact request:* ${inlineCode(clip(p.summaryDetail, 1_800))}`);
     if (p.purpose) lines.push(`*Why:* ${clip(p.purpose, 400)}`);
     if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command)}`);
     lines.push(`*Flagged as:* ${clip(p.reason, 200)}`);
@@ -92,6 +94,7 @@ export interface StoredApproval {
   reason?: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   grantModes?: { session: boolean; always: boolean };
   request?: Record<string, unknown>;
 }
@@ -112,12 +115,16 @@ export interface RecoveredApprovalContext {
   reason: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   grantModes?: { session: boolean; always: boolean };
   turn: Record<string, unknown>;
 }
 
 export function recoveredApprovalContext(
-  stored: Pick<StoredApproval, "command" | "reason" | "purpose" | "summary" | "grantModes" | "request">,
+  stored: Pick<
+    StoredApproval,
+    "command" | "reason" | "purpose" | "summary" | "summaryDetail" | "grantModes" | "request"
+  >,
   click: { channel: string; threadTs?: string },
 ): RecoveredApprovalContext | null {
   const req = stored.request as
@@ -172,6 +179,7 @@ export function recoveredApprovalContext(
     reason: stored.reason ?? "requires approval",
     ...(stored.purpose ? { purpose: stored.purpose } : {}),
     ...(stored.summary ? { summary: stored.summary } : {}),
+    ...(stored.summaryDetail ? { summaryDetail: stored.summaryDetail } : {}),
     ...(stored.grantModes ? { grantModes: stored.grantModes } : {}),
     turn,
   };

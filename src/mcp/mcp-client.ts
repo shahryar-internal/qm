@@ -275,6 +275,7 @@ const SCHEMA_KEYS = new Set([
   "maxLength",
   "minItems",
   "maxItems",
+  "pattern",
 ]);
 const SCHEMA_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 const UNSAFE_SCHEMA_PROPERTY_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -287,6 +288,40 @@ function safeSchemaLiteral(value: unknown): boolean {
   if (value === null || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
   return typeof value === "string" && value.length <= 2_048 && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function safeSchemaPattern(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 2 || value.length > 256 || value[0] !== "^" || !value.endsWith("$")) {
+    return false;
+  }
+  let index = 1;
+  while (index < value.length - 1) {
+    if (value[index] === "[") {
+      const end = value.indexOf("]", index + 1);
+      if (end < 0 || end === index + 1 || !/^[A-Za-z0-9_-]+(?:-[A-Za-z0-9])*$/.test(value.slice(index + 1, end))) {
+        return false;
+      }
+      index = end + 1;
+    } else if (value[index] === "\\") {
+      if (!/[d._-]/.test(value[index + 1] ?? "")) return false;
+      index += 2;
+    } else if (/[A-Za-z0-9_.:-]/.test(value[index]!)) {
+      index += 1;
+    } else {
+      return false;
+    }
+    if (value[index] === "{") {
+      const end = value.indexOf("}", index + 1);
+      if (end < 0 || !/^\d{1,6}(?:,\d{1,6})?$/.test(value.slice(index + 1, end))) return false;
+      const [minimum, maximum = minimum] = value
+        .slice(index + 1, end)
+        .split(",")
+        .map(Number);
+      if (minimum! > maximum! || maximum! > 1_000_000) return false;
+      index = end + 1;
+    }
+  }
+  return index === value.length - 1;
 }
 
 export function parseMcpInputSchema(value: unknown): Record<string, unknown> | null {
@@ -317,6 +352,9 @@ export function parseMcpInputSchema(value: unknown): Record<string, unknown> | n
       (schema.title !== undefined &&
         (typeof schema.title !== "string" || schema.title.length > 256 || /[\u0000-\u001f\u007f]/.test(schema.title)))
     ) {
+      return false;
+    }
+    if (schema.pattern !== undefined && (schema.type !== "string" || !safeSchemaPattern(schema.pattern))) {
       return false;
     }
     if (schema.properties !== undefined) {
@@ -450,6 +488,10 @@ export function validateMcpToolArguments(
       const length = [...input].length;
       if (typeof node.minLength === "number" && length < node.minLength) return false;
       if (typeof node.maxLength === "number" && length > node.maxLength) return false;
+      if (typeof node.pattern === "string") {
+        const match = new RegExp(node.pattern).exec(input);
+        if (!match || match[0] !== input) return false;
+      }
     }
     if (typeof input === "number") {
       if (typeof node.minimum === "number" && input < node.minimum) return false;
@@ -819,7 +861,7 @@ export function createMcpClient(opts: {
     const authorityToken = prepared?.authorityToken;
     if (
       authorityToken !== undefined &&
-      (!/^[A-Za-z0-9_-]{1,4096}\.[A-Za-z0-9_-]{80,128}$/.test(authorityToken) || authorityToken.length > 6_144)
+      (!/^(?:[A-Za-z0-9_-]{1,4096}\.){1,2}[A-Za-z0-9_-]{80,128}$/.test(authorityToken) || authorityToken.length > 6_144)
     ) {
       throw new Error("MCP authority token is invalid");
     }

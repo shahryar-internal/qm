@@ -7,6 +7,7 @@ import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
+import { exactMcpApprovalTool, exactToolApprovalPreview, toolApprovalKey } from "../tools/exact-tool-approval.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage } from "../util/errors.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
@@ -37,6 +38,8 @@ export interface ToolContextRef {
     kind?: "approval";
     matched?: string;
     purpose?: string;
+    summary?: string;
+    summaryDetail?: string;
     approvalKey?: string;
     grantModes?: { session: boolean; always: boolean };
   }>;
@@ -86,7 +89,10 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }], details: {} };
 }
 
-const toolPresentations = new WeakMap<ToolDefinition, { label: string; status: string; approvalTool?: string }>();
+const toolPresentations = new WeakMap<
+  ToolDefinition,
+  { label: string; status: string; approvalTool?: string; exactApproval?: boolean }
+>();
 
 function isPolicyNotice(summary: Record<string, unknown>): boolean {
   return summary.blocked !== undefined || summary.denied !== undefined;
@@ -2805,7 +2811,10 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       toolPresentations.set(tool, {
         label: d.label,
         status: d.status,
-        approvalTool: `mcp:${d.serverContractSha256}:${d.name}`,
+        approvalTool: d.readOnly
+          ? `mcp:${d.serverContractSha256}:${d.name}`
+          : exactMcpApprovalTool(d.serverContractSha256, d.name),
+        ...(!d.readOnly ? { exactApproval: true } : {}),
       });
       return tool;
     });
@@ -3026,12 +3035,16 @@ function withToolApprovalGate(
       const presentation = toolPresentations.get(tool);
       const approvalTool = presentation?.approvalTool ?? tool.name;
       if (gate && !gate(approvalTool, params)) {
+        const approvalKey = toolApprovalKey(approvalTool, params);
+        const preview = presentation?.exactApproval ? exactToolApprovalPreview(params) : undefined;
         ref.pendingApprovals?.push({
           command: presentation?.label ?? tool.name,
           reason: STRICT_TOOL_APPROVAL_REASON,
           ...(presentation ? { purpose: presentation.status } : {}),
           kind: "approval",
-          approvalKey: `tool:${approvalTool}`,
+          approvalKey,
+          ...(preview ? preview : {}),
+          ...(presentation?.exactApproval ? { grantModes: { session: false, always: false } } : {}),
         });
         ref.pausedOnApproval = true;
         await rec.recordCall(callId, {

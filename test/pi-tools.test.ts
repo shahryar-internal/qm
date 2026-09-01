@@ -1512,6 +1512,46 @@ test("MCP standing approvals do not survive a connector contract rotation", asyn
   assert.equal(pending[0]?.approvalKey, `tool:mcp:${currentContract}:${name}`);
 });
 
+test("MCP writes require exact one-time argument approvals with a visible preview", async () => {
+  const pending: NonNullable<ToolContextRef["pendingApprovals"]> = [];
+  const descriptor = {
+    name: "crm_append_note",
+    serverId: "crm",
+    remoteName: "append_note",
+    label: "Append CRM note",
+    status: "Appending the approved CRM note",
+    description: "Append one note.",
+    inputSchema: {
+      type: "object",
+      properties: { payload: { type: "object", properties: { note: { type: "string" } } } },
+    },
+    readOnly: false,
+    remoteReadOnlyHint: false,
+    remoteDestructiveHint: true,
+    serverUpdatedAt: 1,
+    serverContractSha256: "e".repeat(64),
+  };
+  const tool = createPiTools(
+    {
+      current: {
+        ...fakeToolContext(),
+        async callMcpTool() {
+          return "written";
+        },
+      },
+      pendingApprovals: pending,
+      toolApprovalGate: () => false,
+    },
+    { mcpTools: () => [descriptor] },
+  ).find((candidate) => candidate.name === descriptor.name);
+  await call(tool, { payload: { note: "Exact approved note" } });
+  assert.equal(pending.length, 1);
+  assert.match(pending[0]!.approvalKey ?? "", /^tool:mcp-exact:[a-f0-9]{64}:crm_append_note:[a-f0-9]{64}$/);
+  assert.deepEqual(pending[0]!.grantModes, { session: false, always: false });
+  assert.match(pending[0]!.summary ?? "", /Exact approved note/);
+  assert.equal(pending[0]!.summaryDetail, '{"payload":{"note":"Exact approved note"}}');
+});
+
 test("MCP failures expose only the configured human label", async () => {
   const emitted: Emitted[] = [];
   const tc: ToolContext = {
