@@ -11,6 +11,8 @@ const MCP_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_INPUT_SCHEMA_CHARS = 100_000;
 const MAX_INPUT_SCHEMA_NODES = 5_000;
 
+export const MCP_REQUEST_AUTHORITY_HEADER = "x-qm-request-authority";
+
 export function createPinnedMcpLookup(address: string): LookupFunction {
   const family = isIP(address);
   if (family === 0) throw new Error("MCP request requires a pinned public address");
@@ -829,7 +831,7 @@ export function createMcpClient(opts: {
         body,
         headers: {
           ...init.headers,
-          ...(authorityToken ? { "x-risely-qm-authority": authorityToken } : {}),
+          ...(authorityToken ? { [MCP_REQUEST_AUTHORITY_HEADER]: authorityToken } : {}),
         },
         redirect: "manual",
         maxResponseBytes: maximumChars * 4,

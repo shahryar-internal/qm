@@ -62,7 +62,7 @@ exact configuration. External turn bodies cannot assert either trusted Slack
 identity value. QM completes OAuth, freshly lists and revalidates the exact
 tool contract, and resolves an all-public DNS set before it signs a fresh
 `jti`, canonical body hash, issue time, and expiry. It mints and injects
-`X-Risely-QM-Authority` immediately before the upstream `tools/call`; cold
+`X-QM-Request-Authority` immediately before the upstream `tools/call`; cold
 discovery time therefore cannot consume the envelope TTL. It never forwards
 model- or caller-supplied authority. Requests from web, group channels, other
 users, other workspaces, other DMs, or calls through the context-free MCP

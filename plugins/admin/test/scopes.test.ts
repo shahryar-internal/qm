@@ -83,8 +83,8 @@ test("GET /api/connector-catalog forwards the live connector catalog signed + at
 test("the MCP registry is reachable only through the signed Admin proxy", async () => {
   for (const [method, path, corePath] of [
     ["GET", "/api/mcp-servers", "/v1/admin/mcp-servers"],
-    ["PUT", "/api/mcp-servers/risely-brain", "/v1/admin/mcp-servers/risely-brain"],
-    ["DELETE", "/api/mcp-servers/risely-brain", "/v1/admin/mcp-servers/risely-brain"],
+    ["PUT", "/api/mcp-servers/example-brain", "/v1/admin/mcp-servers/example-brain"],
+    ["DELETE", "/api/mcp-servers/example-brain", "/v1/admin/mcp-servers/example-brain"],
   ] as const) {
     const response = await fetch(`${base}${path}`, {
       method,
@@ -100,7 +100,7 @@ test("the MCP registry is reachable only through the signed Admin proxy", async 
   }
   const before = calls.length;
   assert.equal((await fetch(`${base}/api/mcp-servers`)).status, 401);
-  assert.equal((await fetch(`${base}/api/mcp-servers/risely-brain`, { method: "PUT", body: "{}" })).status, 401);
+  assert.equal((await fetch(`${base}/api/mcp-servers/example-brain`, { method: "PUT", body: "{}" })).status, 401);
   assert.equal(calls.length, before);
 });
 

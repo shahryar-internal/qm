@@ -8,7 +8,7 @@ import type { App } from "../src/api/app.ts";
 import { createServer } from "../src/api/server.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
-import type { McpFetch } from "../src/mcp/mcp-client.ts";
+import { MCP_REQUEST_AUTHORITY_HEADER, type McpFetch } from "../src/mcp/mcp-client.ts";
 import type { McpHumanCallContext } from "../src/mcp/mcp-authority.ts";
 import {
   createMcpServerStore,
@@ -34,7 +34,7 @@ const config = {
   issuer: "https://qm.example.com/",
   audience: "https://command-center.example.com/notion",
   keyId: "notion-authority-2026-08",
-  organizationId: "risely",
+  organizationId: "example-org",
   actorPrincipalId: "founder@example.com",
   slackTeamId: "T12345678",
   slackUserId: "U12345678",
@@ -130,7 +130,11 @@ const commandCenterFixture = JSON.parse(commandCenterFixtureBytes) as {
 };
 const commandCenterFixtureSource = JSON.parse(
   readFileSync(new URL("./fixtures/command-center-notion-m2m-tools-list.source.json", import.meta.url), "utf8"),
-) as { repository: string; commit: string; path: string; sha256: string };
+) as {
+  contract: "notion-m2m-tools-list/v1";
+  path: "command-center-notion-m2m-tools-list.json";
+  sha256: "ab3cd79ecca651e57de59ce940f642b0487b9a464945595b556fd6dceb0ad3ab";
+};
 const remoteTools = commandCenterFixture.tools;
 
 function response(id: number, result: unknown, status = 200) {
@@ -197,7 +201,7 @@ async function serviceWith(fetchImpl: McpFetch, signer?: NotionAuthoritySigner, 
 
 test("RS256 Notion authority binds the exact founder DM, tool, canonical body, issuer, audience, and kid", async () => {
   const signer = createNotionAuthoritySigner(config, { now: () => Date.parse("2026-08-30T20:00:00.000Z") });
-  const body = { workflow: "proposal", query: "CBS" };
+  const body = { workflow: "proposal", query: "Example Initiative" };
   const envelope = signer.sign("notion_search", body, context);
   const verified = await verifyEnvelope(envelope.token, signer);
   assert.deepEqual(verified.protectedHeader, {
@@ -495,7 +499,7 @@ test("MCP service hides caller authority, injects one fresh envelope after reval
     calls.push({
       method: request.method,
       ...(request.params?.arguments ? { arguments: request.params.arguments } : {}),
-      ...(init.headers["x-risely-qm-authority"] ? { header: init.headers["x-risely-qm-authority"] } : {}),
+      ...(init.headers[MCP_REQUEST_AUTHORITY_HEADER] ? { header: init.headers[MCP_REQUEST_AUTHORITY_HEADER] } : {}),
     });
     if (request.method === "tools/list") return response(request.id, { tools: remoteTools });
     const token = request.params?.arguments?.authorityEnvelope;
@@ -511,7 +515,12 @@ test("MCP service hides caller authority, injects one fresh envelope after reval
   assert.deepEqual(Object.keys(properties).sort(), ["query", "workflow"]);
   assert.equal(
     await service
-      .callWithContext("notion_notion_search", { workflow: "proposal", query: "CBS" }, context, config.actorPrincipalId)
+      .callWithContext(
+        "notion_notion_search",
+        { workflow: "proposal", query: "Example Initiative" },
+        context,
+        config.actorPrincipalId,
+      )
       .then((result) => result.text),
     "cited result",
   );
@@ -519,13 +528,13 @@ test("MCP service hides caller authority, injects one fresh envelope after reval
   assert.equal(dispatched.header, undefined);
   assert.deepEqual(
     { ...dispatched.arguments, authorityEnvelope: undefined },
-    { workflow: "proposal", query: "CBS", authorityEnvelope: undefined },
+    { workflow: "proposal", query: "Example Initiative", authorityEnvelope: undefined },
   );
   const token = dispatched.arguments!.authorityEnvelope as string;
   assert.equal(
     decodeClaims(token).payloadSha256,
     createHash("sha256")
-      .update(notionReadCanonicalPayload("notion_search", { workflow: "proposal", query: "CBS" }))
+      .update(notionReadCanonicalPayload("notion_search", { workflow: "proposal", query: "Example Initiative" }))
       .digest("hex"),
   );
   const callCount = calls.filter((call) => call.method === "tools/call").length;
@@ -533,7 +542,7 @@ test("MCP service hides caller authority, injects one fresh envelope after reval
     () =>
       service.callWithContext(
         "notion_notion_search",
-        { workflow: "proposal", query: "CBS", authorityEnvelope: token },
+        { workflow: "proposal", query: "Example Initiative", authorityEnvelope: token },
         context,
       ),
     /pinned contract/,
@@ -542,14 +551,14 @@ test("MCP service hides caller authority, injects one fresh envelope after reval
     () =>
       service.callWithContext(
         "notion_notion_search",
-        { workflow: "proposal", query: "CBS" },
+        { workflow: "proposal", query: "Example Initiative" },
         { ...context, slackUserId: "U87654321" },
       ),
     /authority denied/,
   );
   assert.equal(calls.filter((call) => call.method === "tools/call").length, callCount);
   const auditBytes = JSON.stringify(await audit.events());
-  assert.equal(auditBytes.includes("CBS"), false);
+  assert.equal(auditBytes.includes("Example Initiative"), false);
   assert.equal(auditBytes.includes(token), false);
   service.close();
 });

@@ -12,7 +12,7 @@ import {
 } from "../src/mcp/mcp-authority.ts";
 import { createMcpServerStore, type McpAllowedTool, type McpServer } from "../src/mcp/mcp-server-store.ts";
 import { createMcpToolService } from "../src/mcp/mcp-tool-service.ts";
-import { parseMcpInputSchema, type McpFetch } from "../src/mcp/mcp-client.ts";
+import { MCP_REQUEST_AUTHORITY_HEADER, parseMcpInputSchema, type McpFetch } from "../src/mcp/mcp-client.ts";
 import { parseAnalyticsNativeDelivery } from "../src/mcp/mcp-native-card.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { analyticsNativeCardBlocks } from "../src/slack/native-cards.ts";
@@ -115,8 +115,8 @@ function delivery(authority: McpAuthorityPayload, over: Record<string, unknown> 
         jti: authority.jti,
       },
       fallbackText: "Analytics result",
-      heading: "Analytics · UC Online",
-      question: "How is UC Online doing?",
+      heading: "Analytics · Example University",
+      question: "How is Example University doing?",
       findings: [{ source: "posthog", topic: "usage", text: "Active usage is 12.", confidence: "high" }],
       confidenceNotes: ["Missing: clarify"],
       nextStep: "Review the evidence.",
@@ -150,9 +150,9 @@ async function serviceWith(
 
 test("founder-DM signer binds canonical body and rejects every other user, team, channel, or surface", () => {
   const signer = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
-  const envelope = signer.sign("analytics_query", { question: "How is UC Online doing?" }, context);
+  const envelope = signer.sign("analytics_query", { question: "How is Example University doing?" }, context);
   const payload = decodeAuthority(envelope.token);
-  assert.equal(payload.bodySha256, "9933fef2fa384037708bb2ba23efe6e986823f3cec76ba4f60f8c17acfdc4ae2");
+  assert.equal(payload.bodySha256, "3eae7c9ffc4b908488b29ae83055a53835b8d21823ff7c6a85f7f2df9d24c4f6");
   assert.equal(payload.iat, 1_788_119_999);
   assert.equal(payload.exp, 1_788_120_029);
   for (const changed of [
@@ -196,6 +196,7 @@ test("authority environment loading is default-off and rejects partial configura
 });
 
 test("the closed Command Center analytics schema is accepted without pattern support", () => {
+  assert.equal(MCP_REQUEST_AUTHORITY_HEADER, "x-qm-request-authority");
   assert.deepEqual(parseMcpInputSchema(inputSchema), inputSchema);
 });
 
@@ -244,7 +245,7 @@ test("native analytics parser rejects remote blocks and QM renders bounded escap
   const authority = decodeAuthority(
     createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000).sign(
       "analytics_query",
-      { question: "How is UC Online doing?" },
+      { question: "How is Example University doing?" },
       context,
     ).token,
   );
@@ -252,7 +253,7 @@ test("native analytics parser rejects remote blocks and QM renders bounded escap
   const parsed = parseAnalyticsNativeDelivery(
     delivery(authority, {
       fallbackText: "Ping <@U123> or @Alice & review",
-      question: "How is UC Online doing?\nUse current evidence.",
+      question: "How is Example University doing?\nUse current evidence.",
       findings: [{ source: "posthog", topic: "usage", text: "<@here> & 12 active", confidence: "high" }],
     }),
     authority,
@@ -267,7 +268,7 @@ test("native analytics parser rejects remote blocks and QM renders bounded escap
 test("sealed analytics deliveries bind exact target and fixed authority through an explicit key overlap", () => {
   const oldSigner = createMcpAuthoritySigner(signerConfig, () => 1_788_119_999_000);
   const authority = decodeAuthority(
-    oldSigner.sign("analytics_query", { question: "How is UC Online doing?" }, context).token,
+    oldSigner.sign("analytics_query", { question: "How is Example University doing?" }, context).token,
   );
   const parsed = parseAnalyticsNativeDelivery(
     delivery(authority, { fallbackText: "Notify <!channel> <@U123> <https://evil.example|open> & review" }),
@@ -311,7 +312,7 @@ test("sealed analytics deliveries bind exact target and fixed authority through 
     );
     const priorContext = { ...context, ...contextOverride };
     const priorAuthority = decodeAuthority(
-      priorIdentitySigner.sign("analytics_query", { question: "How is UC Online doing?" }, priorContext).token,
+      priorIdentitySigner.sign("analytics_query", { question: "How is Example University doing?" }, priorContext).token,
     );
     const priorDelivery = parseAnalyticsNativeDelivery(delivery(priorAuthority), priorAuthority);
     assert.ok(priorDelivery);
@@ -330,7 +331,7 @@ test("tool service injects authority only on tools/call and accepts one exact au
   const seen: Array<{ method: string; authority?: string }> = [];
   const fetchImpl: McpFetch = async (_url, init) => {
     const request = JSON.parse(init.body) as { id: number; method: string };
-    const authorityToken = init.headers["x-risely-qm-authority"];
+    const authorityToken = init.headers[MCP_REQUEST_AUTHORITY_HEADER];
     seen.push({ method: request.method, ...(authorityToken ? { authority: authorityToken } : {}) });
     if (request.method === "tools/list") return response(request.id, { tools: [remoteTool] });
     assert.ok(authorityToken);
@@ -343,7 +344,7 @@ test("tool service injects authority only on tools/call and accepts one exact au
   const service = await serviceWith(fetchImpl);
   const result = await service.callWithContext(
     "analytics_analytics_query",
-    { question: "How is UC Online doing?" },
+    { question: "How is Example University doing?" },
     context,
     "founder@example.com",
   );
@@ -394,7 +395,7 @@ test("cold discovery delay cannot age the authority envelope before tools/call d
     events.push("call");
     assert.equal(init.headers.authorization, "Bearer oauth-token");
     assert.equal(signCount, 1);
-    const authority = decodeAuthority(init.headers["x-risely-qm-authority"]!);
+    const authority = decodeAuthority(init.headers[MCP_REQUEST_AUTHORITY_HEADER]!);
     assert.equal(authority.iat, Math.floor(clock / 1_000));
     assert.equal(authority.exp - authority.iat, signerConfig.ttlSeconds);
     assert.ok(Math.floor(initialClock / 1_000) + signerConfig.ttlSeconds <= Math.floor(clock / 1_000));
@@ -418,7 +419,7 @@ test("cold discovery delay cannot age the authority envelope before tools/call d
   });
   const result = await service.callWithContext(
     "analytics_analytics_query",
-    { question: "How is UC Online doing?" },
+    { question: "How is Example University doing?" },
     context,
     "founder@example.com",
   );
@@ -441,7 +442,7 @@ test("missing signer and tampered native-card authority fail closed", async () =
     () =>
       noSigner.callWithContext(
         "analytics_analytics_query",
-        { question: "How is UC Online doing?" },
+        { question: "How is Example University doing?" },
         context,
         "founder@example.com",
       ),
@@ -453,7 +454,7 @@ test("missing signer and tampered native-card authority fail closed", async () =
   const tampered = await serviceWith(async (_url, init) => {
     const request = JSON.parse(init.body) as { id: number; method: string };
     if (request.method === "tools/list") return response(request.id, { tools: [remoteTool] });
-    const authority = decodeAuthority(init.headers["x-risely-qm-authority"]!);
+    const authority = decodeAuthority(init.headers[MCP_REQUEST_AUTHORITY_HEADER]!);
     return response(request.id, {
       content: [{ type: "text", text: "result" }],
       structuredContent: delivery(authority, {
@@ -475,7 +476,7 @@ test("missing signer and tampered native-card authority fail closed", async () =
     () =>
       tampered.callWithContext(
         "analytics_analytics_query",
-        { question: "How is UC Online doing?" },
+        { question: "How is Example University doing?" },
         context,
         "founder@example.com",
       ),

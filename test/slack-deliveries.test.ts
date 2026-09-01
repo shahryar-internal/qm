@@ -121,7 +121,7 @@ const analyticsCard = {
   renderer: "qm.analytics.card.v1",
   receiptId: "a".repeat(64),
   fallbackText: "Analytics result",
-  heading: "Analytics · UC Online",
+  heading: "Analytics · Example University",
   question: "How is usage?",
   findings: [{ source: "posthog", topic: "usage", text: "<@here> & 12 active", confidence: "high" }],
   confidenceNotes: [],
@@ -143,7 +143,7 @@ test("Slack delivery renders only a core-verified sealed analytics card at the c
   assert.equal(posts[0]!.thread_ts, "100.200");
   assert.equal(posts[0]!.text, "Analytics result");
   const blocks = JSON.stringify(posts[0]!.blocks);
-  assert.match(blocks, /Analytics · UC Online/);
+  assert.match(blocks, /Analytics · Example University/);
   assert.doesNotMatch(blocks, /<@here>/);
   assert.match(blocks, /&lt;@here&gt; &amp; 12 active/);
 });
