@@ -259,7 +259,7 @@ async function storeArtifacts(
     artifacts.push(
       Object.freeze({
         kind: definition.kind,
-        href: `${profile.origin}/v1/files/${id}/content?viewer=${encodeURIComponent(profile.profile.actorPrincipalId)}`,
+        href: `${profile.origin}/v1/files/${id}/content`,
         sha256: stored.artifact.sha256,
       }),
     );

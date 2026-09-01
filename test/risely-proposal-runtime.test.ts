@@ -3,6 +3,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { test } from "node:test";
 import { createBackgroundJobProductionComposition } from "../src/background-jobs/composition.ts";
 import { parseBackgroundJobDeploymentProfile } from "../src/background-jobs/deployment-profile.ts";
+import { backgroundJobStatusOutcome } from "../src/background-jobs/service.ts";
 import type {
   BackgroundJobApprovalGrant,
   BackgroundJobAuthoritySigner,
@@ -301,6 +302,17 @@ test("signed private proposal runtime compiles idempotent owner-scoped artifacts
   const status = await client.status(receipt);
   assert.equal(status.state, "complete");
   assert.equal(status.artifacts?.length, 5);
+  assert.equal(status.artifacts?.every((artifact) => new URL(artifact.href).search === ""), true);
+  const outcome = backgroundJobStatusOutcome(deployment, receipt, status);
+  assert.equal(outcome.state, "complete");
+  assert.ok(outcome.card);
+  const card = outcome.card.payload as {
+    status: { label: string; tone: string };
+    sections: Array<{ items: Array<{ href?: string }> }>;
+  };
+  assert.deepEqual(card.status, { label: "Completed", tone: "success" });
+  assert.equal(card.sections[0]?.items[0]?.href, status.artifacts?.[0]?.href);
+  assert.match(outcome.cardDeliveryKey ?? "", /^background-job-card:[a-f0-9]{64}$/);
   const cancellation = await client.cancel(
     receipt,
     { ...approval, effect: "background_job_cancel", idempotencyKey: "risely-proposal-cancel:test" },
