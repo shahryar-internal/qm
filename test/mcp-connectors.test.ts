@@ -6,6 +6,7 @@ import {
   createPinnedMcpLookup,
   createMcpClient,
   isPublicMcpAddress,
+  MCP_USER_AGENT,
   mcpRemoteAddressMatchesPins,
   mcpResultText,
   validateMcpHttpsUrl,
@@ -233,8 +234,10 @@ test("JSON and SSE transports reject malformed JSON-RPC response envelopes", asy
 
 test("client credentials use the explicit token contract and cache the token", async () => {
   const forms: URLSearchParams[] = [];
+  const userAgents: string[] = [];
   let tokenCalls = 0;
   const fetch: McpFetch = async (url, init) => {
+    userAgents.push(init.headers["user-agent"] ?? "");
     if (url === "https://auth.example.com/oauth/token") {
       tokenCalls += 1;
       forms.push(new URLSearchParams(init.body));
@@ -270,6 +273,8 @@ test("client credentials use the explicit token contract and cache the token", a
   assert.equal(forms[0]!.get("client_secret"), "secret");
   assert.equal(forms[0]!.get("audience"), "https://mcp.example.com/mcp");
   assert.equal(forms[0]!.get("scope"), "records:read profile");
+  assert.equal(userAgents.length, 4);
+  assert.ok(userAgents.every((userAgent) => userAgent === MCP_USER_AGENT));
   assert.throws(() =>
     createMcpClient({
       url: "https://mcp.example.com/mcp",

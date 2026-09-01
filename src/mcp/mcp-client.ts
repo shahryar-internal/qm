@@ -12,6 +12,7 @@ const MAX_INPUT_SCHEMA_CHARS = 100_000;
 const MAX_INPUT_SCHEMA_NODES = 5_000;
 
 export const MCP_REQUEST_AUTHORITY_HEADER = "x-qm-request-authority";
+export const MCP_USER_AGENT = "qm-mcp-client/1.0";
 
 export function createPinnedMcpLookup(address: string): LookupFunction {
   const family = isIP(address);
@@ -831,6 +832,7 @@ export function createMcpClient(opts: {
         body,
         headers: {
           ...init.headers,
+          "user-agent": MCP_USER_AGENT,
           ...(authorityToken ? { [MCP_REQUEST_AUTHORITY_HEADER]: authorityToken } : {}),
         },
         redirect: "manual",
