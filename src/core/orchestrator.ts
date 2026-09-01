@@ -81,6 +81,7 @@ import type { McpHumanCallContext } from "../mcp/mcp-authority.ts";
 import {
   exactToolApprovalArgumentsSha256,
   isExactMcpApprovalTool,
+  isReadOnlyMcpApprovalTool,
   toolApprovalKey,
 } from "../tools/exact-tool-approval.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
@@ -2097,7 +2098,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(deps.config ? { config: deps.config } : {}),
           ...(deps.control && controlClaims ? { control: deps.control, controlClaims } : {}),
           ...(deps.webhookPublicUrl ? { webhookPublicUrl: deps.webhookPublicUrl } : {}),
-          ...(surfaceToolDeps ? { surface: surfaceToolDeps } : {}),
+          ...(input.surfaceTools && surfaceToolDeps ? { surface: surfaceToolDeps } : {}),
+          ...(surfaceToolDeps?.postNativeCard ? { postNativeCard: surfaceToolDeps.postNativeCard } : {}),
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
@@ -2684,7 +2686,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 }
               : {}),
             toolApprovalGate: (tool: string, params?: unknown) =>
-              securityPolicy.toolApprovals !== "all" && !isExactMcpApprovalTool(tool)
+              isReadOnlyMcpApprovalTool(tool) ||
+              (securityPolicy.toolApprovals !== "all" && !isExactMcpApprovalTool(tool))
                 ? true
                 : authorizeToolCall(tool, params),
             systemPrompt,

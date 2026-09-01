@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
 const EXACT_MCP_TOOL_PREFIX = "mcp-exact:";
+const READ_ONLY_MCP_TOOL_PREFIX = "mcp:";
 const EXACT_MCP_TOOL = /^mcp-exact:[a-f0-9]{64}:[A-Za-z0-9_-]{1,128}$/;
+const READ_ONLY_MCP_TOOL = /^mcp:[a-f0-9]{64}:[A-Za-z0-9_-]{1,128}$/;
 const EXACT_MCP_KEY = /^tool:mcp-exact:[a-f0-9]{64}:[A-Za-z0-9_-]{1,128}:([a-f0-9]{64})$/;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
@@ -29,8 +31,19 @@ export function exactMcpApprovalTool(serverContractSha256: string, name: string)
   return `${EXACT_MCP_TOOL_PREFIX}${serverContractSha256}:${name}`;
 }
 
+export function readOnlyMcpApprovalTool(serverContractSha256: string, name: string): string {
+  if (!/^[a-f0-9]{64}$/.test(serverContractSha256) || !/^[A-Za-z0-9_-]{1,128}$/.test(name)) {
+    throw new Error("read-only MCP approval contract is invalid");
+  }
+  return `${READ_ONLY_MCP_TOOL_PREFIX}${serverContractSha256}:${name}`;
+}
+
 export function isExactMcpApprovalTool(tool: string): boolean {
   return EXACT_MCP_TOOL.test(tool);
+}
+
+export function isReadOnlyMcpApprovalTool(tool: string): boolean {
+  return READ_ONLY_MCP_TOOL.test(tool);
 }
 
 export function exactToolApprovalArguments(args: unknown): { canonical: string; sha256: string } {

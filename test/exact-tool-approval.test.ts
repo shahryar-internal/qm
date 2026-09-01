@@ -5,6 +5,8 @@ import {
   exactToolApprovalArguments,
   exactToolApprovalArgumentsSha256,
   exactToolApprovalPreview,
+  isReadOnlyMcpApprovalTool,
+  readOnlyMcpApprovalTool,
   toolApprovalKey,
 } from "../src/tools/exact-tool-approval.ts";
 
@@ -20,6 +22,22 @@ test("exact MCP approval keys bind canonical arguments and connector contracts",
   assert.notEqual(key, toolApprovalKey(tool, changed));
   assert.notEqual(key, toolApprovalKey(exactMcpApprovalTool("b".repeat(64), "external_write"), left));
   assert.equal(toolApprovalKey("mcp:static:read", left), "tool:mcp:static:read");
+});
+
+test("read-only MCP approval identities require exact connector contracts and tool names", () => {
+  const tool = readOnlyMcpApprovalTool("a".repeat(64), "external_read");
+  assert.equal(tool, `mcp:${"a".repeat(64)}:external_read`);
+  assert.equal(isReadOnlyMcpApprovalTool(tool), true);
+  for (const invalid of [
+    "mcp:static:external_read",
+    `mcp:${"A".repeat(64)}:external_read`,
+    `mcp:${"a".repeat(64)}:external/read`,
+    `mcp-exact:${"a".repeat(64)}:external_read`,
+  ]) {
+    assert.equal(isReadOnlyMcpApprovalTool(invalid), false);
+  }
+  assert.throws(() => readOnlyMcpApprovalTool("short", "external_read"));
+  assert.throws(() => readOnlyMcpApprovalTool("a".repeat(64), "external/read"));
 });
 
 test("exact MCP approval previews show canonical bytes and reject non-JSON arguments", () => {

@@ -7,7 +7,12 @@ import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
-import { exactMcpApprovalTool, exactToolApprovalPreview, toolApprovalKey } from "../tools/exact-tool-approval.ts";
+import {
+  exactMcpApprovalTool,
+  exactToolApprovalPreview,
+  readOnlyMcpApprovalTool,
+  toolApprovalKey,
+} from "../tools/exact-tool-approval.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage } from "../util/errors.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
@@ -2812,7 +2817,7 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         label: d.label,
         status: d.status,
         approvalTool: d.readOnly
-          ? `mcp:${d.serverContractSha256}:${d.name}`
+          ? readOnlyMcpApprovalTool(d.serverContractSha256, d.name)
           : exactMcpApprovalTool(d.serverContractSha256, d.name),
         ...(!d.readOnly ? { exactApproval: true } : {}),
       });

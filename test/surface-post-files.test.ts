@@ -131,6 +131,33 @@ test("surface native-card delivery persists only its opaque token outside Destin
   assert.equal(JSON.stringify(delivery?.destination).includes("nativeCard"), false);
 });
 
+test("primary Slack turns receive the native-card delivery bridge", async () => {
+  const deliveries = createDeliveryStore();
+  const tools = createSurfaceToolDeps({
+    deps: { deliveries },
+    input: { surface: "slack", surfaceTools: false },
+    actor: { id: "U1" },
+    conversation: { kind: "dm", channelRef: "D1", threadRef: "dm:D1:100.000001" },
+    session: { id: "S1" },
+    scopeId: "personal:U1",
+    defaultDestination: { type: "slack", target: "D1:100.000001" },
+    strictReadOnly: false,
+    blobTransfer: {},
+    fileRegistration: {},
+    provision: async () => handle,
+    postProvenance() {
+      return {};
+    },
+    spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
+  } as unknown as SurfaceToolsContext)!;
+
+  const result = await tools.postNativeCard!("sealed-primary-card" as never, "mcp-card:primary");
+  assert.equal(result.ok, true);
+  const [delivery] = await deliveries.pending("slack");
+  assert.equal(delivery?.trustedAnalyticsCard, "sealed-primary-card");
+  assert.equal(delivery?.destination.target, "D1:100.000001");
+});
+
 test("surface standing orders preserve and reset the stored ambient reply policy", async () => {
   const channelPolicy = createMemoryChannelPolicyStore();
   const tools = createSurfaceToolDeps({

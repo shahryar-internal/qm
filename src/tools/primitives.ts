@@ -442,6 +442,7 @@ export interface ToolContextDeps {
   controlClaims?: CapabilityClaims;
   webhookPublicUrl?: string;
   surface?: SurfaceToolDeps;
+  postNativeCard?: NonNullable<SurfaceToolDeps["postNativeCard"]>;
 }
 
 const EFFECT_AUTHORIZATION_EXEMPT = new Set<PropertyKey>(["mcpToolDefs", "soulRead", "staySilent"]);
@@ -942,14 +943,16 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (!deps.mcp) throw new Error("no MCP connectors are configured");
       const result = await deps.mcp.callWithContext(name, args, deps.mcpCallContext, deps.createdBy);
       if (result.trustedAnalyticsCard) {
-        if (!deps.surface?.postNativeCard || !result.nativeCardIdempotencyKey) {
-          throw new Error("MCP native card delivery is unavailable on this turn");
+        const postNativeCard = deps.postNativeCard ?? deps.surface?.postNativeCard;
+        if (!postNativeCard || !result.nativeCardIdempotencyKey) {
+          return `${result.text}\n\n[Native result card delivery unavailable.]`.trim();
         }
-        const delivered = await deps.surface.postNativeCard(
-          result.trustedAnalyticsCard,
-          result.nativeCardIdempotencyKey,
-        );
-        if (!delivered.ok) throw new Error("MCP native card delivery failed");
+        try {
+          const delivered = await postNativeCard(result.trustedAnalyticsCard, result.nativeCardIdempotencyKey);
+          if (!delivered.ok) return `${result.text}\n\n[Native result card delivery failed.]`.trim();
+        } catch {
+          return `${result.text}\n\n[Native result card delivery failed.]`.trim();
+        }
       }
       return result.text;
     },

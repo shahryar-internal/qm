@@ -12,7 +12,12 @@ import { NeedsApproval } from "../tools/primitives.ts";
 import { deterministicCompactSummary, estimateHistoryTokens } from "./context-compaction.ts";
 import { countTokens } from "../util/tokens.ts";
 import { SECURITY_SCREEN_SYSTEM_PROMPT } from "../security/security-posture.ts";
-import { exactToolApprovalPreview, isExactMcpApprovalTool, toolApprovalKey } from "../tools/exact-tool-approval.ts";
+import {
+  exactToolApprovalPreview,
+  isExactMcpApprovalTool,
+  isReadOnlyMcpApprovalTool,
+  toolApprovalKey,
+} from "../tools/exact-tool-approval.ts";
 
 const READ_ONLY_BLOCKED_PREFIXES = [
   "!preamble",
@@ -330,6 +335,12 @@ export function createMockHarness(): Harness {
           turn.onProgress?.({ toolCalls: 1 });
           usedTool = true;
           reply = result.stdout.trim() || result.stderr.trim() || `(exit ${result.code})`;
+        } else if (command0.startsWith("!read-tool ")) {
+          const tool = cmd.slice(cmd.indexOf("!read-tool ") + "!read-tool ".length).trim();
+          if (!isReadOnlyMcpApprovalTool(tool)) throw new Error("invalid read-only tool name");
+          usedTool = true;
+          if (gateTool(tool)) reply = "";
+          else reply = `completed read-only tool ${tool}`;
         } else if (command0.startsWith("!exact-tool ")) {
           const rest = cmd.slice(cmd.indexOf("!exact-tool ") + "!exact-tool ".length).trim();
           const split = rest.indexOf(" ");
