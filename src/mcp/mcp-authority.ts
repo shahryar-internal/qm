@@ -25,12 +25,26 @@ export interface McpAuthorityPayload {
   slackConversationType: "im";
   slackMessageTs: string;
   slackThreadTs: string;
-  tool: "analytics_query";
+  tool: McpFounderDmAuthorityTool;
   bodySha256: string;
   jti: string;
   iat: number;
   exp: number;
 }
+
+export type McpFounderDmAuthorityTool =
+  | "analytics_query"
+  | "brain_search"
+  | "brain_who_owns"
+  | "brain_project_status"
+  | "brain_what_changed_since"
+  | "brain_as_of"
+  | "brain_person_context"
+  | "brain_episodes_about"
+  | "brain_open_commitments_for_account"
+  | "brain_open_risks_for_account"
+  | "brain_slipped_initiatives"
+  | "brain_analytics_targetable_deployments";
 
 interface McpAuthorityEnvelope {
   token: string;
@@ -59,6 +73,24 @@ const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{2,127}$/;
 const CANONICAL_EMAIL =
   /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLACK_TS = /^\d{10,12}\.\d{6}$/;
+const FOUNDER_DM_AUTHORITY_TOOLS = new Set<McpFounderDmAuthorityTool>([
+  "analytics_query",
+  "brain_search",
+  "brain_who_owns",
+  "brain_project_status",
+  "brain_what_changed_since",
+  "brain_as_of",
+  "brain_person_context",
+  "brain_episodes_about",
+  "brain_open_commitments_for_account",
+  "brain_open_risks_for_account",
+  "brain_slipped_initiatives",
+  "brain_analytics_targetable_deployments",
+]);
+
+function isFounderDmAuthorityTool(tool: string): tool is McpFounderDmAuthorityTool {
+  return FOUNDER_DM_AUTHORITY_TOOLS.has(tool as McpFounderDmAuthorityTool);
+}
 
 function canonicalEmail(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -171,7 +203,7 @@ export function createMcpAuthoritySigner(
   return {
     sign(tool, body, context) {
       if (
-        tool !== "analytics_query" ||
+        !isFounderDmAuthorityTool(tool) ||
         !context ||
         context.surface !== "slack" ||
         context.conversationType !== "dm" ||
@@ -199,7 +231,7 @@ export function createMcpAuthoritySigner(
         slackConversationType: "im",
         slackMessageTs: context.slackMessageTs,
         slackThreadTs: context.slackThreadTs,
-        tool: "analytics_query",
+        tool,
         bodySha256: createHash("sha256").update(canonicalJson(body)).digest("hex"),
         jti: randomBytes(32).toString("base64url"),
         iat,
