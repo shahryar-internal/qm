@@ -2,6 +2,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   setCustomProviders,
+  resolveCustomProvider,
   resolveCustomModel,
   isCustomModelId,
   customModelCatalog,
@@ -32,6 +33,12 @@ test("a registered custom model resolves with the provider's protocol and base U
   assert.equal(model.baseUrl, "https://llm.acme.internal/v1");
   assert.equal(model.contextWindow, 200_000);
   assert.equal(model.cost.input, 2);
+});
+
+test("a registered custom provider resolves by provider id", () => {
+  const provider = { ...GATEWAY };
+  setCustomProviders([provider]);
+  assert.deepEqual(resolveCustomProvider(provider.id), provider);
 });
 
 test("anthropic-protocol providers produce anthropic-messages models with defaults", () => {

@@ -51,6 +51,7 @@ import {
 } from "../model/pi-models.ts";
 import { customModelsJson, customProvidersVersion } from "../model/custom-providers.ts";
 import { normalizeConfiguredDevGeminiPayload } from "../model/dev-gemini-provider.ts";
+import { groundedWebSearchForActiveModel } from "../model/grounded-web-search.ts";
 import {
   defineHarness,
   envelopeWithoutMessages,
@@ -1288,6 +1289,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     tapeFold?: unknown[],
     tape?: HarnessTurnInput["tape"],
     turnProviderKeys?: ProviderKeys,
+    turnModel?: string,
   ): Promise<{ entry: TurnSession; compileMs: number; tapeWriteFailed: boolean }> {
     const compileStart = Date.now();
     const cacheBoundary =
@@ -1326,9 +1328,15 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const seedPlan = planColdStartSeed(seedSource, !!priorTurns?.length);
     const composedPrompt = systemPrompt + (seedPlan === "preamble" ? replayPreamble(history) : "");
 
-    const model = getRequiredModel(resolveModelId(turnScope));
-    const modelRuntime = await buildModelRuntime(turnProviderKeys ?? (await resolveProviderKeys()));
-    const ref: ToolContextRef = { current: null };
+    const model = getRequiredModel(turnModel ?? resolveModelId(turnScope));
+    const providerKeys = turnProviderKeys ?? (await resolveProviderKeys());
+    const modelRuntime = await buildModelRuntime(providerKeys);
+    const ref: ToolContextRef = { current: null, groundedWebSearchModelId: model.id };
+    const groundedWebSearch = groundedWebSearchForActiveModel(
+      model,
+      providerKeys[String(model.provider)],
+      () => ref.groundedWebSearchModelId,
+    );
     const { resourceLoader, cwd, agentDir } = await createIsolatedResources(tempDirPrefix, composedPrompt);
     const compileMs = Date.now() - compileStart;
 
@@ -1347,6 +1355,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           ...(credentialExecServices?.length ? { credentialExecServices } : {}),
           ...(surfaceTools ? { surfaceTools: true } : {}),
           ...(surfaceName ? { surfaceName } : {}),
+          ...(groundedWebSearch ? { groundedWebSearch } : {}),
           ...(readOnly ? { readOnly: true } : {}),
           ...(opts?.execTimeoutMs !== undefined ? { execTimeoutMs: opts.execTimeoutMs } : {}),
           ...(opts?.execTimeoutCeilingMs !== undefined ? { execTimeoutCeilingMs: opts.execTimeoutCeilingMs } : {}),
@@ -1509,6 +1518,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.tapeFold,
           turn.tape,
           turn.providerKeys,
+          turn.model,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
@@ -1516,6 +1526,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           entry.ref.pendingApprovals = [];
           entry.ref.pausedOnApproval = undefined;
           entry.ref.silentRequested = false;
+          entry.ref.groundedWebSearchUsed = false;
           entry.ref.pollFire = !!turn.pollFire;
           entry.ref.screenToolResult = turn.screenToolResult;
           entry.ref.emit = turn.emit;
@@ -1539,6 +1550,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           const activeModel = entry.agentSession.model as { id?: string; headers?: Record<string, string> } | undefined;
           entry.ref.fast = Boolean(activeModel?.headers?.["anthropic-beta"]?.includes(FAST_MODE_BETA));
           const effectiveModel = activeModel?.id ?? desiredModelId;
+          entry.ref.groundedWebSearchModelId = effectiveModel;
           const defaultThinkingLevel = entry.agentSession.model
             ? defaultInteractiveThinkingLevel(entry.agentSession.model)
             : "auto";
@@ -1819,6 +1831,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             );
             const wantFast = wantsFastMode(turn.fastMode, fallbackId);
             await entry.agentSession.setModel(wantFast ? withFastModeHeaders(fallback) : fallback);
+            entry.ref.groundedWebSearchModelId = fallbackId;
             const active = entry.agentSession.model as { headers?: Record<string, string> } | undefined;
             entry.ref.fast = Boolean(active?.headers?.["anthropic-beta"]?.includes(FAST_MODE_BETA));
             applyTurnEffort(entry.agentSession, turn.thinkingLevel ?? defaultInteractiveThinkingLevel(fallback));

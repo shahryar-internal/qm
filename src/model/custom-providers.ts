@@ -181,6 +181,10 @@ export function resolveCustomModel(id: string): CustomRuntimeModel | undefined {
   return registry.get(id);
 }
 
+export function resolveCustomProvider(id: string): CustomProviderSpec | undefined {
+  return providers.find((provider) => provider.id === id);
+}
+
 export function isCustomModelId(id: string): boolean {
   return registry.has(id);
 }
