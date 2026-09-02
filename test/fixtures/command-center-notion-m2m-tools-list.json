@@ -73,6 +73,48 @@
         "required": ["workflow", "pageId", "authorityEnvelope"],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "notion_prepare_page_append",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workflow": {
+            "type": "string",
+            "enum": [
+              "meeting_brief",
+              "post_meeting_notes",
+              "proposal",
+              "research",
+              "marketing_draft",
+              "general"
+            ]
+          },
+          "pageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "paragraph": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "authorityEnvelope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384
+          }
+        },
+        "required": ["workflow", "pageId", "paragraph", "authorityEnvelope"],
+        "additionalProperties": false
+      }
     }
   ]
 }

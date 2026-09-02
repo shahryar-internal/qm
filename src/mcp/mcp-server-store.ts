@@ -61,7 +61,11 @@ const ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const NOTION_M2M_PATH = "/api/mcp/notion/mcp";
 const NOTION_M2M_SCOPE = "notion:read";
-const NOTION_M2M_TOOL_NAMES = Object.freeze(["notion_search", "notion_read_page"] as const);
+const NOTION_M2M_TOOL_NAMES = Object.freeze([
+  "notion_search",
+  "notion_read_page",
+  "notion_prepare_page_append",
+] as const);
 const NOTION_WORKFLOW_SCHEMA = {
   type: "string",
   enum: ["meeting_brief", "post_meeting_notes", "proposal", "research", "marketing_draft", "general"],
@@ -86,6 +90,17 @@ const NOTION_TOOL_SCHEMAS: Readonly<Record<(typeof NOTION_M2M_TOOL_NAMES)[number
       authorityEnvelope: NOTION_AUTHORITY_ENVELOPE_SCHEMA,
     },
     required: ["workflow", "pageId", "authorityEnvelope"],
+    additionalProperties: false,
+  },
+  notion_prepare_page_append: {
+    type: "object",
+    properties: {
+      workflow: NOTION_WORKFLOW_SCHEMA,
+      pageId: { type: "string", minLength: 1, maxLength: 128 },
+      paragraph: { type: "string", minLength: 1, maxLength: 2_000 },
+      authorityEnvelope: NOTION_AUTHORITY_ENVELOPE_SCHEMA,
+    },
+    required: ["workflow", "pageId", "paragraph", "authorityEnvelope"],
     additionalProperties: false,
   },
 };
@@ -125,7 +140,7 @@ export function notionAuthorityServerContract(server: McpServer): boolean {
 }
 
 function notionAuthoritySchema(name: string, schema: Record<string, unknown>): boolean {
-  if (name !== "notion_search" && name !== "notion_read_page") return false;
+  if (!NOTION_M2M_TOOL_NAMES.includes(name as (typeof NOTION_M2M_TOOL_NAMES)[number])) return false;
   return canonical(schema) === canonical(NOTION_TOOL_SCHEMAS[name]);
 }
 
