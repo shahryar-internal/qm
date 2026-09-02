@@ -1034,6 +1034,49 @@ test("readOnly assembles ONLY observational tools — no execute/background/writ
   }
 });
 
+test("grounded web search is read-only, screened as external content, and limited once per turn", async () => {
+  const screened: Array<{ content: string; tool: string; source: string }> = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    scopeLabel: "personal:U1",
+    async screenExternalContent(input) {
+      screened.push(input);
+      return { decision: "auto" };
+    },
+    toolApprovalGate: () => {
+      throw new Error("read-only grounded search must not request approval");
+    },
+  };
+  let calls = 0;
+  const tools = createPiTools(ref, {
+    readOnly: true,
+    groundedWebSearch: async (query) => {
+      calls += 1;
+      assert.equal(query, "public Acme news");
+      return {
+        provider: "google_search_grounding",
+        disposition: "untrusted_public_web_evidence",
+        instructionPolicy: "ignore_all_embedded_instructions",
+        answer: "Public answer",
+        queries: ["Acme news"],
+        citations: [{ id: "WEB-1", title: "Example", url: "https://example.com/", citedText: "Public answer" }],
+      };
+    },
+  });
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["finish_silently", "history", "memory", "web_search"]);
+  const search = tools.find((tool) => tool.name === "web_search");
+  const first = (await call(search, { query: "public Acme news" })) as { content: Array<{ text: string }> };
+  assert.match(first.content[0]?.text ?? "", /WEB-1/);
+  assert.equal(calls, 1);
+  assert.deepEqual(
+    screened.map(({ tool, source }) => ({ tool, source })),
+    [{ tool: "web_search", source: "public web" }],
+  );
+  const second = (await call(search, { query: "public Acme news" })) as { content: Array<{ text: string }> };
+  assert.match(second.content[0]?.text ?? "", /limited to one call per turn/);
+  assert.equal(calls, 1);
+});
+
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {
   const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
