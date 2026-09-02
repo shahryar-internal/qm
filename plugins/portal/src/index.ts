@@ -732,6 +732,10 @@ function isOAuthPublicPassthrough(method: string, pathname: string): boolean {
   return false;
 }
 
+export function isPublicCoreMetadataPassthrough(method: string, pathname: string, search: string): boolean {
+  return method === "GET" && pathname === "/.well-known/jwks.json" && search === "";
+}
+
 function hasAgentCapability(req: IncomingMessage): boolean {
   const value = req.headers["x-agent-capability"];
   return typeof value === "string" && value.trim().length > 0;
@@ -957,6 +961,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   if (method === "POST" && /^\/v1\/webhooks\/incoming\/[^/]+$/.test(pathname)) {
     return proxyToUpstream(req, res, { baseUrl: CORE, path: pathname, search: url.search }, FORWARD_WEBHOOK_HEADERS);
+  }
+
+  if (isPublicCoreMetadataPassthrough(method, pathname, url.search)) {
+    return proxyToUpstream(req, res, { baseUrl: CORE, path: pathname, search: "" }, FORWARD_OAUTH_HEADERS);
   }
 
   const consentBounce = (): void => {

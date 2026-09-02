@@ -104,6 +104,36 @@ test("healthz is unauthenticated", async () => {
   assert.equal(r.status, 200);
 });
 
+test("the exact public JWKS metadata path reaches core without credentials or caller identity", async () => {
+  const r = await fetch(`${base}/.well-known/jwks.json`, {
+    headers: {
+      authorization: "Bearer caller-controlled",
+      cookie: "portal_session=caller-controlled",
+      "x-as-principal": "caller-controlled",
+      "x-portal-identity": "caller-controlled",
+    },
+  });
+  assert.equal(r.status, 200);
+  const body = (await r.json()) as { url: string; cookie: string | null; headers: Record<string, string> };
+  assert.equal(body.url, "/.well-known/jwks.json");
+  assert.equal(body.cookie, null);
+  assert.equal(body.headers.authorization, undefined);
+  assert.equal(body.headers["x-as-principal"], undefined);
+  assert.equal(body.headers["x-portal-identity"], undefined);
+});
+
+test("public JWKS metadata passthrough is exact GET-only and query-free", async () => {
+  for (const request of [
+    fetch(`${base}/.well-known/jwks.json?x=1`),
+    fetch(`${base}/.well-known/jwks.json`, { method: "POST" }),
+    fetch(`${base}/.well-known/jwks.json/extra`),
+    fetch(`${base}/.well-known/other.json`),
+    fetch(`${base}/.well-known/JWKS.json`),
+  ]) {
+    assert.equal((await request).status, 401);
+  }
+});
+
 test("favicon: served unauthenticated as an SVG of the pirate-flag emoji", async () => {
   for (const path of ["/favicon.ico", "/favicon.svg"]) {
     const r = await fetch(`${base}${path}`);
