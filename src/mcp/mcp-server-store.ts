@@ -140,8 +140,9 @@ export function notionAuthorityServerContract(server: McpServer): boolean {
 }
 
 function notionAuthoritySchema(name: string, schema: Record<string, unknown>): boolean {
-  if (!NOTION_M2M_TOOL_NAMES.includes(name as (typeof NOTION_M2M_TOOL_NAMES)[number])) return false;
-  return canonical(schema) === canonical(NOTION_TOOL_SCHEMAS[name]);
+  const notionToolName = NOTION_M2M_TOOL_NAMES.find((candidate) => candidate === name);
+  if (!notionToolName) return false;
+  return canonical(schema) === canonical(NOTION_TOOL_SCHEMAS[notionToolName]);
 }
 
 function closedMcpObjectSchemas(schema: unknown): boolean {
