@@ -44,7 +44,7 @@ function boundedText(value: unknown, max: number): string | undefined {
 
 const PRIVATE_QUERY_PATTERNS: readonly RegExp[] = [
   /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|password|private[_ -]?key|bearer)\b/iu,
-  /\b(?:private|confidential|customer record|internal(?: roadmap)?)\b/iu,
+  /\b(?:private(?:ly)?|confidential|credentials?|secrets?|customer[_ -]?records?|emails?|inbox|calendars?|transcripts?|internal|slack[_ -]?(?:dm|message)|direct[_ -]?messages?)\b/iu,
   /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu,
   /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/iu,
   /\b[0-9a-f]{32,}\b/iu,
