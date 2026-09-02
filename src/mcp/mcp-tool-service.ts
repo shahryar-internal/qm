@@ -86,6 +86,7 @@ interface McpToolCallResult {
 
 interface McpProbedTool {
   name: string;
+  annotations?: Record<string, unknown>;
   readOnlyHint: boolean;
   destructiveHint: boolean;
   inputSchema: Record<string, unknown>;
@@ -461,6 +462,7 @@ export function createMcpToolService(opts: {
       if (!notionDiscoveryContract(server, tools)) throw new Error("MCP Notion discovery contract mismatch");
       return tools.map((tool) => ({
         name: tool.name,
+        annotations: tool.annotations,
         readOnlyHint: tool.readOnlyHint,
         destructiveHint: tool.destructiveHint,
         inputSchema: tool.inputSchema,

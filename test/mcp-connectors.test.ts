@@ -145,6 +145,39 @@ test("mcp client lists annotated tools and calls one over JSON and SSE", async (
   await assert.rejects(() => client.listTools(), /unsafe input schema/);
 });
 
+test("MCP probes preserve the complete reviewed discovery annotations", async () => {
+  const { store } = storeWithBacking();
+  const remote = fakeServerFetch({
+    tools: [
+      queryTool({
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      }),
+    ],
+  });
+  const service = createMcpToolService({ servers: store, fetchImpl: remote.fetch, refreshIntervalMs: 3_600_000 });
+  const tools = await service.probe(server());
+  assert.deepEqual(tools, [
+    {
+      name: "query",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+      readOnlyHint: true,
+      destructiveHint: false,
+      inputSchema: { type: "object", properties: { q: { type: "string" } } },
+    },
+  ]);
+  service.close();
+});
+
 test("MCP SDK root schema dialects normalize without widening nested schemas", async () => {
   const remote = fakeServerFetch({
     tools: [
