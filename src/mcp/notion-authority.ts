@@ -15,7 +15,7 @@ const NOTION_READ_AUTHORITY_ALGORITHM = "RS256" as const;
 const NOTION_READ_AUTHORITY_TOKEN_TYPE = "job-authority+jwt" as const;
 const NOTION_READ_AUTHORITY_SCOPE = "notion:read" as const;
 
-type NotionReadToolName = "notion_search" | "notion_read_page";
+type NotionReadToolName = "notion_search" | "notion_read_page" | "notion_prepare_page_append";
 
 export interface NotionAuthoritySignerConfig {
   issuer: string;
@@ -97,7 +97,7 @@ const SLACK_USER = /^[UW][A-Z0-9]{2,31}$/u;
 const SLACK_DM = /^D[A-Z0-9]{2,31}$/u;
 const SLACK_TS = /^\d{10,}\.\d{6}$/u;
 const PRIVATE_KEY_BASE64 = /^(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
-const TOOLS = Object.freeze(["notion_search", "notion_read_page"] as const);
+const TOOLS = Object.freeze(["notion_search", "notion_read_page", "notion_prepare_page_append"] as const);
 
 function exactHttpsUrl(value: string, rootOnly: boolean): URL {
   let url: URL;
@@ -231,6 +231,25 @@ export function notionReadCanonicalPayload(tool: string, body: Record<string, un
       tool,
       workflow: body.workflow,
       pageId: body.pageId,
+    });
+  }
+  if (tool === "notion_prepare_page_append") {
+    if (
+      !exactKeys(body, ["workflow", "pageId", "paragraph"]) ||
+      typeof body.workflow !== "string" ||
+      !WORKFLOWS.has(body.workflow) ||
+      typeof body.pageId !== "string" ||
+      !SAFE_ID.test(body.pageId) ||
+      !safeText(body.paragraph, 2_000)
+    ) {
+      throw new Error("QM Notion read request body is invalid");
+    }
+    return JSON.stringify({
+      version: "notion-read-request/v1",
+      tool,
+      workflow: body.workflow,
+      pageId: body.pageId,
+      paragraph: body.paragraph,
     });
   }
   throw new Error("QM Notion read tool is not allowed");

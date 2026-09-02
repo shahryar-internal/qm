@@ -78,6 +78,17 @@ const readSchema = {
   required: ["workflow", "pageId", "authorityEnvelope"],
   additionalProperties: false,
 };
+const prepareAppendSchema = {
+  type: "object",
+  properties: {
+    workflow: workflowSchema,
+    pageId: { type: "string", minLength: 1, maxLength: 128 },
+    paragraph: { type: "string", minLength: 1, maxLength: 2_000 },
+    authorityEnvelope: authoritySchema,
+  },
+  required: ["workflow", "pageId", "paragraph", "authorityEnvelope"],
+  additionalProperties: false,
+};
 const allowedTools: McpAllowedTool[] = [
   {
     name: "notion_search",
@@ -93,6 +104,14 @@ const allowedTools: McpAllowedTool[] = [
     status: "Reading Notion page",
     readOnly: true,
     inputSchema: readSchema,
+    requestAuthority: NOTION_READ_AUTHORITY,
+  },
+  {
+    name: "notion_prepare_page_append",
+    label: "Prepare Notion page append",
+    status: "Preparing Notion page append",
+    readOnly: true,
+    inputSchema: prepareAppendSchema,
     requestAuthority: NOTION_READ_AUTHORITY,
   },
 ];
@@ -271,7 +290,7 @@ test("RS256 Notion authority binds the exact founder DM, tool, canonical body, i
     status: "ready",
     algorithm: "RS256",
     authority: NOTION_READ_AUTHORITY,
-    tools: ["notion_search", "notion_read_page"],
+    tools: ["notion_search", "notion_read_page", "notion_prepare_page_append"],
   });
   assert.equal(JSON.stringify(signer.publicState().readiness).includes(config.issuer), false);
   assert.equal(JSON.stringify(signer.publicState().readiness).includes(config.audience), false);
@@ -310,7 +329,26 @@ test("Notion authority rejects every provenance substitution and every non-read 
     /body is invalid/,
   );
   assert.throws(() => signer.sign("notion_read_page", { workflow: "research", pageId: "bad page" }, context));
+  assert.throws(() =>
+    signer.sign(
+      "notion_prepare_page_append",
+      { workflow: "research", pageId: "page-1", paragraph: " Approved paragraph" },
+      context,
+    ),
+  );
   assert.throws(() => signer.sign("notion_search", { workflow: "write", query: "plans" }, context));
+});
+
+test("Notion preparation authority binds the exact page and canonical paragraph", () => {
+  const signer = createNotionAuthoritySigner(config, { now: () => Date.parse("2026-08-30T20:00:00.000Z") });
+  const body = { workflow: "post_meeting_notes", pageId: "page-1", paragraph: "Exact approved paragraph" };
+  const envelope = signer.sign("notion_prepare_page_append", body, context);
+  assert.equal(envelope.canonicalPayload, notionReadCanonicalPayload("notion_prepare_page_append", body));
+  assert.equal(envelope.claims.tool, "notion_prepare_page_append");
+  assert.deepEqual(envelope.dispatchArguments, { ...body, authorityEnvelope: envelope.token });
+  assert.throws(() =>
+    signer.sign("notion_prepare_page_append", { ...body, paragraph: `${body.paragraph}\0` }, context),
+  );
 });
 
 test("Notion authority configuration is default-off and fails closed on partial, mismatched, or weak settings", () => {
@@ -425,7 +463,7 @@ test("frozen Command Center discovery passes the exact QM Notion contract", asyn
   assert.deepEqual(commandCenterFixtureSource, {
     contract: "notion-m2m-tools-list/v1",
     path: "command-center-notion-m2m-tools-list.json",
-    sha256: "ab3cd79ecca651e57de59ce940f642b0487b9a464945595b556fd6dceb0ad3ab",
+    sha256: "e3374bcef6183ba343febd6fff600dbffb2cb49bb0db70d69e6c3846bf40520b",
   });
   assert.equal(
     createHash("sha256").update(commandCenterFixtureBytes, "utf8").digest("hex"),
