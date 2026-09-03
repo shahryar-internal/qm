@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WORKFLOW_ARTIFACT_MIME } from "../plugins/chassis/src/workflow-artifact.ts";
-import { enforceSlackEvidenceDelivery } from "../src/slack/evidence-delivery.ts";
+import { enforceSlackEvidenceDelivery, slackEvidenceRequestRequiresCard } from "../src/slack/evidence-delivery.ts";
 import type { OutgoingAttachment, TurnResult } from "../src/types.ts";
 
 const sourcedReply = "Activation improved by four points. Source: Analytics · Observed: 2026-09-02 · Link: unavailable";
@@ -441,6 +441,15 @@ test("public evidence requires publication or update freshness alongside current
 });
 
 test("substantial evidence requires exactly one complete safe workflow card", async () => {
+  assert.equal(slackEvidenceRequestRequiresCard("Give me an account health brief"), true);
+  assert.equal(slackEvidenceRequestRequiresCard("Brief me on tomorrow's calendar and email"), true);
+  assert.equal(
+    slackEvidenceRequestRequiresCard(
+      "Research the public market for AI coaching in higher education and recommend our next strategic move.",
+    ),
+    true,
+  );
+  assert.equal(slackEvidenceRequestRequiresCard("What is the current price?"), false);
   for (const request of ["Give me an account health brief", "Tell me how ACME is doing", "Give me an ACME update"]) {
     const missing = await enforceSlackEvidenceDelivery(request, result({ attachments: undefined }), async () => card());
     assert.equal(missing.reason, "card_count", request);
@@ -507,14 +516,20 @@ test("substantial evidence requires exactly one complete safe workflow card", as
 
   const linked = result({ reply: linkedReply, deliveryEvidenceSources: linkedSource });
   const complete = await enforceSlackEvidenceDelivery("Give me an account health brief", linked, async () =>
-    card({ href: allowedLink }, linkedReply),
+    card({ value: "Activation improved by four points.", href: allowedLink }, linkedReply),
   );
   assert.equal(complete.blocked, false);
+
+  const contradictory = await enforceSlackEvidenceDelivery("Give me an account health brief", linked, async () =>
+    card({ href: allowedLink }, linkedReply),
+  );
+  assert.equal(contradictory.blocked, true);
+  assert.equal(contradictory.reason, "card");
 
   const duplicate = await enforceSlackEvidenceDelivery(
     "How did analytics change this week?",
     { ...linked, attachments: [attachment, { ...attachment, blobId: "blob-2" }] },
-    async () => card({ href: allowedLink }, linkedReply),
+    async () => card({ value: "Activation improved by four points.", href: allowedLink }, linkedReply),
   );
   assert.equal(duplicate.blocked, true);
   assert.equal(duplicate.reason, "card_count");

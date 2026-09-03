@@ -213,7 +213,7 @@ function cardSourcesComplete(
     if (!source) return false;
     if (source.sourceType === "Public web" && !publicFreshnessComplete(text)) return false;
     if (item.href !== undefined) {
-      if (!verifiedHttps(item.href, source)) return false;
+      if (/Links? unavailable\b/iu.test(text) || !verifiedHttps(item.href, source)) return false;
     } else if (source.links.length !== 0 || !/Links? unavailable\b/iu.test(text)) return false;
   }
   for (const link of card.links ?? []) {
@@ -221,6 +221,10 @@ function cardSourcesComplete(
     if (!source || !verifiedHttps(link.href, source)) return false;
   }
   return true;
+}
+
+export function slackEvidenceRequestRequiresCard(requestText: string): boolean {
+  return SUBSTANTIAL_REQUEST.test(requestText.slice(0, 8_192));
 }
 
 export async function enforceSlackEvidenceDelivery(
@@ -245,7 +249,7 @@ export async function enforceSlackEvidenceDelivery(
   if (!replySourcesComplete(reply, registry)) {
     return { result: { ...result, reply: FAIL_SAFE_REPLY, attachments: undefined }, blocked: true, reason: "reply" };
   }
-  const substantial = SUBSTANTIAL_REQUEST.test(requestText.slice(0, 8_192));
+  const substantial = slackEvidenceRequestRequiresCard(requestText);
   const workflow = (result.attachments ?? []).filter(workflowAttachment);
   if (workflow.length !== (result.attachments ?? []).length) {
     return {
