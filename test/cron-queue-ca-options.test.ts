@@ -23,6 +23,17 @@ test("the cron queue source has one verified CA propagation seam and no insecure
   assert.doesNotMatch(source, /rejectUnauthorized\s*:\s*false|sslmode=(?:disable|no-verify)/i);
 });
 
+test("buildApp configures PostgreSQL CA trust before constructing the cron queue", () => {
+  const source = readFileSync(new URL("../src/wiring.ts", import.meta.url), "utf8");
+  const buildApp = source.indexOf("export function buildApp");
+  const configureTrust = source.indexOf("configurePgCaTrust(", buildApp);
+  const constructQueue = source.indexOf("createPgBossCronQueue(", buildApp);
+  assert.notEqual(buildApp, -1);
+  assert.notEqual(configureTrust, -1);
+  assert.notEqual(constructQueue, -1);
+  assert.ok(configureTrust < constructQueue);
+});
+
 test("the cron queue passes configured CA trust to pg-boss", () => {
   const ca = "-----BEGIN CERTIFICATE-----\nverified-root\n-----END CERTIFICATE-----\n";
   configurePgCaTrust({ cert: ca });
