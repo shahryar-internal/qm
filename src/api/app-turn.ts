@@ -22,6 +22,7 @@ import { errMessage } from "../util/errors.ts";
 import type { App, AppDeps } from "./app-types.ts";
 import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
 import { unscreenedNotice } from "../security/security-posture.ts";
+import { slackTurnRequiresEvidenceBuffer } from "../core/evidence-links.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
 import { privateTurnObservation, type PrivateTurnObservation } from "./private-turn-observer.ts";
@@ -478,12 +479,18 @@ export function createTurnMethods(
 
       const spineRouted = !req.approval && shouldRouteToSpine(request as OrchestratorInput);
       if (spineRouted) {
-        request = { ...input, surfaceTools: true };
+        const evidenceBufferedSlackTurn =
+          req.surface === "slack" &&
+          origin.kind === "human" &&
+          !req.unprompted &&
+          slackTurnRequiresEvidenceBuffer(req.displayText ?? req.text) &&
+          (!req.text.trimStart().startsWith("!") || (req.displayText !== undefined && req.displayText !== req.text));
+        request = { ...input, ...(evidenceBufferedSlackTurn ? {} : { surfaceTools: true }) };
         if (origin.kind !== "ambient")
           request = {
             ...request,
             text: await addressedWakeText(input as OrchestratorInput),
-            displayText: input.text,
+            displayText: input.displayText ?? input.text,
             envelopeWrapped: true,
           };
       }

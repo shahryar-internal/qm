@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collectNamedOutbound, collectOutbound, type ArtifactRegistration } from "../src/core/attachments.ts";
+import {
+  collectNamedOutbound,
+  collectOutbound,
+  collectWorkflowOutbound,
+  materializeWorkflowAttachment,
+  MAX_ATTACHMENT_BYTES,
+  type ArtifactRegistration,
+} from "../src/core/attachments.ts";
 import { createSurfaceToolDeps, type SurfaceToolsContext } from "../src/core/orchestrator/surface-tools.ts";
 import { createMemoryBlobTransferStore } from "../src/persistence/blob-transfer.ts";
 import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
@@ -233,6 +240,118 @@ test("collectOutbound: harvests every outbox file (the turn-result rail for a no
   ]);
   const r = await collectOutbound(sandbox, handle, transfer);
   assert.deepEqual(r.attachments.map((a) => a.name).sort(), ["cover.png", "leftover.txt"]);
+});
+
+test("collectWorkflowOutbound admits only bounded current-turn workflow artifacts", async () => {
+  const sandbox = fakeSandbox(
+    {
+      "outbox/brief.workflow.json": bytes('{"version":1}'),
+      "outbox/private.txt": bytes("must not leave"),
+    },
+    ["outbox/brief.workflow.json", "outbox/private.txt"],
+  );
+  const result = await collectWorkflowOutbound(sandbox, handle);
+  assert.deepEqual(
+    result.staged.map(({ attachment: { name, renderOnly } }) => ({ name, renderOnly })),
+    [{ name: "brief.workflow.json", renderOnly: true }],
+  );
+  assert.deepEqual(result.oversized, []);
+  assert.equal(result.dropped, 1);
+});
+
+test("collectWorkflowOutbound fails the bounded workflow batch closed on an oversized artifact", async () => {
+  const oversized = { length: MAX_ATTACHMENT_BYTES + 1 } as Uint8Array;
+  const sandbox = fakeSandbox(
+    {
+      "outbox/brief.workflow.json": bytes('{"version":1}'),
+      "outbox/huge.workflow.json": oversized,
+    },
+    ["outbox/brief.workflow.json", "outbox/huge.workflow.json"],
+  );
+  const result = await collectWorkflowOutbound(sandbox, handle);
+  assert.deepEqual(result.staged, []);
+  assert.deepEqual(result.oversized, ["outbox/huge.workflow.json"]);
+});
+
+test("a verified workflow blob put failure occurs before file or audience registration", async () => {
+  const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  let registrations = 0;
+  const staged = {
+    attachment: {
+      name: "brief.workflow.json",
+      mimetype: "application/vnd.qm.workflow-artifact+json;v=1",
+      sizeBytes: 13,
+      blobId: "staged:brief",
+      renderOnly: true,
+    },
+    bytes: Buffer.from('{"version":1}'),
+  } as const;
+  await assert.rejects(
+    () =>
+      materializeWorkflowAttachment(
+        staged,
+        {
+          async put() {
+            throw new Error("injected put failure");
+          },
+          async open() {
+            return null;
+          },
+          async delete() {},
+          async sweep() {
+            return 0;
+          },
+        },
+        {
+          store,
+          ownerScopeId: scopeId("personal", "U1"),
+          createdBy: "U1",
+          seed: "verified-put-failure",
+          async onRegistered() {
+            registrations++;
+          },
+        },
+        0,
+      ),
+    /injected put failure/,
+  );
+  assert.equal(registrations, 0);
+  assert.equal((await store.listOwnedByScopes([scopeId("personal", "U1")], { includeDisabled: true })).files.length, 0);
+});
+
+test("a verified workflow audience failure rolls back its file and transfer blob", async () => {
+  const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const transfer = createMemoryBlobTransferStore();
+  const staged = {
+    attachment: {
+      name: "brief.workflow.json",
+      mimetype: "application/vnd.qm.workflow-artifact+json;v=1",
+      sizeBytes: 13,
+      blobId: "staged:brief",
+      renderOnly: true,
+    },
+    bytes: Buffer.from('{"version":1}'),
+  } as const;
+  await assert.rejects(
+    () =>
+      materializeWorkflowAttachment(
+        staged,
+        transfer,
+        {
+          store,
+          ownerScopeId: scopeId("personal", "U1"),
+          createdBy: "U1",
+          seed: "verified-audience-failure",
+          async onRegistered() {
+            throw new Error("injected atomic audience failure");
+          },
+        },
+        0,
+      ),
+    /verified workflow artifact registration failed/,
+  );
+  assert.equal((await store.listOwnedByScopes([scopeId("personal", "U1")], { includeDisabled: true })).files.length, 0);
+  assert.equal(await transfer.sweep(0), 0);
 });
 
 test("surface post returns the sent attachments' metadata (so surfaces can render them)", async () => {

@@ -78,6 +78,7 @@ import {
   slackSurfaceInstructions,
   stripSlackDirectives,
 } from "./messaging.ts";
+import { enforceSlackEvidenceDelivery, slackEvidenceRequest } from "./evidence-delivery.ts";
 
 interface Incoming {
   kind: "dm" | "channel";
@@ -613,6 +614,8 @@ export function createTurnHandler(deps: {
       ...(inc.idempotencyKey ? { idempotencyKey: inc.idempotencyKey } : {}),
     };
     const turn: Omit<CoreTurnBody, "approval"> = inc.recovery?.turn ?? constructedTurn;
+    const bufferForEvidenceGate =
+      !inc.unprompted && !inc.synthetic && !actor.isBot && !actor.isExternalGuest && slackEvidenceRequest(text);
     const nativeSessionKey: SlackAgentSessionKey = {
       teamId: ids.ownTeamId,
       agentId: ids.agentId,
@@ -1006,7 +1009,7 @@ export function createTurnHandler(deps: {
           inc.ackGate?.persisted();
         },
         onSteered: () => inc.ackGate?.persisted(),
-        ...(ack
+        ...(ack && !bufferForEvidenceGate
           ? {
               onFirstBlock: (blockText: string) => {
                 ack.onFirstBlock(cleanAgentReplyForSlack(blockText).text);
@@ -1014,7 +1017,7 @@ export function createTurnHandler(deps: {
               onSurfacePosted: () => ack.onSurfacePosted(),
             }
           : {}),
-        ...(nativeAgent
+        ...(nativeAgent && !bufferForEvidenceGate
           ? {
               onDelta: (delta: string) => {
                 nativeAgent?.onDelta(delta);
@@ -1041,6 +1044,18 @@ export function createTurnHandler(deps: {
       result = inc.recovery
         ? await resumeRun(inc.recovery.claim.runId, runHooks)
         : await callCore({ ...turn, intakePreambleMs: Math.round(tSubmit - t0), clientSentAt: Date.now() }, runHooks);
+      if (bufferForEvidenceGate) {
+        const evidenceDelivery = await enforceSlackEvidenceDelivery(
+          text,
+          result,
+          fetchBlobFromCore,
+          fetchFileArtifactFromCore,
+        );
+        result = evidenceDelivery.result;
+        if (evidenceDelivery.blocked) {
+          console.error(`[slack-plugin] blocked incomplete evidence delivery reason=${evidenceDelivery.reason}`);
+        }
+      }
       await taskList?.settle();
     } catch (err) {
       if (presentationClaim) {

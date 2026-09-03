@@ -135,6 +135,11 @@ export interface ArtifactRegistration {
   onError?: (e: unknown) => void;
 }
 
+export interface StagedWorkflowAttachment {
+  attachment: OutgoingAttachment;
+  bytes: Buffer;
+}
+
 async function registerArtifact(
   reg: ArtifactRegistration,
   direction: FileDirection,
@@ -145,6 +150,8 @@ async function registerArtifact(
 ): Promise<
   { id: string; path: string; ownerScopeId: ScopeId; direction: FileDirection; created: boolean } | undefined
 > {
+  let registered:
+    { id: string; path: string; ownerScopeId: ScopeId; direction: FileDirection; created: boolean } | undefined;
   try {
     const id = fileArtifactId(reg.seed, direction, batchIndex);
     const path = `artifacts/${id}/${name}`;
@@ -160,10 +167,19 @@ async function registerArtifact(
       ...(reg.createdInScope ? { createdInScope: reg.createdInScope } : {}),
       maxBytes: MAX_ATTACHMENT_BYTES,
     });
-    const registered = { id, path, ownerScopeId: reg.ownerScopeId, direction, created };
+    registered = { id, path, ownerScopeId: reg.ownerScopeId, direction, created };
     await reg.onRegistered?.(registered);
     return registered;
   } catch (e) {
+    if (registered?.created) {
+      try {
+        await reg.store.delete(registered.id);
+      } catch (cleanupError) {
+        const failure = new AggregateError([e, cleanupError], "artifact registration rollback failed");
+        reg.onError?.(failure);
+        throw failure;
+      }
+    }
     reg.onError?.(e);
     return undefined;
   }
@@ -411,6 +427,81 @@ export async function collectOutbound(
     });
   }
   return { attachments, oversized, empty, dropped };
+}
+
+export async function collectWorkflowOutbound(
+  sandbox: Sandbox,
+  handle: SandboxHandle,
+  outboxDir = OUTBOX_DIR,
+): Promise<{ staged: StagedWorkflowAttachment[]; oversized: string[]; empty: string[]; dropped: number }> {
+  const paths = (await sandbox.listDir(handle, outboxDir)).sort();
+  const workflowPaths = paths.filter((path) => mimeFromName(basename(path)) === WORKFLOW_ARTIFACT_MIME);
+  const selected = workflowPaths.slice(0, MAX_OUTBOUND_FILES);
+  const staged: StagedWorkflowAttachment[] = [];
+  const oversized: string[] = [];
+  const empty: string[] = [];
+  for (const path of selected) {
+    const bytes = await sandbox.readFileBytes(handle, path);
+    if (!bytes || bytes.length === 0) {
+      empty.push(path);
+      continue;
+    }
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      oversized.push(path);
+      continue;
+    }
+    const name = safeAttachmentName(basename(path));
+    staged.push({
+      attachment: {
+        name,
+        mimetype: WORKFLOW_ARTIFACT_MIME,
+        sizeBytes: bytes.length,
+        blobId: `staged:${randomUUID()}`,
+        renderOnly: true,
+      },
+      bytes: Buffer.from(bytes),
+    });
+  }
+  if (oversized.length || empty.length) staged.length = 0;
+  return {
+    staged,
+    oversized,
+    empty,
+    dropped: paths.length - selected.length,
+  };
+}
+
+export async function materializeWorkflowAttachment(
+  staged: StagedWorkflowAttachment,
+  transfer: BlobTransferStore,
+  register: ArtifactRegistration,
+  batchIndex: number,
+): Promise<OutgoingAttachment> {
+  const { blobId } = await transfer.put(staged.bytes);
+  try {
+    const artifact = await registerArtifact(
+      register,
+      "out",
+      batchIndex,
+      staged.attachment.name,
+      staged.attachment.mimetype,
+      staged.bytes,
+    );
+    if (!artifact) throw new Error("verified workflow artifact registration failed");
+    return {
+      ...staged.attachment,
+      blobId,
+      artifactId: artifact.id,
+      artifactViewerId: register.createdBy,
+    };
+  } catch (e) {
+    try {
+      await transfer.delete(blobId);
+    } catch (cleanupError) {
+      throw new AggregateError([e, cleanupError], "workflow attachment rollback failed", { cause: cleanupError });
+    }
+    throw e;
+  }
 }
 
 export async function collectNamedOutbound(

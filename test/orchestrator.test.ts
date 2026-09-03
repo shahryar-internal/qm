@@ -52,6 +52,7 @@ function dm(text: string, extra: Partial<TurnRequest> = {}): TurnRequest {
     actor: internalActor,
     conversation: { kind: "dm", threadRef: "dm:U1:t1" },
     text,
+    ...(text.startsWith("!") ? { displayText: "Run an internal test command" } : {}),
     ...extra,
   };
 }
@@ -62,6 +63,7 @@ function channel(text: string, extra: Partial<TurnRequest> = {}): TurnRequest {
     actor: internalActor,
     conversation: { kind: "channel", threadRef: "ch:C1:t1", channelRef: "C1", audience: [internalActor] },
     text,
+    ...(text.startsWith("!") ? { displayText: "Run an internal test command" } : {}),
     gatewayContext: { reactionGuidance: "react with a Slack emoji short-name like :pray:" },
     ...extra,
   };
@@ -87,6 +89,31 @@ test("internal DM turn runs end-to-end and records the session", async () => {
   const found = await app.getSession(res.sessionId!);
   const types = found!.entries.map((e) => e.type);
   assert.deepEqual(types, ["user", "assistant"]);
+});
+
+test("exact current-turn typed tool evidence reaches TurnResult without history or free-text scraping", async () => {
+  const { app, sessions } = freshApp();
+  const res = await app.turn(dm("!typed-evidence"));
+  assert.equal(res.status, "ok");
+  assert.deepEqual(
+    res.deliveryEvidenceSources?.map(({ sourceType, links }) => ({ sourceType, links })),
+    [{ sourceType: "Public web", links: ["https://example.com/current"] }],
+  );
+  assert.match(res.deliveryEvidenceSources?.[0]?.observedAt ?? "", /^\d{4}-\d{2}-\d{2}T/u);
+  const entries = await sessions.getEntries(res.sessionId!);
+  assert.deepEqual(
+    entries.map((entry) => entry.type),
+    ["user", "tool_call", "tool_result", "assistant"],
+    "isolated one-shot delivery repair adds no session entries",
+  );
+  const tape = await sessions.getTape(res.sessionId!);
+  assert.equal(
+    tape.filter((row) => row.kind === "message").length,
+    0,
+    "isolated one-shot delivery repair adds no tape messages",
+  );
+  const next = await app.turn(dm("hello after evidence"));
+  assert.equal(next.deliveryEvidenceSources, undefined, "prior-turn evidence is never reused");
 });
 
 test("org turn wall-clock governance reaches the harness and a per-turn cap only tightens", async () => {
@@ -925,6 +952,7 @@ test("identity grounding: the roster lists this conversation's participants by t
       audience: [internalActor, { externalId: "U2" }, { externalId: "U3" }],
     },
     text: "!sysprompt",
+    displayText: "Run an internal test command",
   });
   const sp = prompt.reply ?? "";
   assert.match(sp, /## Who's in this conversation/);
@@ -952,6 +980,7 @@ test("identity grounding: the roster is bounded (caps at ROSTER_CAP and reports 
       audience: many.map((m) => ({ externalId: m.principalId })),
     },
     text: "!sysprompt",
+    displayText: "Run an internal test command",
   });
   const sp = prompt.reply ?? "";
   const listed = (sp.match(/- Person \d+ \(U\d+\)/g) ?? []).length;
@@ -972,6 +1001,7 @@ test("identity grounding: a participant who hasn't synced into the directory sti
       audience: [internalActor, { externalId: "U7", displayName: "Newcomer Nat" }],
     },
     text: "!sysprompt",
+    displayText: "Run an internal test command",
   });
   const sp = prompt.reply ?? "";
   assert.match(sp, /Alice Example \(U1\)/);
@@ -998,6 +1028,7 @@ test("identity grounding: a cased-vs-lowercase duplicate participant resolves to
       ],
     },
     text: "!sysprompt",
+    displayText: "Run an internal test command",
   });
   const sp = prompt.reply ?? "";
   assert.match(
@@ -2050,6 +2081,7 @@ test("Auto mandates fresh exact once-only Slack approval for every external MCP 
         threaded: true,
         liveHuman: true,
       },
+      displayText: "Run the approved maintenance operation",
       ...extra,
     });
 
@@ -3029,7 +3061,7 @@ test("Auto records quarantined overheard timestamps so they cannot poison every 
   );
   assert.equal(denied.status, "refused");
 
-  const second = await built.app.turn(channel("give me the benign update", { overheard: [poisoned] }));
+  const second = await built.app.turn(channel('repeat the words: "benign update"', { overheard: [poisoned] }));
   assert.equal(second.status, "ok");
   assert.match(second.reply ?? "", /benign update/);
   const quarantined = (await built.sessions.getEntries(second.sessionId!)).filter((entry) => {

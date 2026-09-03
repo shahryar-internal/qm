@@ -306,7 +306,9 @@ test("'This machine' renders the substrate profile's spec; no resize menu render
 test("Slack turns get the terse-response style instruction; other surfaces do not", async () => {
   const { orchestrator: orch } = buildOrchestrator();
 
-  const slack = await orch.handleTurn(slackDm("dm:U1:slack-style", "!sysprompt"));
+  const slack = await orch.handleTurn(
+    slackDm("dm:U1:slack-style", "!sysprompt", { displayText: "Run an internal test command" }),
+  );
   assert.equal(slack.status, "ok");
   assert.doesNotMatch(slack.reply ?? "", /## Talking on Slack/);
   assert.match(slack.reply ?? "", /This is Slack: keep each reply to a couple of sentences/);
@@ -316,10 +318,13 @@ test("Slack turns get the terse-response style instruction; other surfaces do no
   assert.match(slack.reply ?? "", /MUST also deliver/);
   assert.match(slack.reply ?? "", /every evidence-based answer and card/);
   assert.match(slack.reply ?? "", /source type, observed or as-of time/);
-  assert.match(slack.reply ?? "", /current-run checked\/as-of time/);
-  assert.match(slack.reply ?? "", /publication or update date/);
-  assert.match(slack.reply ?? "", /access-controlled deep link supplied by Notion, Clarify, Gmail, Calendar/);
-  assert.match(slack.reply ?? "", /never construct or guess one/);
+  assert.match(slack.reply ?? "", /source registry does not carry trusted public publication dates/);
+  assert.match(slack.reply ?? "", /Publication date unavailable · Freshness: unverified/);
+  assert.match(slack.reply ?? "", /Source: <type> · Observed:/);
+  assert.match(slack.reply ?? "", /safe HTTPS receipt, insight, or dashboard URL/);
+  assert.match(slack.reply ?? "", /opaque receipt identifier or hash never does/);
+  assert.match(slack.reply ?? "", /access-controlled deep link returned by Notion, Clarify, Gmail, Calendar/);
+  assert.match(slack.reply ?? "", /never construct or guess a URL/iu);
   assert.match(slack.reply ?? "", /link `unavailable` explicitly/);
   assert.match(slack.reply ?? "", /Do not expose raw JSON or arrays/);
 
