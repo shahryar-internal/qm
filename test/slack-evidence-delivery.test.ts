@@ -76,6 +76,16 @@ test("acknowledgements, non-evidence turns, and approval controls are exempt", a
   };
   const plain = result({ reply: "You're welcome.", attachments: undefined, deliveryEvidenceSources: undefined });
   assert.equal((await enforceSlackEvidenceDelivery("Thanks!", plain, fetch)).blocked, false);
+  assert.equal((await enforceSlackEvidenceDelivery("Hello channel", plain, fetch)).blocked, false);
+  const stopped = await enforceSlackEvidenceDelivery(
+    "Report current pricing",
+    { ...plain, stopped: true, attachments: [attachment] },
+    fetch,
+  );
+  assert.equal(stopped.blocked, false);
+  assert.equal(stopped.result.status, "silent");
+  assert.equal(stopped.result.reply, undefined);
+  assert.equal(stopped.result.attachments, undefined);
   assert.equal((await enforceSlackEvidenceDelivery("Draft a friendly greeting", plain, fetch)).blocked, false);
   assert.equal(
     (await enforceSlackEvidenceDelivery("Write a friendly email inviting Sam to lunch", plain, fetch)).blocked,

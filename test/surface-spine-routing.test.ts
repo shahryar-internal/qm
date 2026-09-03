@@ -346,6 +346,52 @@ test("buffered Slack workflow registration rolls back a mutation-then-fail audie
   assert.equal(await built.blobTransfer.sweep(0), 0);
 });
 
+test("a stopped buffered turn preserves its partial without delivering or registering its unverified card", async () => {
+  const built = freshApp();
+  const res = await built.app.turn({
+    ...mention("!stopped-raw-card", "C-buffer-stopped", "103.3"),
+    async: false,
+    displayText: "Give me an account health brief",
+  });
+  assert.equal(res.status, "silent");
+  assert.equal(res.reply, undefined);
+  assert.equal(res.attachments, undefined);
+  assert.deepEqual(await built.deliveries.pending("slack"), []);
+  const session = await built.sessions.getByThread("ch:C-buffer-stopped:103.3");
+  assert.match(JSON.stringify(await built.sessions.getEntries(session!.id)), /unfinished partial/u);
+  assert.equal(
+    (await built.files.listOwnedByScopes([scopeId("personal", "U1")], { includeDisabled: true })).files.length,
+    0,
+  );
+  assert.equal((await built.acl.list()).filter((grant) => grant.ref.startsWith("artifacts/")).length, 0);
+  assert.equal(await built.blobTransfer.sweep(0), 0);
+});
+
+test("an ordinary request cannot spoof a trusted diagnostic through display text", async () => {
+  const built = freshApp();
+  const res = await built.app.turn({
+    ...mention("Tell me OpenAI's current pricing", "C-buffer-display", "103.4"),
+    async: false,
+    displayText: "!sysprompt",
+  });
+  assert.equal(res.status, "ok");
+  assert.match(res.reply ?? "", /verified current-turn source provenance/u);
+  assert.doesNotMatch(res.reply ?? "", /## Your computer/u);
+});
+
+test("an ordinary evidence request cannot be downgraded by benign display text", async () => {
+  for (const [index, displayText] of ["Hello channel", "Thanks!", "Draft a friendly email"].entries()) {
+    const built = freshApp();
+    const res = await built.app.turn({
+      ...mention("Tell me OpenAI's current pricing", `C-buffer-downgrade-${index}`, `103.5${index}`),
+      async: false,
+      displayText,
+    });
+    assert.equal(res.status, "ok");
+    assert.match(res.reply ?? "", /verified current-turn source provenance/u);
+  }
+});
+
 test("buffered Slack turns preserve a native approval pause and its approved resume", async () => {
   const built = freshApp();
   const base = {

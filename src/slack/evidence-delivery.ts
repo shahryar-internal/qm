@@ -41,7 +41,7 @@ const CREATIVE_REQUESTS = [
 const ACTION_REQUEST =
   /^(?:(?:please\s+)?|(?:can|could|would) you (?:please\s+)?)(?:(?:schedule|reschedule|cancel)\s+(?:(?:a|the)\s+)?(?:calendar event|invite|meeting)(?:\s+with\s+[\p{Lu}][\p{L}.'-]{0,40}(?:\s+and\s+[\p{Lu}][\p{L}.'-]{0,40})?)?|(?:send|post|upload)\s+(?:(?:a|an|the)\s+)?(?:(?:approved|reviewed)\s+)?(?:card|draft|e-?mail|file|message)|update\s+(?:(?:a|the)\s+)?(?:Notion plan|page|record|setting|task)|(?:run|execute|perform)\s+(?:(?:a|an|the)\s+)?(?:(?:approved|reviewed)\s+)?(?:internal\s+)?(?:maintenance\s+)?(?:command|operation|test(?:\s+command)?)|deploy\s+(?:(?:a|the)\s+)?(?:(?:approved|reviewed)\s+)?(?:deployment|release)|create\s+(?:(?:a|an|the)\s+)?(?:calendar event|draft|invite|sample JSON file|task))\s*[.!?]*$/iu;
 const SOCIAL_REQUEST =
-  /^(?:good (?:afternoon|evening|morning)|hello|hey|hi|howdy)(?:[ ,]+(?:agent|assistant|bot|there))?[?!.\s]*$|^(?:nice to meet you|tell me a joke)[?!.\s]*$/iu;
+  /^(?:good (?:afternoon|evening|morning)|hello|hey|hi|howdy)(?:[ ,]+(?:agent|assistant|bot|channel|everyone|team|there))?[?!.\s]*$|^(?:nice to meet you|tell me a joke)[?!.\s]*$/iu;
 const BOUNDED_OPERATIONAL_REQUEST =
   /^(?:and also this|ask [\p{L}\p{N}_.-]{1,80}|collaborate|first ask|(?:continue|finish|resume|retry) (?:it|this|the (?:job|task|work))(?: after restart)?|(?:new )?work|(?:prepare|retry) (?:a |an |the )?(?:delayed |private )?export)$/iu;
 const SUBSTANTIAL_REQUEST =
@@ -229,6 +229,9 @@ export async function enforceSlackEvidenceDelivery(
   fetchBlob: (blobId: string) => Promise<Buffer>,
   fetchArtifact?: (artifactId: string, viewerId: string) => Promise<Buffer>,
 ): Promise<{ result: TurnResult; blocked: boolean; reason?: string }> {
+  if (result.stopped) {
+    return { result: { status: "silent", sessionId: result.sessionId, stopped: true }, blocked: false };
+  }
   if (
     result.status !== "ok" ||
     result.pendingApprovals?.length ||
