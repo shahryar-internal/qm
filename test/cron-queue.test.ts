@@ -1,17 +1,20 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { createScheduler, type Scheduler } from "../src/cron/scheduler.ts";
-import { createPgBossCronQueue } from "../src/cron/job-queue.ts";
+import { createPgBossCronQueue, type CronFireJob } from "../src/cron/job-queue.ts";
 import { createCronStore, type CronStore } from "../src/cron/cron-store.ts";
 import { createPostgresCronFireStore } from "../src/cron/cron-fire-store.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createIdempotencyStore, type IdempotencyRecord } from "../src/idempotency/idempotency-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
+import { configurePgCaTrust, pgCaOptions } from "../src/persistence/pg-pool.ts";
 import { scopeId, type Cron, type TurnRequest, type TurnResult } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
+const CA_CERT = process.env.DATABASE_CA_CERT;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the cron queue tests";
+const skipTls = URL && CA_CERT ? false : "set DATABASE_URL and DATABASE_CA_CERT to run the verified TLS test";
 
 const SCHEMA = "pgboss_cron_queue_test";
 const CRONS_TABLE = "cron_queue_test_crons";
@@ -20,11 +23,23 @@ const FIRES_TABLE = "cron_queue_test_fires";
 
 before(async () => {
   if (!URL) return;
+  configurePgCaTrust(CA_CERT ? { cert: CA_CERT } : {});
   const pg = (await import("pg")).default;
-  const p = new pg.Pool({ connectionString: URL });
+  const p = new pg.Pool({ connectionString: URL!, ...pgCaOptions() });
   await p.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
   await p.query(`DROP TABLE IF EXISTS ${CRONS_TABLE}, ${IDEM_TABLE}, ${FIRES_TABLE}`);
   await p.end();
+});
+
+test("the PostgreSQL queue fixture uses TLS when custom CA trust is configured", { skip: skipTls }, async () => {
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL, ...pgCaOptions() });
+  try {
+    const result = await p.query<{ ssl: boolean }>("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()");
+    assert.equal(result.rows[0]?.ssl, true);
+  } finally {
+    await p.end();
+  }
 });
 
 async function until(cond: () => boolean, ms: number): Promise<void> {
@@ -119,3 +134,59 @@ test(
     }
   },
 );
+
+test(
+  "pg-boss queue: an acknowledged queued fire survives an instance restart and is replayed once",
+  { skip, timeout: 120_000 },
+  async () => {
+    const fires: CronFireJob[] = [];
+    const handlers = {
+      onFire: async (job: CronFireJob) => {
+        fires.push(job);
+      },
+      onTick: async () => {},
+    };
+    const job = { cronId: "restart-replay", scheduledAt: Date.now() + 4000 };
+    const a = createPgBossCronQueue(URL ?? "", SCHEMA);
+    await a.start(handlers, 1000);
+    await a.enqueueFire(job);
+    await a.stop();
+
+    const b = createPgBossCronQueue(URL ?? "", SCHEMA);
+    await b.start(handlers, 1000);
+    try {
+      await until(() => fires.length === 1, 30_000);
+      assert.deepEqual(fires, [job], "the acknowledged durable fire is replayed by the replacement instance");
+      await new Promise((r) => setTimeout(r, 3000));
+      assert.equal(fires.length, 1, "the replacement instance does not replay the same fire twice");
+    } finally {
+      await b.stop();
+    }
+  },
+);
+
+test("pg-boss queue: disabling a cron invalidates an already queued fire", { skip, timeout: 120_000 }, async () => {
+  const calls: TurnRequest[] = [];
+  const a = instance(calls);
+  const b = instance(calls);
+  a.scheduler.start(1000);
+  b.scheduler.start(1000);
+  try {
+    const cron = await a.crons.create({
+      schedule: { firstFireAt: Date.now() + 5000 },
+      action: "do not run after cancellation",
+      owner: "U3",
+      createdBy: "U3",
+      ownerScopeId: scopeId("personal", "U3"),
+    });
+    await new Promise((r) => setTimeout(r, 2500));
+    await b.crons.update(cron.id, { enabled: false });
+    await new Promise((r) => setTimeout(r, 5000));
+    assert.equal(calls.length, 0, "a disabled cron does not run its stale durable queue entry");
+    assert.equal((await a.crons.getRuns(cron.id)).runs.length, 0);
+  } finally {
+    a.scheduler.stop();
+    b.scheduler.stop();
+    await new Promise((r) => setTimeout(r, 500));
+  }
+});
