@@ -114,7 +114,7 @@ test("a forced dev runtime ignores durable choices and refuses per-request provi
       undefined,
       fallback,
     ),
-    /runtime is fixed to pi\/gemini-3\.7-flash/,
+    /runtime is fixed to pi\/gemini-3\.8-flash/,
   );
 });
 

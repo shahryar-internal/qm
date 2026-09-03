@@ -1,13 +1,13 @@
 import type { CustomProviderSpec } from "./custom-providers.ts";
 
 export const DEV_GEMINI_PROVIDER_ID = "google-gemini-dev";
-export const DEV_GEMINI_MODEL = "gemini-3.7-flash";
+export const DEV_GEMINI_MODEL = "gemini-3.8-flash";
 export const DEV_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 export const DEV_GEMINI_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
 export const DEV_GEMINI_COMPAT = {
   supportsStore: false,
   supportsDeveloperRole: false,
-  supportsReasoningEffort: false,
+  supportsReasoningEffort: true,
   supportsUsageInStreaming: false,
   supportsStrictMode: false,
   maxTokensField: "max_tokens",
@@ -33,6 +33,9 @@ export function normalizeDevGeminiPayload(payload: unknown): unknown {
   const normalized = structuredClone(payload) as Record<string, unknown>;
   delete normalized.store;
   delete normalized.stream_options;
+  delete normalized.temperature;
+  delete normalized.top_p;
+  delete normalized.top_k;
   if (normalized.max_completion_tokens !== undefined && normalized.max_tokens === undefined) {
     normalized.max_tokens = normalized.max_completion_tokens;
   }
@@ -99,7 +102,7 @@ export function devGeminiProviderFromEnv(env: NodeJS.ProcessEnv): DevGeminiProvi
       models: [
         {
           id: model,
-          name: "Gemini 3.7 Flash",
+          name: "Gemini 3.8 Flash",
           contextWindow: 1_048_576,
           maxTokens: 65_536,
           input: 0.75,

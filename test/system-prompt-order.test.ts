@@ -310,11 +310,15 @@ test("Slack turns get the terse-response style instruction; other surfaces do no
   assert.equal(slack.status, "ok");
   assert.doesNotMatch(slack.reply ?? "", /## Talking on Slack/);
   assert.match(slack.reply ?? "", /This is Slack: keep each reply to a couple of sentences/);
+  assert.match(slack.reply ?? "", /separate internal evidence from public evidence/);
+  assert.match(slack.reply ?? "", /qm\.card\.v1/);
+  assert.match(slack.reply ?? "", /Do not expose raw JSON or arrays/);
 
   const nonSlack = await orch.handleTurn(dm("dm:U1:non-slack-style", "!sysprompt"));
   assert.equal(nonSlack.status, "ok");
   assert.doesNotMatch(nonSlack.reply ?? "", /## Talking on Slack/);
   assert.doesNotMatch(nonSlack.reply ?? "", /a couple of sentences/);
+  assert.doesNotMatch(nonSlack.reply ?? "", /qm\.card\.v1/);
 });
 test("a project session names its linked Slack home channel; unlinked projects get no block", async () => {
   const managedGroups = {
