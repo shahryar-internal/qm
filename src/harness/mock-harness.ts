@@ -209,6 +209,97 @@ export function createMockHarness(): Harness {
 
         if (turn.readOnly && READ_ONLY_BLOCKED_PREFIXES.some((prefix) => command0.startsWith(prefix))) {
           reply = "[strict/read-only posture: that tool is unavailable]";
+        } else if (command0 === "!typed-evidence" || command0 === "!typed-evidence-raw-card") {
+          await turn.emit({
+            type: "tool_call",
+            payload: { tool: "web_search", callId: "typed-evidence-call" },
+            scopeLabel: turn.scopeLabel,
+          });
+          await turn.emit({
+            type: "tool_result",
+            payload: {
+              tool: "web_search",
+              callId: "typed-evidence-call",
+              isError: false,
+              result: JSON.stringify({ answer: "Current answer", citations: [] }),
+              evidence: {
+                version: "qm.typed-tool-evidence.v1",
+                sourceType: "Public web",
+                links: ["https://example.com/current"],
+              },
+            },
+            scopeLabel: turn.scopeLabel,
+          });
+          usedTool = true;
+          if (command0 === "!typed-evidence-raw-card") {
+            await turn.tools.execute(
+              `mkdir -p "$AGENT_OUTBOX" && printf %s ${JSON.stringify('{"query_id":"private","results":[1]}')} > "$AGENT_OUTBOX/raw.workflow.json"`,
+            );
+            reply =
+              "query_id=private. Source: Public web · Observed: " +
+              `${new Date().toISOString().slice(0, 10)} · Link: https://example.com/current`;
+          } else {
+            reply =
+              "Current answer. Publication date unavailable · Freshness: unverified. Source: Public web · Observed: " +
+              `${new Date().toISOString().slice(0, 10)} · Link: https://example.com/current`;
+          }
+        } else if (command0 === "!typed-mcp-evidence") {
+          await turn.tape?.({
+            kind: "message",
+            harness: "mock",
+            payload: { role: "user", content: [{ type: "text", text: turn.input }] },
+            scopeLabel: turn.scopeLabel,
+            entrySeq: userEntry.seq,
+            meta: { bareText: turn.input },
+          });
+          await turn.tape?.({
+            kind: "message",
+            harness: "mock",
+            payload: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "query_id=tape-private" },
+                { type: "toolCall", id: "typed-mcp-evidence-call", name: "notion_read_page", arguments: {} },
+              ],
+            },
+            scopeLabel: turn.scopeLabel,
+          });
+          await turn.emit({
+            type: "tool_call",
+            payload: { tool: "notion_read_page", mcpServer: "notion", callId: "typed-mcp-evidence-call" },
+            scopeLabel: turn.scopeLabel,
+          });
+          await turn.emit({
+            type: "tool_result",
+            payload: {
+              tool: "notion_read_page",
+              mcpServer: "notion",
+              callId: "typed-mcp-evidence-call",
+              isError: false,
+              result: JSON.stringify({ page: { title: "Current plan" } }),
+              evidence: {
+                version: "qm.typed-tool-evidence.v1",
+                sourceType: "Notion",
+                links: ["https://notion.example/current"],
+              },
+            },
+            scopeLabel: turn.scopeLabel,
+          });
+          await turn.tape?.({
+            kind: "message",
+            harness: "mock",
+            payload: {
+              role: "toolResult",
+              toolCallId: "typed-mcp-evidence-call",
+              toolName: "notion_read_page",
+              content: [{ type: "text", text: "Current plan" }],
+            },
+            scopeLabel: turn.scopeLabel,
+          });
+          usedTool = true;
+          reply =
+            "The current plan is available. Source: Notion · Observed: " +
+            `${new Date().toISOString().slice(0, 10)} · Link: https://notion.example/current`;
         } else if (command0 === "!boom") {
           throw new Error("boom: simulated turn fault");
         } else if (command0 === "!boom-always" || boomAlwaysSessions.has(turn.session.id)) {
@@ -461,6 +552,24 @@ export function createMockHarness(): Harness {
           }
           turn.onProgress?.({ toolCalls: 1 });
           usedTool = true;
+        } else if (command0 === "!approval-raw-card") {
+          const command = "rm /tmp/qm-approval-raw-card-fixture-never-created";
+          await turn.emit({
+            type: "tool_call",
+            payload: { tool: "execute", command, blocked: "needs_approval" },
+            scopeLabel: turn.scopeLabel,
+          });
+          if (gateTool("execute", { command })) {
+            await turn.tools.execute(
+              `mkdir -p "$AGENT_OUTBOX" && printf %s ${JSON.stringify('{"query_id":"approval-private"}')} > "$AGENT_OUTBOX/approval.workflow.json"`,
+            );
+            reply = "query_id=approval-private";
+          } else {
+            const executed = await turn.tools.execute(command);
+            await turn.emit({ type: "tool_result", payload: executed, scopeLabel: turn.scopeLabel });
+            reply = "Approved maintenance completed.";
+          }
+          usedTool = true;
         } else if (command0.startsWith("!paused-approval ")) {
           const command = command0.slice("!paused-approval ".length);
           await turn.emit({
@@ -561,6 +670,13 @@ export function createMockHarness(): Harness {
             usedTool = true;
             reply = `wrote ${path}`;
           }
+        } else if (command0.startsWith("!writequiet-pair ")) {
+          const data = command0.slice("!writequiet-pair ".length);
+          await turn.tools.execute(
+            `mkdir -p "$AGENT_OUTBOX" && printf %s ${JSON.stringify(data)} > "$AGENT_OUTBOX/creative.workflow.json" && printf %s ignored > "$AGENT_OUTBOX/private.txt"`,
+          );
+          usedTool = true;
+          reply = "";
         } else if (command0.startsWith("!writequiet ")) {
           const rest = command0.slice("!writequiet ".length);
           const sp = rest.indexOf(" ");
@@ -855,6 +971,43 @@ export function createMockHarness(): Harness {
       },
 
       oneShot(systemPrompt: string, prompt: string): Promise<string | undefined> {
+        if (systemPrompt.startsWith("You repair presentation only")) {
+          const parsed = JSON.parse(prompt) as {
+            evidence?: Array<{ sourceType?: string; observedAt?: string; links?: string[] }>;
+          };
+          const evidence = parsed.evidence?.find((item) => item.sourceType === "Public web");
+          const observed = evidence?.observedAt?.slice(0, 10) ?? "1970-01-01";
+          const link = evidence?.links?.[0] ?? "unavailable";
+          const suffix = `Source: Public web · Observed: ${observed} · Link: ${link}`;
+          return Promise.resolve(
+            JSON.stringify({
+              reply: `Current answer. Publication date unavailable · Freshness: unverified. ${suffix}`,
+              card: {
+                version: 1,
+                renderer: "qm.card.v1",
+                fallbackText: "Account Health",
+                payload: {
+                  heading: "Account Health",
+                  summary: `Current answer. Publication date unavailable · Freshness: unverified. ${suffix}`,
+                  status: { label: "Insufficient evidence", tone: "neutral" },
+                  sections: [
+                    {
+                      key: "evidence",
+                      label: "Evidence",
+                      items: [
+                        {
+                          label: `Public web · ${observed}`,
+                          value: "Current answer. Publication date unavailable · Freshness: unverified.",
+                          href: link,
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            }),
+          );
+        }
         if (systemPrompt.startsWith("You extract durable facts worth remembering")) {
           const facts: string[] = [];
           for (const match of prompt.matchAll(/User said:\n([\s\S]*?)\n\nAssistant replied:/g)) {

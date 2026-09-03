@@ -3,6 +3,7 @@ import type {
   DeliveryProvenance,
   Destination,
   EntryType,
+  OutgoingAttachment,
   ScopeId,
   Session,
   SessionEntry,
@@ -14,6 +15,9 @@ import type {
 import { scopeId as toScopeId, personalScope } from "../types.ts";
 import { turnOriginRequestFields } from "./turn-origin.ts";
 import { resolveTurnFastMode } from "./turn-options.ts";
+import { persistedEvidenceFromToolResult, type DeliveryEvidenceSource } from "./evidence-links.ts";
+import { enforceAndRepairEvidenceDelivery } from "./evidence-delivery-repair.ts";
+import { WORKFLOW_ARTIFACT_MIME } from "../../plugins/chassis/src/workflow-artifact.ts";
 import { orgId } from "../config.ts";
 import { renderGatewayContext } from "./gateway-context.ts";
 import { deriveTurnOutcome, approvalBlocksInput } from "./turn-outcome.ts";
@@ -23,9 +27,9 @@ import { resolveReachableChannel } from "../resolution/scope-reach.ts";
 import { reachEnqueue } from "../reach/reach.ts";
 import type { DirectoryStore, DirectoryChannel, DirectoryMember } from "../directory/directory-store.ts";
 import { resolveEnvironmentId } from "../environments/environment-store.ts";
-import type { GapPhase, LeaseAttempt, SessionStore } from "../sessions/session-store.ts";
+import type { GapPhase, LeaseAttempt, NewEntry, NewTapeRecord, SessionStore } from "../sessions/session-store.ts";
 import { isOverheardEntry } from "../sessions/session-store.ts";
-import { supportsProcessSessions, supportsScopeProfile } from "../sandbox/sandbox.ts";
+import { supportsProcessSessions, supportsScopeProfile, type SandboxHandle } from "../sandbox/sandbox.ts";
 import { createBackgroundBroker } from "../connectors/background-exec-broker.ts";
 import { createMonitorBroker, readBackgroundOutputTail } from "../monitors/monitor-broker.ts";
 import { isPollSurface, isSilentPollReply } from "../triggers/run-trigger.ts";
@@ -106,6 +110,7 @@ import {
   SHARED_DIR,
   TURN_FILES_DIR,
   collectOutbound,
+  collectWorkflowOutbound,
   deliveryManifest,
   environmentNote,
   fileEventPayload,
@@ -113,8 +118,10 @@ import {
   inboundManifest,
   isVisionAttachment,
   MAX_HISTORY_IMAGE_BYTES,
+  materializeWorkflowAttachment,
   materializeInbound,
   recentDeliveryNote,
+  type StagedWorkflowAttachment,
   safeAttachmentName,
   senderNote,
   sharedFilesSystemSection,
@@ -193,6 +200,7 @@ function knownBrowseModel(id: string | null | undefined): { id: string; provider
 const SHARED_CORE_MD = loadProtocolFile("shared-core");
 const MODE_CONVERSATION_MD = loadProtocolFile("mode-conversation");
 const MODE_AUTONOMOUS_MD = loadProtocolFile("mode-autonomous");
+const MODE_BUFFERED_SLACK_MD = loadProtocolFile("mode-buffered-slack");
 const MODE_FALLBACK_MD = loadProtocolFile("mode-fallback");
 
 const FIRST_BLOCK_CAPTURE_MAX_CHARS = 20_000;
@@ -911,15 +919,26 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const orgName = branding.orgName ?? "this organization";
       const rawHandle = cleanBrandingLabel(input.gatewayContext?.botHandle?.replace(/^@/, ""), 40);
       const botHandle = rawHandle && rawHandle.toLowerCase() !== botName.toLowerCase() ? rawHandle : undefined;
+      const bufferedSlackTurn = isSlack && !input.surfaceTools;
       let modeName = "mode-fallback";
-      if (input.surfaceTools) modeName = "mode-autonomous";
+      if (bufferedSlackTurn) modeName = "mode-buffered-slack";
+      else if (input.surfaceTools) modeName = "mode-autonomous";
       else if (!automatedTurn && (conversation.kind === "dm" || isWeb)) modeName = "mode-conversation";
       let frameMd = MODE_FALLBACK_MD;
       if (modeName === "mode-autonomous") frameMd = MODE_AUTONOMOUS_MD;
+      else if (modeName === "mode-buffered-slack") frameMd = MODE_BUFFERED_SLACK_MD;
       else if (modeName === "mode-conversation") frameMd = MODE_CONVERSATION_MD;
       let frameVars: PromptVars = {};
       if (modeName === "mode-autonomous") {
         frameVars = { botName, surfaceTool, slack: isSlack };
+      } else if (modeName === "mode-buffered-slack") {
+        frameVars = {
+          botName,
+          userName: cleanBrandingLabel(actor.displayName, 80) ?? "there",
+          userEmail: conversation.kind === "dm" && actor.id.includes("@") ? actor.id : undefined,
+          dm: conversation.kind === "dm",
+          channel: conversation.kind !== "dm",
+        };
       } else if (modeName === "mode-conversation") {
         frameVars = {
           botName,
@@ -1880,14 +1899,46 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(fileGrantees.length
             ? {
                 onRegistered: async ({ ownerScopeId, path }) => {
+                  const current = await deps.acl.grantsFor(ownerScopeId, path);
+                  const replacement = [...current];
                   for (const granteeScopeId of fileGrantees) {
-                    await deps.acl.grant({
+                    if (replacement.some((grant) => grant.granteeScopeId === granteeScopeId)) continue;
+                    replacement.push({
                       ownerScopeId,
                       ref: path,
                       granteeScopeId,
                       permission: "read",
                       grantedBy: actor.id,
                     });
+                  }
+                  const signature = (grants: typeof current) =>
+                    grants
+                      .map(
+                        (grant) =>
+                          `${grant.ownerScopeId}\n${grant.ref}\n${grant.granteeScopeId}\n${grant.permission}\n${grant.grantedBy}`,
+                      )
+                      .sort()
+                      .join("\n---\n");
+                  try {
+                    if (!(await deps.acl.replaceGrantsIfCurrent(ownerScopeId, path, current, replacement, actor.id))) {
+                      throw new Error("file audience changed during atomic registration");
+                    }
+                  } catch (e) {
+                    const observed = await deps.acl.grantsFor(ownerScopeId, path);
+                    if (signature(observed) === signature(replacement)) {
+                      if (!(await deps.acl.replaceGrantsIfCurrent(ownerScopeId, path, observed, current, actor.id))) {
+                        const cleanupError = new Error("file audience rollback lost its compare-and-swap");
+                        throw new AggregateError([e, cleanupError], "file audience rollback failed", {
+                          cause: e,
+                        });
+                      }
+                    } else if (signature(observed) !== signature(current)) {
+                      const cleanupError = new Error("file audience rollback encountered an unknown grant set");
+                      throw new AggregateError([e, cleanupError], "file audience rollback failed", {
+                        cause: e,
+                      });
+                    }
+                    throw e;
                   }
                 },
               }
@@ -2426,6 +2477,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let firstChunkAt: number | undefined;
         let lastChunkAt: number | undefined;
         const emittedEntries: SessionEntry[] = [];
+        let bufferedAssistantEntry: NewEntry | undefined;
+        const bufferedTapeRecords: NewTapeRecord[] = [];
+        const deliveryEvidenceSources = new Map<string, DeliveryEvidenceSource>();
         const syntheticPrompt =
           (input.proactiveOpener && !input.text.trim()) || automatedTurn || partial || approvalReplay;
         failureUserPayload =
@@ -2438,7 +2492,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : undefined;
         const earlyTitleGen: Promise<string | undefined> | undefined =
-          humanTurn && !session.title && !syntheticPrompt && input.text.trim()
+          humanTurn && !bufferedSlackTurn && !session.title && !syntheticPrompt && input.text.trim()
             ? generateAndStoreTitle(session.id, scopeId, `User:\n${stripTurnBoilerplate(input.text)}`)
             : undefined;
         const requestedTurnWallClockMs =
@@ -2712,6 +2766,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 }
               : {}),
             tape: (rec) => {
+              const tapeRole = (rec.payload as { role?: unknown } | null)?.role;
+              if (
+                bufferedSlackTurn &&
+                ((rec.kind === "message" && (tapeRole === "assistant" || tapeRole === "toolResult")) ||
+                  (rec.kind === "annotation" && (rec.payload as { subturnEnd?: unknown } | null)?.subturnEnd === true))
+              ) {
+                if (rec.kind === "message") bufferedTapeRecords.push(rec);
+                return Promise.resolve();
+              }
               if (rec.kind !== "message" || rec.meta?.bareText === undefined) {
                 return withManagedRosterVersion(() => deps.sessions.appendTape(lease, rec));
               }
@@ -2723,6 +2786,19 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               return withManagedRosterVersion(() => deps.sessions.appendTape(lease, { ...rec, meta }));
             },
             emit: async (entry) => {
+              if (bufferedSlackTurn && (entry.type === "assistant" || entry.type === "text")) {
+                if (entry.type === "assistant") bufferedAssistantEntry = entry;
+                const prior = emittedEntries.at(-1);
+                return {
+                  sessionId: session.id,
+                  seq: prior?.seq ?? partial?.userSeq ?? 0,
+                  parentSeq: prior?.seq ?? null,
+                  type: entry.type,
+                  payload: { text: "" },
+                  scopeLabel: entry.scopeLabel,
+                  createdAt: Date.now(),
+                };
+              }
               const persistStart = Date.now();
               try {
                 const stored = (() => {
@@ -2741,6 +2817,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 })();
                 const appended = await withManagedRosterVersion(() => deps.sessions.append(lease, stored));
                 emittedEntries.push(appended);
+                if (appended.type === "tool_result") {
+                  const evidence = persistedEvidenceFromToolResult(appended.payload);
+                  if (evidence) {
+                    const prior = deliveryEvidenceSources.get(evidence.sourceType);
+                    deliveryEvidenceSources.set(evidence.sourceType, {
+                      sourceType: evidence.sourceType,
+                      observedAt: new Date(appended.createdAt).toISOString(),
+                      links: [...new Set([...(prior?.links ?? []), ...evidence.links])].sort(),
+                    });
+                  }
+                }
                 if (appended.type === "user" && spine.turnUserEntrySeq === undefined)
                   spine.turnUserEntrySeq = appended.seq;
                 if (appended.type === "user") failureUserPayload = undefined;
@@ -2956,23 +3043,60 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const totalMs = Date.now() - turnStart;
 
         await assertScheduleEffectCurrent?.();
-        const noOutbound = { attachments: [], oversized: [], empty: [], dropped: 0 };
+        const noOutbound: {
+          attachments: OutgoingAttachment[];
+          oversized: string[];
+          empty: string[];
+          dropped: number;
+        } = { attachments: [], oversized: [], empty: [], dropped: 0 };
         const harvestOutbox = conversation.kind === "dm";
-        const outboundScoped =
-          harvestOutbox && box.used && box.handle
-            ? await collectOutbound(deps.sandbox, box.handle, blobTransfer, fileRegistration, turnOutboxDir)
-            : noOutbound;
-        const outboundScratch =
-          harvestOutbox && scratchBox.handle
-            ? await collectOutbound(
-                deps.sandbox,
-                scratchBox.handle,
-                blobTransfer,
-                { ...fileRegistration, seed: `${fileRegistration.seed}:scratch` },
-                turnOutboxDir,
-              )
-            : noOutbound;
-        if (!harvestOutbox && box.used && box.handle) {
+        const stagedWorkflow = new Map<
+          string,
+          { staged: StagedWorkflowAttachment; registration: ArtifactRegistration; batchIndex: number }
+        >();
+        const stageWorkflow = async (
+          handle: SandboxHandle,
+          registration: ArtifactRegistration,
+        ): Promise<typeof noOutbound> => {
+          const collected = await collectWorkflowOutbound(deps.sandbox, handle, turnOutboxDir);
+          for (const [batchIndex, staged] of collected.staged.entries()) {
+            stagedWorkflow.set(staged.attachment.blobId, { staged, registration, batchIndex });
+          }
+          return {
+            attachments: collected.staged.map(({ attachment }) => attachment),
+            oversized: collected.oversized,
+            empty: collected.empty,
+            dropped: collected.dropped,
+          };
+        };
+        let outboundScoped = noOutbound;
+        if (bufferedSlackTurn && box.used && box.handle) {
+          outboundScoped = await stageWorkflow(box.handle, fileRegistration);
+        } else if (harvestOutbox && box.used && box.handle) {
+          outboundScoped = await collectOutbound(
+            deps.sandbox,
+            box.handle,
+            blobTransfer,
+            fileRegistration,
+            turnOutboxDir,
+          );
+        }
+        let outboundScratch = noOutbound;
+        if (bufferedSlackTurn && scratchBox.handle) {
+          outboundScratch = await stageWorkflow(scratchBox.handle, {
+            ...fileRegistration,
+            seed: `${fileRegistration.seed}:scratch`,
+          });
+        } else if (harvestOutbox && scratchBox.handle) {
+          outboundScratch = await collectOutbound(
+            deps.sandbox,
+            scratchBox.handle,
+            blobTransfer,
+            { ...fileRegistration, seed: `${fileRegistration.seed}:scratch` },
+            turnOutboxDir,
+          );
+        }
+        if (!harvestOutbox && !bufferedSlackTurn && box.used && box.handle) {
           const orphans = await deps.sandbox.listDir(box.handle, turnOutboxDir).catch(() => [] as string[]);
           if (orphans.length)
             console.error(
@@ -3020,13 +3144,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           }
         }
 
-        if (outbound.attachments.length) {
+        const persistOutboundDelivery = async (
+          attachments: readonly NonNullable<TurnResult["attachments"]>[number][],
+        ) => {
           const appended = await withManagedRosterVersion(() =>
             deps.sessions.append(lease, {
               type: "delivery",
               payload: {
-                text: deliveryManifest(outbound.attachments),
-                files: outbound.attachments.map((a) => ({
+                text: deliveryManifest(attachments),
+                files: attachments.map((a) => ({
                   name: a.name,
                   mimetype: a.mimetype,
                   sizeBytes: a.sizeBytes,
@@ -3045,7 +3171,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 content: [
                   {
                     type: "text",
-                    text: `[files delivered to the conversation: ${deliveryManifest(outbound.attachments)}]`,
+                    text: `[files delivered to the conversation: ${deliveryManifest(attachments)}]`,
                   },
                 ],
                 timestamp: appended.createdAt,
@@ -3058,9 +3184,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             result = { ...result, tapeWriteFailed: true };
             swallow("tape: delivery note", e);
           });
-        }
+        };
+        if (!bufferedSlackTurn && outbound.attachments.length) await persistOutboundDelivery(outbound.attachments);
 
-        {
+        if (!bufferedSlackTurn) {
           const lastSeq = [...emittedEntries.map((e) => e.seq), ...preAppendedSeqs].reduce(
             (m, s2) => Math.max(m, s2),
             -1,
@@ -3087,7 +3214,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
         const turnCompleted = outcome.completed;
         const pausing = outcome.paused;
-        if (input.runId && !pausing && reply && reply.trim()) deps.turnStream?.markReplyDone(input.runId);
+        if (!bufferedSlackTurn && input.runId && !pausing && reply && reply.trim()) {
+          deps.turnStream?.markReplyDone(input.runId);
+        }
         const turnUserSeq = emittedEntries.find((e) => e.type === "user")?.seq;
         let metricProvisionMs: number | undefined;
         if (box.provisionMs !== undefined) metricProvisionMs = box.provisionMs;
@@ -3144,8 +3273,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : {}),
         });
-        const onTurnEnd = memoryStrategy.onTurnEnd?.bind(memoryStrategy);
-        if (!pausing && useMemory && memoryPolicy.capture !== "off" && onTurnEnd) {
+        const captureTurnMemory = (capturedReply: string | undefined): void => {
+          const onTurnEnd = memoryStrategy.onTurnEnd?.bind(memoryStrategy);
+          if (pausing || !useMemory || memoryPolicy.capture === "off" || !onTurnEnd) return;
           const prior = pendingCaptures.get(memoryScopeId);
           const capture = (async () => {
             if (prior) await prior.catch(swallowAs("prior memory capture", undefined));
@@ -3156,7 +3286,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 scopeId: memoryScopeId,
                 conversationScopeId: scopeId,
                 input: turnInput,
-                reply,
+                reply: capturedReply ?? "",
                 actorId: actor.id,
                 ...(automatedTurn ? { autonomous: true } : {}),
                 ...(conversationLabel ? { conversationLabel } : {}),
@@ -3182,7 +3312,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           void capture.finally(() => {
             if (pendingCaptures.get(memoryScopeId) === capture) pendingCaptures.delete(memoryScopeId);
           });
-        }
+        };
+        if (!bufferedSlackTurn) captureTurnMemory(reply);
+
+        let durableReply: string | undefined = reply;
 
         const tail = async (): Promise<void> => {
           try {
@@ -3221,7 +3354,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             }
             if (!pausing && turnCompleted && !session.title && !(earlyTitleGen && (await earlyTitleGen))) {
-              await generateAndStoreTitle(session.id, scopeId, `User:\n${input.text}\n\nAssistant:\n${result.reply}`);
+              await generateAndStoreTitle(session.id, scopeId, `User:\n${input.text}\n\nAssistant:\n${durableReply}`);
             }
           } finally {
             await reclaimBox();
@@ -3229,8 +3362,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         };
 
         let finalResult: TurnResult;
+        const deliveryEvidence = deliveryEvidenceSources.size
+          ? {
+              deliveryEvidenceSources: [...deliveryEvidenceSources.values()].sort((a, b) =>
+                a.sourceType.localeCompare(b.sourceType),
+              ),
+            }
+          : {};
         const sourceUserSeq = partial?.userSeq ?? emittedEntries.find((e) => e.type === "user")?.seq;
-        const sourceAssistantEntrySeq = [...emittedEntries].reverse().find((e) => e.type === "assistant")?.seq;
+        let sourceAssistantEntrySeq = [...emittedEntries].reverse().find((e) => e.type === "assistant")?.seq;
         if (isPollFire && result.silent && result.pausedOnApproval !== true) {
           finalResult = { status: "silent", sessionId: session.id };
         } else if (result.pendingApprovals?.length || quarantineReleaseApprovals.length) {
@@ -3302,6 +3442,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(outbound.attachments.length ? { attachments: outbound.attachments } : {}),
                 ...(sourceUserSeq !== undefined ? { sourceUserSeq } : {}),
                 ...(sourceAssistantEntrySeq !== undefined ? { sourceAssistantEntrySeq } : {}),
+                ...deliveryEvidence,
               }
             : { status: "pending_approval", sessionId: session.id, pendingApprovals: approvals };
         } else if (isPollFire && !outbound.attachments.length && isSilentPollReply(reply)) {
@@ -3317,7 +3458,165 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(outbound.attachments.length ? { attachments: outbound.attachments } : {}),
             ...(sourceUserSeq !== undefined ? { sourceUserSeq } : {}),
             ...(sourceAssistantEntrySeq !== undefined ? { sourceAssistantEntrySeq } : {}),
+            ...deliveryEvidence,
           };
+        }
+
+        if (bufferedSlackTurn && result.pausedOnApproval && finalResult.pendingApprovals?.length) {
+          finalResult = {
+            status: "pending_approval",
+            sessionId: session.id,
+            pendingApprovals: finalResult.pendingApprovals,
+          };
+        }
+
+        if (input.surface === "slack" && !input.surfaceTools && finalResult.status === "ok") {
+          const checked = await enforceAndRepairEvidenceDelivery({
+            requestText: input.displayText ?? input.text,
+            result: finalResult,
+            fetchBlob: async (blobId) => {
+              const staged = stagedWorkflow.get(blobId);
+              if (staged) return staged.staged.bytes;
+              const opened = await blobTransfer.open(blobId);
+              if (!opened) throw new Error("evidence artifact is unavailable");
+              return collectBlob(opened.stream);
+            },
+            stageBlob: async (bytes) => {
+              const staged: StagedWorkflowAttachment = {
+                attachment: {
+                  name: "evidence-brief.workflow.json",
+                  mimetype: WORKFLOW_ARTIFACT_MIME,
+                  sizeBytes: bytes.length,
+                  blobId: `staged:${randomUUID()}`,
+                  renderOnly: true,
+                },
+                bytes,
+              };
+              stagedWorkflow.set(staged.attachment.blobId, {
+                staged,
+                registration: fileRegistration,
+                batchIndex: stagedWorkflow.size,
+              });
+              return { blobId: staged.attachment.blobId, sizeBytes: bytes.length };
+            },
+            ...(deps.harness.models.oneShot ? { oneShot: deps.harness.models.oneShot } : {}),
+          });
+          finalResult = checked.result;
+          if (checked.repairAttempted) {
+            deps.auditLog.record({
+              at: Date.now(),
+              principalId: actor.id,
+              action: "slack.evidence_delivery_repair",
+              resource: input.surface,
+              scopeLabel: scopeId,
+              status: checked.repaired ? "allowed" : "refused",
+              detail: JSON.stringify({ repaired: checked.repaired }),
+            });
+          }
+        }
+
+        if (bufferedSlackTurn) {
+          if (finalResult.status === "ok" && finalResult.attachments?.length) {
+            const verifiedAttachments: OutgoingAttachment[] = [];
+            for (const attachment of finalResult.attachments) {
+              const pending = stagedWorkflow.get(attachment.blobId);
+              if (!pending) throw new Error("verified workflow artifact was not staged in this turn");
+              verifiedAttachments.push(
+                await materializeWorkflowAttachment(
+                  { ...pending.staged, attachment },
+                  blobTransfer,
+                  pending.registration,
+                  pending.batchIndex,
+                ),
+              );
+            }
+            finalResult = { ...finalResult, attachments: verifiedAttachments };
+          }
+
+          durableReply = finalResult.status === "ok" ? finalResult.reply : undefined;
+          for (const record of bufferedTapeRecords) {
+            const payload = record.payload as { role?: unknown; content?: unknown } | null;
+            let persisted = record;
+            if (payload?.role === "assistant") {
+              if (!Array.isArray(payload.content)) continue;
+              const content = payload.content.filter((part) => {
+                const type = (part as { type?: unknown } | null)?.type;
+                return type === "toolCall" || type === "tool_use";
+              });
+              if (!content.length) continue;
+              persisted = { ...record, payload: { role: "assistant", content } };
+            }
+            await withManagedRosterVersion(() => deps.sessions.appendTape(lease, persisted)).catch((e) => {
+              result = { ...result, tapeWriteFailed: true };
+              swallow("tape: verified tool exchange", e);
+            });
+          }
+          const assistantEntry = bufferedAssistantEntry;
+          if (assistantEntry && durableReply?.trim()) {
+            const priorPayload = assistantEntry.payload;
+            const payload =
+              priorPayload && typeof priorPayload === "object" && !Array.isArray(priorPayload)
+                ? { ...priorPayload, text: durableReply }
+                : { text: durableReply };
+            const appended = await withManagedRosterVersion(() =>
+              deps.sessions.append(lease, { ...assistantEntry, payload }),
+            );
+            emittedEntries.push(appended);
+            sourceAssistantEntrySeq = appended.seq;
+            await withManagedRosterVersion(() =>
+              deps.sessions.appendTape(lease, {
+                kind: "message",
+                harness: deps.harness.profile.id,
+                payload: {
+                  role: "assistant",
+                  content: [{ type: "text", text: durableReply }],
+                  timestamp: appended.createdAt,
+                },
+                scopeLabel: assistantEntry.scopeLabel,
+                entrySeq: appended.seq,
+              }),
+            ).catch((e) => {
+              result = { ...result, tapeWriteFailed: true };
+              swallow("tape: verified assistant", e);
+            });
+            await withManagedRosterVersion(() =>
+              deps.sessions.appendTape(lease, {
+                kind: "annotation",
+                payload: { subturnEnd: true },
+                scopeLabel: assistantEntry.scopeLabel,
+                entrySeq: appended.seq,
+              }),
+            ).catch((e) => {
+              result = { ...result, tapeWriteFailed: true };
+              swallow("tape: verified subturn end", e);
+            });
+            if (finalResult.status === "ok") finalResult = { ...finalResult, sourceAssistantEntrySeq: appended.seq };
+          }
+          if (finalResult.status === "ok" && finalResult.attachments?.length) {
+            await persistOutboundDelivery(finalResult.attachments);
+          }
+          const lastSeq = [...emittedEntries.map((entry) => entry.seq), ...preAppendedSeqs].reduce(
+            (maximum, sequence) => Math.max(maximum, sequence),
+            -1,
+          );
+          if (
+            lastSeq >= 0 &&
+            (tapeRows ? tapeRows.covered : false) &&
+            !result.stopped &&
+            !result.tapeWriteFailed &&
+            !compactionMirrorFailed
+          ) {
+            await withManagedRosterVersion(() =>
+              deps.sessions.appendTape(lease, {
+                kind: "annotation",
+                payload: { turnEnd: true },
+                scopeLabel: scopeId,
+                entrySeq: lastSeq,
+              }),
+            ).catch(swallowAs("tape: verified turn-end watermark", undefined));
+          }
+          if (input.runId && !pausing && durableReply?.trim()) deps.turnStream?.markReplyDone(input.runId);
+          if (finalResult.status === "ok") captureTurnMemory(durableReply);
         }
 
         if (input.background && box.used && box.handle && finalResult.status === "ok") {

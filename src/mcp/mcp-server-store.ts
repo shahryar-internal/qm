@@ -15,6 +15,24 @@ export type McpTokenAuthMethod = "client_secret_basic" | "client_secret_post";
 export type McpTokenAudienceParameter = "audience" | "resource";
 type McpCredentialState = "none" | "ready" | "reentry-required";
 
+export type McpEvidenceSourceType =
+  | "Analytics"
+  | "Brain"
+  | "Calendar"
+  | "Clarify"
+  | "Command Center"
+  | "CRM"
+  | "Drive"
+  | "Gmail"
+  | "Google Tasks"
+  | "Notion"
+  | "Public web";
+
+export interface McpEvidenceContract {
+  sourceType: McpEvidenceSourceType;
+  linkPaths: string[][];
+}
+
 export interface McpAllowedTool {
   name: string;
   label: string;
@@ -23,6 +41,7 @@ export interface McpAllowedTool {
   inputSchema: Record<string, unknown>;
   requestAuthority?: "qm.ed25519.founder-dm.v1" | typeof NOTION_READ_AUTHORITY | typeof APPROVED_WRITE_AUTHORITY;
   nativeRenderer?: "qm.analytics.card.v1";
+  evidence?: McpEvidenceContract;
 }
 
 export interface McpServer {
@@ -166,6 +185,55 @@ export function isValidMcpServerId(id: string): boolean {
   return ID_PATTERN.test(id);
 }
 
+const EVIDENCE_SOURCE_TYPES = new Set<McpEvidenceSourceType>([
+  "Analytics",
+  "Brain",
+  "Calendar",
+  "Clarify",
+  "Command Center",
+  "CRM",
+  "Drive",
+  "Gmail",
+  "Google Tasks",
+  "Notion",
+  "Public web",
+]);
+const EVIDENCE_PATH_SEGMENT = /^(?:\*|[A-Za-z][A-Za-z0-9_-]{0,63})$/u;
+
+function parseMcpEvidenceContract(value: unknown): McpEvidenceContract | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("allowedTools evidence is invalid");
+  }
+  const evidence = value as Record<string, unknown>;
+  if (
+    Object.keys(evidence).length !== 2 ||
+    !Object.hasOwn(evidence, "sourceType") ||
+    !Object.hasOwn(evidence, "linkPaths") ||
+    typeof evidence.sourceType !== "string" ||
+    !EVIDENCE_SOURCE_TYPES.has(evidence.sourceType as McpEvidenceSourceType) ||
+    !Array.isArray(evidence.linkPaths) ||
+    evidence.linkPaths.length > 8
+  ) {
+    throw new Error("allowedTools evidence is invalid");
+  }
+  const linkPaths = evidence.linkPaths.map((path) => {
+    if (
+      !Array.isArray(path) ||
+      path.length < 1 ||
+      path.length > 8 ||
+      path.some((segment) => typeof segment !== "string" || !EVIDENCE_PATH_SEGMENT.test(segment))
+    ) {
+      throw new Error("allowedTools evidence is invalid");
+    }
+    return [...path] as string[];
+  });
+  if (new Set(linkPaths.map((path) => JSON.stringify(path))).size !== linkPaths.length) {
+    throw new Error("allowedTools evidence is invalid");
+  }
+  return { sourceType: evidence.sourceType as McpEvidenceSourceType, linkPaths };
+}
+
 export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 64) {
     throw new Error("allowedTools must contain 1 through 64 exact tool contracts");
@@ -177,7 +245,17 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       throw new Error("allowedTools entries are invalid");
     const record = entry as Record<string, unknown>;
     const inputSchema = parseMcpInputSchema(record.inputSchema);
-    const allowedKeys = ["inputSchema", "label", "name", "nativeRenderer", "readOnly", "requestAuthority", "status"];
+    const evidence = parseMcpEvidenceContract(record.evidence);
+    const allowedKeys = [
+      "evidence",
+      "inputSchema",
+      "label",
+      "name",
+      "nativeRenderer",
+      "readOnly",
+      "requestAuthority",
+      "status",
+    ];
     if (
       Object.keys(record).some((key) => !allowedKeys.includes(key)) ||
       !["inputSchema", "label", "name", "readOnly", "status"].every((key) => Object.hasOwn(record, key)) ||
@@ -194,6 +272,7 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       record.status.length > 120 ||
       /[\u0000-\u001f\u007f]/.test(record.status) ||
       typeof record.readOnly !== "boolean" ||
+      (evidence !== undefined && record.readOnly !== true) ||
       (record.requestAuthority !== undefined &&
         record.requestAuthority !== "qm.ed25519.founder-dm.v1" &&
         record.requestAuthority !== NOTION_READ_AUTHORITY &&
@@ -242,6 +321,7 @@ export function parseMcpAllowedTools(value: unknown): McpAllowedTool[] {
       ...(record.requestAuthority === NOTION_READ_AUTHORITY ? { requestAuthority: record.requestAuthority } : {}),
       ...(record.requestAuthority === APPROVED_WRITE_AUTHORITY ? { requestAuthority: record.requestAuthority } : {}),
       ...(record.nativeRenderer === "qm.analytics.card.v1" ? { nativeRenderer: record.nativeRenderer } : {}),
+      ...(evidence ? { evidence } : {}),
     };
   });
 }

@@ -16,6 +16,7 @@ import { GOAL_BLOCKED_MIN_ROUNDS, createGoalRecord, type GoalRecord } from "./go
 import { unscreenedNotice, UNSCREENED_PREFIX, type SecurityScreenVerdict } from "../security/security-posture.ts";
 import { CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
 import type { GroundedWebSearch } from "../model/grounded-web-search.ts";
+import { credentialReadEvidence, mcpReadEvidence, webSearchEvidence } from "../core/evidence-links.ts";
 
 function describePublishAudience(a: PublishAudienceDescriptor | undefined): string {
   if (!a) return "Owned by you.";
@@ -2738,7 +2739,12 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
         const parts = [result.stdout, result.stderr ? `[stderr]\n${result.stderr}` : ""].filter(Boolean).join("\n");
         return recordResult(
           callId,
-          { tool: "credential_exec", service: params.service, ...result },
+          {
+            tool: "credential_exec",
+            service: params.service,
+            ...result,
+            ...(result.code === 0 ? { evidence: credentialReadEvidence(params.service, params.args) } : {}),
+          },
           text(`${parts}\n[exit ${result.code}${result.timedOut ? " timed-out" : ""}]`),
           result.code !== 0,
         );
@@ -2797,9 +2803,14 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
           await recordCall(callId, { tool: d.label, status: d.status, mcpServer: d.serverId });
           try {
             const out = await tc.callMcpTool(d.name, (params ?? {}) as Record<string, unknown>);
+            const evidence = mcpReadEvidence({
+              readOnly: d.readOnly,
+              output: out,
+              evidence: d.evidence,
+            });
             return recordExternalResult(
               callId,
-              { tool: d.label, mcpServer: d.serverId },
+              { tool: d.label, mcpServer: d.serverId, ...(evidence ? { evidence } : {}) },
               text(out || "[empty result]"),
               d.label,
               "configured external connector",
@@ -2859,7 +2870,12 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
             const result = await opts.groundedWebSearch!(params.query, ref.abortSignal);
             return recordExternalResult(
               callId,
-              { tool: "web_search", citationCount: result.citations.length, queryCount: result.queries.length },
+              {
+                tool: "web_search",
+                citationCount: result.citations.length,
+                queryCount: result.queries.length,
+                evidence: webSearchEvidence(result.citations),
+              },
               text(JSON.stringify(result)),
               "web_search",
               "public web",

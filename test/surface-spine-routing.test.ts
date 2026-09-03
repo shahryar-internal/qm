@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { buildApp } from "../src/wiring.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
+import { foldTape, lintFold } from "../src/harness/tape-fold.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -24,6 +25,7 @@ function mention(text: string, channel: string, root: string): TurnRequest {
     conversation: { kind: "channel", threadRef: `ch:${channel}:${root}`, channelRef: channel, audience: [actor] },
     deliveryTarget: `slack:${channel}:${root}`,
     text,
+    ...(text.startsWith("!") ? { displayText: "ok" } : {}),
     liveActor: true,
     async: true,
   };
@@ -125,6 +127,285 @@ test("spine ON: an @mention engages a sub-conversation session that posts (no se
   } finally {
     await built.runtime.stop();
   }
+});
+
+test("natural Slack turns use exactly one post-verifier run delivery with no direct surface-post bypass", async () => {
+  const built = freshApp();
+  const res = await built.app.turn({
+    ...mention("Write a short creative greeting", "C-buffer", "101.1"),
+    async: false,
+  });
+  assert.equal(res.status, "ok");
+  assert.match(res.reply ?? "", /You said:/u);
+  const pending = await built.deliveries.pending("slack");
+  assert.equal(pending.length, 1, "the verified run result is delivered exactly once");
+  assert.equal(pending[0]?.text, res.reply);
+  assert.match(pending[0]?.idempotencyKey ?? "", /^run:/u);
+  const session = await built.sessions.getByThread("ch:C-buffer:101.1");
+  const request = (await built.sessions.listLlmRequests(session!.id)).at(-1)?.promptEnvelope as {
+    systemPrompt?: string;
+    messages?: Array<{ role?: string; content?: string }>;
+  };
+  const prompt = JSON.stringify(request);
+  assert.match(prompt, /handling one turn in a live Slack conversation/u);
+  assert.match(prompt, /verified delivery rail renders it/u);
+  assert.doesNotMatch(prompt, /live, private 1:1/u);
+});
+
+test("buffered Slack MCP reads retain typed evidence and deliver only after verification", async () => {
+  const built = freshApp();
+  const res = await built.app.turn({
+    ...mention("!typed-mcp-evidence", "C-buffer-read", "102.1"),
+    async: false,
+    displayText: "Review the current plan in Notion",
+  });
+  assert.equal(res.status, "ok");
+  assert.deepEqual(
+    res.deliveryEvidenceSources?.map(({ sourceType, links }) => ({ sourceType, links })),
+    [{ sourceType: "Notion", links: ["https://notion.example/current"] }],
+  );
+  const pending = await built.deliveries.pending("slack");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.text, res.reply);
+  const session = await built.sessions.getByThread("ch:C-buffer-read:102.1");
+  const tape = await built.sessions.getTape(session!.id);
+  assert.equal(lintFold(foldTape(tape)).ok, true);
+  const messages = tape.filter((record) => record.kind === "message");
+  assert.deepEqual(
+    messages.map((record) => (record.payload as { role?: string }).role),
+    ["user", "assistant", "toolResult", "assistant"],
+  );
+  assert.doesNotMatch(JSON.stringify(messages), /query_id=tape-private/u);
+  assert.deepEqual(
+    ((messages[1]!.payload as { content: Array<{ type: string }> }).content ?? []).map((part) => part.type),
+    ["toolCall"],
+  );
+
+  const next = await built.app.turn({
+    ...mention("Write a concise follow-up", "C-buffer-read", "102.1"),
+    async: false,
+  });
+  assert.equal(next.status, "ok");
+  const latestRequest = (await built.sessions.listLlmRequests(session!.id)).at(-1)?.promptEnvelope as {
+    tapeMode?: string;
+    messages?: Array<{ role?: string; content?: string }>;
+  };
+  assert.equal(latestRequest.tapeMode, "shadow");
+  assert.equal(
+    latestRequest.messages?.some((message) => message.role === "assistant" && message.content === res.reply),
+    true,
+  );
+  assert.doesNotMatch(JSON.stringify(latestRequest.messages), /query_id=tape-private/u);
+});
+
+test("buffered Slack repair persists and delivers only verified presentation bytes", async () => {
+  const built = freshApp();
+  const res = await built.app.turn({
+    ...mention("!typed-evidence-raw-card", "C-buffer-repair", "102.2"),
+    async: false,
+    displayText: "Give me an account health brief",
+  });
+  assert.equal(res.status, "ok");
+  assert.match(res.reply ?? "", /Publication date unavailable/u);
+  assert.doesNotMatch(res.reply ?? "", /query_id/u);
+  assert.equal(res.attachments?.length, 1);
+  const session = await built.sessions.getByThread("ch:C-buffer-repair:102.2");
+  const entries = await built.sessions.getEntries(session!.id);
+  const assistants = entries.filter((entry) => entry.type === "assistant");
+  assert.equal(assistants.length, 1);
+  assert.equal((assistants[0]!.payload as { text?: string }).text, res.reply);
+  assert.equal(res.sourceAssistantEntrySeq, assistants[0]!.seq);
+  assert.doesNotMatch(JSON.stringify(entries), /query_id=private|query_id.*private/u);
+  const tape = await built.sessions.getTape(session!.id);
+  assert.doesNotMatch(JSON.stringify(tape), /query_id=private|query_id.*private/u);
+  const files = await built.files.listOwnedByScopes([scopeId("personal", "U1")], { includeDisabled: true });
+  assert.equal(files.files.length, 1, "only the verified repaired artifact is registered after validation");
+  assert.equal(files.files[0]?.name, "evidence-brief.workflow.json");
+  assert.equal(
+    (await built.acl.list()).some((grant) => grant.ref.includes("raw.workflow.json")),
+    false,
+    "the rejected workflow artifact leaves no dangling audience grant",
+  );
+  const deliveries = await built.deliveries.pending("slack");
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]?.text, res.reply);
+  assert.deepEqual(
+    deliveries[0]?.attachments?.map((item: { blobId?: string }) => item.blobId),
+    [res.attachments?.[0]?.blobId],
+  );
+
+  await built.app.turn({
+    ...mention("Write a short creative follow-up", "C-buffer-repair", "102.2"),
+    async: false,
+  });
+  const requests = await built.sessions.listLlmRequests(session!.id);
+  assert.doesNotMatch(JSON.stringify(requests.at(-1)?.promptEnvelope), /query_id=private|query_id.*private/u);
+});
+
+test("buffered Slack DMs retain 1:1 identity, skill precedence, and reach guidance", async () => {
+  const built = freshApp();
+  const res = await built.app.turn({
+    surface: "slack",
+    actor: { externalId: "ada@example.com", displayName: "Ada" },
+    conversation: { kind: "dm", threadRef: "dm:ada:buffered" },
+    text: "Prepare me for my meeting",
+  });
+  assert.equal(res.status, "ok");
+  const session = await built.sessions.getByThread("dm:ada:buffered");
+  const request = (await built.sessions.listLlmRequests(session!.id)).at(-1)?.promptEnvelope;
+  const prompt = JSON.stringify(request);
+  assert.match(prompt, /live, private 1:1 with Ada/u);
+  assert.match(prompt, /ada@example\.com/u);
+  assert.match(prompt, /Follow a selected skill's more-specific output contract/u);
+  assert.match(prompt, /POST \$AGENT_API_URL\/v1\/reach/u);
+
+  await built.app.turn({
+    ...mention("Write a concise greeting", "C-buffer-privacy", "102.3"),
+    actor: { externalId: "ada@example.com", displayName: "Ada" },
+    async: false,
+  });
+  const channelSession = await built.sessions.getByThread("ch:C-buffer-privacy:102.3");
+  const channelRequest = (await built.sessions.listLlmRequests(channelSession!.id)).at(-1)?.promptEnvelope as {
+    system?: string;
+  };
+  const bufferedFrame = (channelRequest.system ?? "").split("You are a helpful internal assistant", 1)[0] ?? "";
+  assert.doesNotMatch(bufferedFrame, /ada@example\.com/u);
+});
+
+test("buffered Slack turns preserve workflow artifact attachment delivery", async () => {
+  const built = freshApp();
+  const artifact = JSON.stringify({
+    version: 1,
+    renderer: "qm.card.v1",
+    fallbackText: "Creative card",
+    payload: { heading: "Creative card", sections: [] },
+  });
+  const res = await built.app.turn({
+    ...mention(`!writequiet-pair ${artifact}`, "C-buffer-card", "103.1"),
+    async: false,
+    displayText: "Create a visual card with a friendly greeting",
+  });
+  assert.equal(res.status, "ok");
+  assert.equal(res.attachments?.length, 1);
+  const pending = await built.deliveries.pending("slack");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.attachments?.length, 1);
+  assert.equal(pending[0]?.attachments?.[0]?.name, "creative.workflow.json");
+  assert.equal(
+    pending[0]?.attachments?.some((item: { name?: string }) => item.name === "private.txt"),
+    false,
+  );
+  assert.equal(pending[0]?.attachments?.[0]?.renderOnly, true);
+  assert.equal(pending[0]?.attachments?.[0]?.artifactViewerId, "U1");
+
+  const next = await built.app.turn({
+    ...mention("Write a short creative follow-up", "C-buffer-card", "103.1"),
+    async: false,
+  });
+  assert.equal(next.status, "ok");
+  assert.equal(next.attachments, undefined, "another turn cannot inherit the prior turn's workflow artifact");
+  const after = await built.deliveries.pending("slack");
+  assert.equal(after.length, 2);
+  assert.equal(after[1]?.attachments, undefined);
+});
+
+test("buffered Slack workflow registration rolls back a mutation-then-fail audience outcome", async () => {
+  const built = freshApp();
+  const artifact = JSON.stringify({
+    version: 1,
+    renderer: "qm.card.v1",
+    fallbackText: "Creative card",
+    payload: { heading: "Creative card", sections: [] },
+  });
+  const replace = built.acl.replaceGrantsIfCurrent.bind(built.acl);
+  let injected = false;
+  built.acl.replaceGrantsIfCurrent = async (...args) => {
+    const replaced = await replace(...args);
+    if (!injected && args[1].startsWith("artifacts/") && replaced) {
+      injected = true;
+      throw new Error("injected post-commit audience failure");
+    }
+    return replaced;
+  };
+  const request = mention(`!writequiet-pair ${artifact}`, "C-buffer-card-rollback", "103.2");
+  await assert.rejects(
+    built.app.turn({
+      ...request,
+      conversation: { ...request.conversation, isPrivate: false },
+      async: false,
+      displayText: "Create a red and blue logo",
+    }),
+    /verified workflow artifact registration failed/,
+  );
+  assert.equal(injected, true);
+  assert.equal(
+    (await built.files.listOwnedByScopes([scopeId("personal", "U1")], { includeDisabled: true })).files.length,
+    0,
+  );
+  assert.equal((await built.acl.list()).filter((grant) => grant.ref.startsWith("artifacts/")).length, 0);
+  assert.equal(await built.blobTransfer.sweep(0), 0);
+});
+
+test("buffered Slack turns preserve a native approval pause and its approved resume", async () => {
+  const built = freshApp();
+  const base = {
+    ...mention("!run rm /tmp/qm-buffered-approval-fixture-never-created", "C-buffer-approval", "104.1"),
+    async: false,
+    displayText: "Please run the approved maintenance command",
+  };
+  const pendingApproval = await built.app.turn(base);
+  assert.equal(pendingApproval.status, "pending_approval");
+  assert.equal(pendingApproval.pendingApprovals?.length, 1);
+  assert.deepEqual(await built.deliveries.pending("slack"), []);
+
+  const resumed = await built.app.turn({
+    ...base,
+    approval: { requestId: pendingApproval.pendingApprovals![0]!.requestId, approved: true },
+  });
+  assert.equal(resumed.status, "ok");
+  const deliveries = await built.deliveries.pending("slack");
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]?.text, resumed.reply);
+});
+
+test("a buffered native approval pause persists no model reply or fake card before one verified resume", async () => {
+  const built = freshApp();
+  const base = {
+    ...mention("!approval-raw-card", "C-buffer-approval-raw", "104.2"),
+    async: false,
+    displayText: "Please perform the maintenance operation",
+  };
+  const paused = await built.app.turn(base);
+  assert.equal(paused.status, "pending_approval");
+  assert.equal(paused.reply, undefined);
+  assert.equal(paused.attachments, undefined);
+  const session = await built.sessions.getByThread("ch:C-buffer-approval-raw:104.2");
+  const pausedEntries = await built.sessions.getEntries(session!.id);
+  assert.equal(
+    pausedEntries.some((entry) => entry.type === "assistant" || entry.type === "delivery"),
+    false,
+  );
+  assert.doesNotMatch(JSON.stringify(pausedEntries), /approval-private/u);
+  assert.equal(
+    (await built.files.listOwnedByScopes([scopeId("personal", "U1")], { includeDisabled: true })).files.length,
+    0,
+  );
+  assert.deepEqual(await built.deliveries.pending("slack"), []);
+
+  const resumed = await built.app.turn({
+    ...base,
+    approval: { requestId: paused.pendingApprovals![0]!.requestId, approved: true },
+  });
+  assert.equal(resumed.status, "ok");
+  assert.equal(resumed.reply, "Approved maintenance completed.");
+  assert.equal(resumed.attachments, undefined);
+  const finalEntries = await built.sessions.getEntries(session!.id);
+  assert.equal(finalEntries.filter((entry) => entry.type === "assistant").length, 1);
+  assert.doesNotMatch(JSON.stringify(finalEntries), /approval-private/u);
+  const deliveries = await built.deliveries.pending("slack");
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0]?.text, resumed.reply);
+  assert.equal(deliveries[0]?.attachments, undefined);
 });
 
 test("spine ON: a re-delivered @mention (same idempotencyKey) spawns ONE sub-conversation run, not two", async () => {

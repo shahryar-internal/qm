@@ -562,4 +562,5 @@ export interface TurnResult {
   attachments?: OutgoingAttachment[];
   sourceUserSeq?: number;
   sourceAssistantEntrySeq?: number;
+  deliveryEvidenceSources?: Array<{ sourceType: string; observedAt: string; links: string[] }>;
 }

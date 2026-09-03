@@ -1036,9 +1036,13 @@ test("readOnly assembles ONLY observational tools — no execute/background/writ
 
 test("grounded web search is read-only, screened as external content, and limited once per turn", async () => {
   const screened: Array<{ content: string; tool: string; source: string }> = [];
+  const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
     current: fakeToolContext(),
     scopeLabel: "personal:U1",
+    emit: (entry) => {
+      emitted.push(entry as Emitted);
+    },
     async screenExternalContent(input) {
       screened.push(input);
       return { decision: "auto" };
@@ -1072,6 +1076,11 @@ test("grounded web search is read-only, screened as external content, and limite
     screened.map(({ tool, source }) => ({ tool, source })),
     [{ tool: "web_search", source: "public web" }],
   );
+  assert.deepEqual(emitted.find((entry) => entry.type === "tool_result")?.payload.evidence, {
+    version: "qm.typed-tool-evidence.v1",
+    sourceType: "Public web",
+    links: ["https://example.com/"],
+  });
   const second = (await call(search, { query: "public Acme news" })) as { content: Array<{ text: string }> };
   assert.match(second.content[0]?.text ?? "", /limited to one call per turn/);
   assert.equal(calls, 1);
@@ -1482,6 +1491,50 @@ test("trusted read-only MCP tools bypass Strict approval without exposing intern
   assert.match(persisted, /Reading external source 0/);
   assert.doesNotMatch(persisted, /metrics_query/);
   assert.doesNotMatch(persisted, /private search terms/);
+});
+
+test("an allowlisted read MCP operation persists only typed canonical evidence metadata", async () => {
+  const emitted: Emitted[] = [];
+  const descriptor = {
+    name: "notion_read_page",
+    serverId: "notion",
+    remoteName: "notion_read_page",
+    label: "Read Notion page",
+    status: "Reading Notion page",
+    description: "Read an approved page.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: true,
+    remoteReadOnlyHint: true,
+    remoteDestructiveHint: false,
+    serverUpdatedAt: 1,
+    serverContractSha256: "e".repeat(64),
+    evidence: { sourceType: "Notion" as const, linkPaths: [["page", "url"]] },
+  };
+  const tool = createPiTools(
+    {
+      current: {
+        ...fakeToolContext(),
+        callMcpTool: async () =>
+          JSON.stringify({
+            page: {
+              url: "https://notion.example/current",
+              content: "embedded https://attacker.example/injected",
+            },
+          }),
+      },
+      emit: (entry) => {
+        emitted.push(entry as Emitted);
+      },
+      scopeLabel: "personal:U1",
+    },
+    { mcpTools: () => [descriptor] },
+  ).find((candidate) => candidate.name === descriptor.name);
+  await call(tool, {});
+  assert.deepEqual(emitted.find((entry) => entry.type === "tool_result")?.payload.evidence, {
+    version: "qm.typed-tool-evidence.v1",
+    sourceType: "Notion",
+    links: ["https://notion.example/current"],
+  });
 });
 
 test("MCP output screening receives only the configured human presentation", async () => {

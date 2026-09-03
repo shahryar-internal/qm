@@ -76,6 +76,7 @@ export interface McpToolDescriptor {
   serverContractSha256: string;
   requestAuthority?: McpAllowedTool["requestAuthority"];
   nativeRenderer?: McpAllowedTool["nativeRenderer"];
+  evidence?: McpAllowedTool["evidence"];
 }
 
 interface McpToolCallResult {
@@ -190,6 +191,7 @@ function contractMatches(def: McpToolDescriptor, server: McpServer, allowed: Mcp
     def.remoteDestructiveHint === remote.destructiveHint &&
     def.requestAuthority === allowed.requestAuthority &&
     def.nativeRenderer === allowed.nativeRenderer &&
+    isDeepStrictEqual(def.evidence, allowed.evidence) &&
     !!allowed.inputSchema &&
     isDeepStrictEqual(def.inputSchema, mcpCallerInputSchema(allowed)) &&
     isDeepStrictEqual(allowed.inputSchema, remote.inputSchema)
@@ -291,6 +293,7 @@ export function createMcpToolService(opts: {
             serverContractSha256: publicServerContractSha256(server),
             ...(allowed.requestAuthority ? { requestAuthority: allowed.requestAuthority } : {}),
             ...(allowed.nativeRenderer ? { nativeRenderer: allowed.nativeRenderer } : {}),
+            ...(allowed.evidence ? { evidence: allowed.evidence } : {}),
           });
         }
         if (

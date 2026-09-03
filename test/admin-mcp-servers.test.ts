@@ -61,6 +61,7 @@ test("MCP admin registration requires exact discovered safety and returns no cre
           status: "Searching Knowledge Base",
           readOnly: true,
           inputSchema: SEARCH_SCHEMA,
+          evidence: { sourceType: "CRM", linkPaths: [["results", "*", "deepLink"]] },
         },
       ],
       readOnly: true,
@@ -122,6 +123,10 @@ test("MCP admin registration requires exact discovered safety and returns no cre
     assert.equal(retained?.readOnly, true);
     assert.equal(retained?.credentialState, "ready");
     assert.deepEqual(retained?.allowedTools[0]?.inputSchema, SEARCH_SCHEMA);
+    assert.deepEqual(retained?.allowedTools[0]?.evidence, {
+      sourceType: "CRM",
+      linkPaths: [["results", "*", "deepLink"]],
+    });
   } finally {
     instance.built.mcpToolService.close();
     await instance.close();

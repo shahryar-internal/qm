@@ -1189,6 +1189,30 @@ test("an ordinary Agent attachment retries after a transient upload failure", as
   }
 });
 
+test("an evidence DM never delivers a non-workflow raw attachment", async () => {
+  const core = new FakeCore();
+  core.durableIntake = true;
+  core.result = {
+    status: "ok",
+    reply: "Activation improved. Source: Analytics · Observed: 2026-09-02 · Link: unavailable",
+    attachments: [{ name: "raw-analytics.json", mimetype: "application/json", sizeBytes: 64, blobId: "blob-raw" }],
+    deliveryEvidenceSources: [{ sourceType: "Analytics", observedAt: "2026-09-02T17:00:00.000Z", links: [] }],
+  };
+  const f = await fixture({ core });
+  try {
+    await f.app.emitMessage(
+      { channel: "D1", channel_type: "im", user: "U1", text: "How did analytics change?", ts: "299.157" },
+      "Ev-evidence-raw-attachment",
+    );
+    await waitFor(() => f.client.posts.length === 1);
+    assert.match(f.client.posts[0]?.text ?? "", /couldn't safely deliver/u);
+    assert.deepEqual(f.client.fileUploads, []);
+    assert.equal(core.blobReads, 0);
+  } finally {
+    await f.stop();
+  }
+});
+
 test("ordinary Agent attachment markers prevent duplicate output after an acknowledgment crash", async () => {
   const core = new FakeCore();
   core.durableIntake = true;

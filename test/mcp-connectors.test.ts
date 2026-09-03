@@ -785,6 +785,11 @@ test("atomic plaintext migration cannot clobber concurrent credential re-entry o
 
 test("allowlist parsing rejects ambiguous or duplicate presentation contracts", () => {
   assert.deepEqual(parseMcpAllowedTools(allowed()), allowed());
+  const evidence = {
+    ...allowed()[0],
+    evidence: { sourceType: "CRM", linkPaths: [["results", "*", "deepLink"]] },
+  };
+  assert.deepEqual(parseMcpAllowedTools([evidence]), [evidence]);
   for (const invalid of [
     [],
     [{ name: "query", label: "Search CRM", status: "Searching", readOnly: true, extra: true }],
@@ -806,9 +811,32 @@ test("allowlist parsing rejects ambiguous or duplicate presentation contracts", 
     ...["exclusiveMinimum", "exclusiveMaximum", "uniqueItems", "oneOf", "allOf", "anyOf"].map((key) => [
       { ...allowed()[0], inputSchema: { type: "object", [key]: key.endsWith("Of") ? [] : true } },
     ]),
+    [{ ...allowed(false)[0], evidence: { sourceType: "CRM", linkPaths: [] } }],
+    [{ ...allowed()[0], evidence: { sourceType: "Unknown", linkPaths: [] } }],
+    [{ ...allowed()[0], evidence: { sourceType: "CRM", linkPaths: "results.url" } }],
+    [{ ...allowed()[0], evidence: { sourceType: "CRM", linkPaths: [[]] } }],
+    [{ ...allowed()[0], evidence: { sourceType: "CRM", linkPaths: [["url"], ["url"]] } }],
+    [{ ...allowed()[0], evidence: { sourceType: "CRM", linkPaths: [["results", "__proto__", "url"]] } }],
+    [{ ...allowed()[0], evidence: { sourceType: "CRM", linkPaths: [["results", "url"]], extra: true } }],
   ]) {
     assert.throws(() => parseMcpAllowedTools(invalid));
   }
+});
+
+test("tool service carries evidence metadata only from its pinned registration contract", async () => {
+  const { store } = storeWithBacking();
+  const remote = fakeServerFetch();
+  const service = createMcpToolService({ servers: store, fetchImpl: remote.fetch, refreshIntervalMs: 3_600_000 });
+  const evidence = { sourceType: "CRM" as const, linkPaths: [["results", "*", "deepLink"]] };
+  await store.put(server({ allowedTools: [{ ...allowed()[0]!, evidence }] }));
+  await service.refresh();
+  assert.deepEqual(service.toolDefs()[0]?.evidence, evidence);
+  remote.setTools([
+    queryTool({ annotations: { readOnlyHint: true, destructiveHint: false, evidence: { sourceType: "CRM" } } }),
+  ]);
+  await service.refresh();
+  assert.deepEqual(service.toolDefs()[0]?.evidence, evidence);
+  service.close();
 });
 
 test("MCP schema patterns accept only anchored non-branching bounded expressions", () => {
