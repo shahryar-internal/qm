@@ -64,6 +64,9 @@ test("strategic multi-source turns use high thinking while simple lookups stay a
   assert.deepEqual(turnModelOptions({ text: "Prepare me for my meeting with Acme" }), {
     thinkingLevel: STRATEGIC_THINKING_LEVEL,
   });
+  assert.equal(strategicThinkingLevel("Prep me for my meeting with Acme"), STRATEGIC_THINKING_LEVEL);
+  assert.equal(strategicThinkingLevel("Help me prepare for the meeting with Acme"), STRATEGIC_THINKING_LEVEL);
+  assert.equal(strategicThinkingLevel("Prepare a report for Acme"), undefined);
   assert.deepEqual(turnModelOptions({ text: "Read this Notion page" }), {});
 });
 
