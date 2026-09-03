@@ -314,6 +314,11 @@ test("Slack turns get the terse-response style instruction; other surfaces do no
   assert.match(slack.reply ?? "", /qm\.card\.v1/);
   assert.match(slack.reply ?? "", /account-health brief/);
   assert.match(slack.reply ?? "", /MUST also deliver/);
+  assert.match(slack.reply ?? "", /every evidence-based answer and card/);
+  assert.match(slack.reply ?? "", /source type, observed or as-of time/);
+  assert.match(slack.reply ?? "", /access-controlled deep link supplied by Notion, Clarify, Gmail, Calendar/);
+  assert.match(slack.reply ?? "", /never construct or guess one/);
+  assert.match(slack.reply ?? "", /link `unavailable` explicitly/);
   assert.match(slack.reply ?? "", /Do not expose raw JSON or arrays/);
 
   const nonSlack = await orch.handleTurn(dm("dm:U1:non-slack-style", "!sysprompt"));
