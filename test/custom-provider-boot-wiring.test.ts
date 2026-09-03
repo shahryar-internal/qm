@@ -167,7 +167,7 @@ test("the transient dev provider pins both runtime APIs despite durable or reque
     assert.notEqual(admitted.status, "refused", JSON.stringify(admitted));
     assert.equal(
       (await built.slackCore.surfaceHeaderFacts("personal:admin-alice@default-org")).modelName,
-      "Gemini 3.7 Flash",
+      "Gemini 3.8 Flash",
     );
 
     const surface = await fetch(`${base}/v1/surface-config`);
@@ -261,7 +261,7 @@ test("transient Gemini bypasses individual model auth while ordinary individual 
       liveActor: true,
     });
     assert.equal(drift.status, "refused");
-    assert.match(drift.reason ?? "", /runtime is fixed to pi\/gemini-3\.7-flash/);
+    assert.match(drift.reason ?? "", /runtime is fixed to pi\/gemini-3\.8-flash/);
 
     const forcedResult = await forced.app.turn({
       surface: "web",

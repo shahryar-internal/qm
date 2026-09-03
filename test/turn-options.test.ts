@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   NON_INTERACTIVE_FAST_MODE,
   NON_INTERACTIVE_THINKING_LEVEL,
+  STRATEGIC_THINKING_LEVEL,
+  strategicThinkingLevel,
   turnModelOptions,
   validateWebTurnModelOptions,
   webTurnRuntimeModelRefusal,
@@ -45,6 +47,30 @@ test("a resolved scope override outside the configured picker is refused, the or
 
 test("interactive turns do not force model options", () => {
   assert.deepEqual(turnModelOptions({}), {});
+});
+
+test("strategic multi-source turns use high thinking while simple lookups stay automatic", () => {
+  assert.equal(
+    strategicThinkingLevel("Recommend a plan using our calendar, email, and analytics"),
+    STRATEGIC_THINKING_LEVEL,
+  );
+  assert.equal(strategicThinkingLevel("What is on my calendar tomorrow?"), undefined);
+  assert.deepEqual(turnModelOptions({ text: "Compare customer health across our CRM and analytics" }), {
+    thinkingLevel: STRATEGIC_THINKING_LEVEL,
+  });
+  assert.deepEqual(turnModelOptions({ text: "Give me an account health brief for Acme" }), {
+    thinkingLevel: STRATEGIC_THINKING_LEVEL,
+  });
+  assert.deepEqual(turnModelOptions({ text: "Read this Notion page" }), {});
+});
+
+test("explicit public research uses high thinking and explicit options still win", () => {
+  assert.deepEqual(turnModelOptions({ text: "Research the competitor market" }), {
+    thinkingLevel: STRATEGIC_THINKING_LEVEL,
+  });
+  assert.deepEqual(turnModelOptions({ text: "Deep research this strategy", thinkingLevel: "low" }), {
+    thinkingLevel: "low",
+  });
 });
 
 test("a triggered turn with an explicit low thinking level overrides the xhigh trigger default", () => {

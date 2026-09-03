@@ -26,6 +26,9 @@ test("Gemini compatibility removes unsupported fields and restores sequential to
   const normalized = normalizeDevGeminiPayload({
     store: false,
     stream_options: { include_usage: true },
+    temperature: 0.4,
+    top_p: 0.9,
+    top_k: 20,
     max_completion_tokens: 4096,
     messages: [
       {
@@ -44,6 +47,9 @@ test("Gemini compatibility removes unsupported fields and restores sequential to
   }) as any;
   assert.equal(normalized.store, undefined);
   assert.equal(normalized.stream_options, undefined);
+  assert.equal(normalized.temperature, undefined);
+  assert.equal(normalized.top_p, undefined);
+  assert.equal(normalized.top_k, undefined);
   assert.equal(normalized.max_completion_tokens, undefined);
   assert.equal(normalized.max_tokens, 4096);
   assert.equal(
@@ -74,6 +80,7 @@ test("the dev provider materializes the exact OpenAI-compatible model quirks", (
     const model = resolveCustomModel(provider.spec.models[0]!.id);
     assert.equal(model?.provider, DEV_GEMINI_PROVIDER_ID);
     assert.deepEqual(model?.compat, DEV_GEMINI_COMPAT);
+    assert.equal(model?.reasoning, true);
     const serialized = customModelsJson() as any;
     assert.deepEqual(serialized.providers[DEV_GEMINI_PROVIDER_ID].models[0].compat, DEV_GEMINI_COMPAT);
   } finally {

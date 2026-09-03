@@ -141,7 +141,7 @@ function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): Custo
     provider: provider.id,
     api: provider.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
     baseUrl: provider.baseUrl,
-    reasoning: false,
+    reasoning: m.compat?.supportsReasoningEffort === true,
     input: ["text"],
     cost: { input: m.input ?? 0, output: m.output ?? 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: m.contextWindow ?? DEFAULT_CONTEXT_WINDOW,

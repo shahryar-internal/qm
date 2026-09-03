@@ -33,6 +33,17 @@ test("a registered custom model resolves with the provider's protocol and base U
   assert.equal(model.baseUrl, "https://llm.acme.internal/v1");
   assert.equal(model.contextWindow, 200_000);
   assert.equal(model.cost.input, 2);
+  assert.equal(model.reasoning, false);
+});
+
+test("a custom model advertises reasoning only when its reviewed compatibility enables effort", () => {
+  setCustomProviders([
+    {
+      ...GATEWAY,
+      models: [{ ...GATEWAY.models[0]!, compat: { supportsReasoningEffort: true } }],
+    },
+  ]);
+  assert.equal(resolveCustomModel("acme-large")?.reasoning, true);
 });
 
 test("a registered custom provider resolves by provider id", () => {
