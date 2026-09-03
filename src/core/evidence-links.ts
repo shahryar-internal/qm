@@ -194,3 +194,9 @@ export function slackTurnRequiresEvidenceBuffer(requestText: string): boolean {
   const bounded = requestText.trim().slice(0, 8_192);
   return !bounded.startsWith("!") && !ACKNOWLEDGEMENT.test(bounded);
 }
+
+export function slackEvidenceRequestText(inputText: string, displayText?: string): string {
+  return inputText.trimStart().startsWith("!") && displayText !== undefined && displayText !== inputText
+    ? displayText
+    : inputText;
+}

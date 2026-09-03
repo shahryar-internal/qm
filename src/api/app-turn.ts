@@ -22,7 +22,7 @@ import { errMessage } from "../util/errors.ts";
 import type { App, AppDeps } from "./app-types.ts";
 import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
 import { unscreenedNotice } from "../security/security-posture.ts";
-import { slackTurnRequiresEvidenceBuffer } from "../core/evidence-links.ts";
+import { slackEvidenceRequestText, slackTurnRequiresEvidenceBuffer } from "../core/evidence-links.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
 import { privateTurnObservation, type PrivateTurnObservation } from "./private-turn-observer.ts";
@@ -294,6 +294,7 @@ export function createTurnMethods(
       };
 
       const origin = resolveTurnOrigin(req);
+      const evidenceRequestText = slackEvidenceRequestText(req.text, req.displayText);
 
       const acceptedPrivateTurn = (acceptedRunRef: string, acceptedAt: number) => {
         return privateTurnAcceptance({
@@ -322,6 +323,7 @@ export function createTurnMethods(
         conversation,
         origin,
         text: req.text,
+        ...(req.surface === "slack" ? { evidenceRequestText } : {}),
         ...(req.gatewayContext ? { gatewayContext: req.gatewayContext } : {}),
         ...(req.slackAgentSessionToken ? { slackAgentSessionToken: req.slackAgentSessionToken } : {}),
         ...(req.slackAgentSession ? { slackAgentSession: req.slackAgentSession } : {}),
@@ -483,8 +485,7 @@ export function createTurnMethods(
           req.surface === "slack" &&
           origin.kind === "human" &&
           !req.unprompted &&
-          slackTurnRequiresEvidenceBuffer(req.displayText ?? req.text) &&
-          (!req.text.trimStart().startsWith("!") || (req.displayText !== undefined && req.displayText !== req.text));
+          slackTurnRequiresEvidenceBuffer(evidenceRequestText);
         request = { ...input, ...(evidenceBufferedSlackTurn ? {} : { surfaceTools: true }) };
         if (origin.kind !== "ambient")
           request = {

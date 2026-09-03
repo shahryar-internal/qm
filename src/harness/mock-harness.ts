@@ -178,6 +178,7 @@ export function createMockHarness(): Harness {
         let muteReply = false;
         let usedTool = false;
         let silent = false;
+        let stopped = false;
         const collected: Array<{
           command: string;
           reason: string;
@@ -570,6 +571,13 @@ export function createMockHarness(): Harness {
             reply = "Approved maintenance completed.";
           }
           usedTool = true;
+        } else if (command0 === "!stopped-raw-card") {
+          await turn.tools.execute(
+            `mkdir -p "$AGENT_OUTBOX" && printf %s ${JSON.stringify('{"query_id":"stopped-private"}')} > "$AGENT_OUTBOX/stopped.workflow.json"`,
+          );
+          usedTool = true;
+          stopped = true;
+          reply = "unfinished partial";
         } else if (command0.startsWith("!paused-approval ")) {
           const command = command0.slice("!paused-approval ".length);
           await turn.emit({
@@ -947,7 +955,12 @@ export function createMockHarness(): Harness {
             }
           : { reply, modelCalls };
         if (muteReply) base.reply = "";
-        return { ...base, ...(silent ? { silent: true as const } : {}), cacheUsage };
+        return {
+          ...base,
+          ...(silent ? { silent: true as const } : {}),
+          ...(stopped ? { stopped: true as const } : {}),
+          cacheUsage,
+        };
       },
 
       shouldRespond(detect: HarnessDetectInput): Promise<HarnessDetectResult> {

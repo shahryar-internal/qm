@@ -15,7 +15,12 @@ import type {
 import { scopeId as toScopeId, personalScope } from "../types.ts";
 import { turnOriginRequestFields } from "./turn-origin.ts";
 import { resolveTurnFastMode } from "./turn-options.ts";
-import { persistedEvidenceFromToolResult, type DeliveryEvidenceSource } from "./evidence-links.ts";
+import {
+  persistedEvidenceFromToolResult,
+  slackEvidenceRequestText,
+  slackTurnRequiresEvidenceBuffer,
+  type DeliveryEvidenceSource,
+} from "./evidence-links.ts";
 import { enforceAndRepairEvidenceDelivery } from "./evidence-delivery-repair.ts";
 import { WORKFLOW_ARTIFACT_MIME } from "../../plugins/chassis/src/workflow-artifact.ts";
 import { orgId } from "../config.ts";
@@ -920,7 +925,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const orgName = branding.orgName ?? "this organization";
       const rawHandle = cleanBrandingLabel(input.gatewayContext?.botHandle?.replace(/^@/, ""), 40);
       const botHandle = rawHandle && rawHandle.toLowerCase() !== botName.toLowerCase() ? rawHandle : undefined;
-      const bufferedSlackTurn = isSlack && !input.surfaceTools;
+      const evidenceRequestText = input.evidenceRequestText ?? slackEvidenceRequestText(input.text, input.displayText);
+      const bufferedSlackTurn = isSlack && !input.surfaceTools && slackTurnRequiresEvidenceBuffer(evidenceRequestText);
       let modeName = "mode-fallback";
       if (bufferedSlackTurn) modeName = "mode-buffered-slack";
       else if (input.surfaceTools) modeName = "mode-autonomous";
@@ -3512,9 +3518,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
         }
 
-        if (input.surface === "slack" && !input.surfaceTools && finalResult.status === "ok") {
+        if (bufferedSlackTurn && !result.stopped && finalResult.status === "ok") {
           const checked = await enforceAndRepairEvidenceDelivery({
-            requestText: input.displayText ?? input.text,
+            requestText: evidenceRequestText,
             result: finalResult,
             fetchBlob: async (blobId) => {
               const staged = stagedWorkflow.get(blobId);
@@ -3549,7 +3555,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               at: Date.now(),
               principalId: actor.id,
               action: "slack.evidence_delivery_repair",
-              resource: input.surface,
+              resource: "slack",
               scopeLabel: scopeId,
               status: checked.repaired ? "allowed" : "refused",
               detail: JSON.stringify({ repaired: checked.repaired }),
@@ -3558,6 +3564,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
 
         if (bufferedSlackTurn) {
+          const stoppedReply = result.stopped && finalResult.status === "ok" ? finalResult.reply : undefined;
+          if (result.stopped) {
+            finalResult = { status: "silent", sessionId: session.id, stopped: true };
+          }
           if (finalResult.status === "ok" && finalResult.attachments?.length) {
             const verifiedAttachments: OutgoingAttachment[] = [];
             for (const attachment of finalResult.attachments) {
@@ -3575,7 +3585,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             finalResult = { ...finalResult, attachments: verifiedAttachments };
           }
 
-          durableReply = finalResult.status === "ok" ? finalResult.reply : undefined;
+          durableReply = stoppedReply ?? (finalResult.status === "ok" ? finalResult.reply : undefined);
           for (const record of bufferedTapeRecords) {
             const payload = record.payload as { role?: unknown; content?: unknown } | null;
             let persisted = record;

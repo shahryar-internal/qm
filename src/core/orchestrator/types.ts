@@ -95,6 +95,7 @@ export interface OrchestratorInput extends Omit<
   sessionParticipantIds?: readonly string[];
   scopeVersion?: string;
   scheduleAuthority?: CurrentScheduleRunInvocation;
+  evidenceRequestText?: string;
 }
 
 export interface OrchestratorDeps {

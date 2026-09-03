@@ -6,6 +6,7 @@ import {
   mcpReadEvidence,
   persistedEvidenceFromToolResult,
   slackTurnRequiresEvidenceBuffer,
+  slackEvidenceRequestText,
   webSearchEvidence,
 } from "../src/core/evidence-links.ts";
 
@@ -231,6 +232,9 @@ test("Slack delivery buffering exempts acknowledgements and command-prefixed con
   assert.equal(slackTurnRequiresEvidenceBuffer("Thanks!"), false);
   assert.equal(slackTurnRequiresEvidenceBuffer("!show me the account update"), false);
   assert.equal(slackTurnRequiresEvidenceBuffer("Write a friendly email"), true);
+  assert.equal(slackEvidenceRequestText("!sysprompt"), "!sysprompt");
+  assert.equal(slackEvidenceRequestText("!typed-evidence", "Review the current plan"), "Review the current plan");
+  assert.equal(slackEvidenceRequestText("Review current pricing", "!sysprompt"), "Review current pricing");
 });
 
 test("evidence-boundary source files contain no hidden ASCII control characters", async () => {

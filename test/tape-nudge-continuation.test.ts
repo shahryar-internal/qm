@@ -377,9 +377,17 @@ test("a stopped partial withholds coverage until its saved text is imported for 
 });
 
 test("consecutive stopped turns heal one import each and converge once a turn completes", async () => {
-  const { modes, folds, sessions, session, orchestrator, input } = await runScenario({ stoppedPartial: true });
-  await orchestrator.handleTurn(input("keep stopping one"));
-  await orchestrator.handleTurn(input("keep stopping two"));
+  const { modes, folds, deliveries, sessions, session, orchestrator, input } = await runScenario({
+    stoppedPartial: true,
+  });
+  const firstStopped = await orchestrator.handleTurn(input("keep stopping one"));
+  const secondStopped = await orchestrator.handleTurn(input("keep stopping two"));
+  assert.equal(firstStopped.status, "silent");
+  assert.equal(secondStopped.status, "silent");
+  assert.equal(
+    (await deliveries.pending("slack")).some((delivery) => delivery.text.startsWith("partial: keep stopping")),
+    false,
+  );
   await orchestrator.handleTurn(input("continue after stops"));
   const countImports = async () =>
     (await sessions.getTape(session.id)).filter(
