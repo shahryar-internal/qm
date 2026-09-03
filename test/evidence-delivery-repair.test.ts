@@ -11,6 +11,31 @@ function initial(): TurnResult {
   return { status: "ok", reply: "Current finding without provenance.", deliveryEvidenceSources: source };
 }
 
+function validCard() {
+  return {
+    version: 1,
+    renderer: "qm.card.v1",
+    fallbackText: "Executive Brief",
+    payload: {
+      heading: "Executive Brief",
+      summary: `Current finding. ${suffix}`,
+      sections: [
+        {
+          key: "evidence",
+          label: "Evidence",
+          items: [
+            {
+              label: "Public web · checked 2026-09-02",
+              value: "Current finding. Publication date unavailable · Freshness: unverified.",
+              href: link,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 test("one isolated presentation-only model call can repair prose and a substantial card", async () => {
   const blobs = new Map<string, Buffer>();
   let calls = 0;
@@ -29,9 +54,11 @@ test("one isolated presentation-only model call can repair prose and a substanti
     oneShot: async (system, prompt) => {
       calls++;
       assert.match(system, /Do not retrieve data, call tools/u);
+      assert.match(system, /"renderer":"qm\.card\.v1"/u);
       assert.match(system, /Meeting Brief/u);
       assert.match(system, /Partially ready/u);
       assert.match(system, /Recommended next steps/u);
+      assert.equal(JSON.parse(prompt).cardRequired, true);
       assert.doesNotMatch(prompt, /tool_call|sessionId|auth metadata/u);
       return JSON.stringify({
         reply: `ACME is stable. ${suffix}`,
@@ -64,6 +91,64 @@ test("one isolated presentation-only model call can repair prose and a substanti
   assert.equal(checked.repairAttempted, true);
   assert.equal(checked.repaired, true);
   assert.equal(checked.result.attachments?.length, 1);
+});
+
+test("presentation repair receives the runtime card disposition for a simple lookup", async () => {
+  let stages = 0;
+  const checked = await enforceAndRepairEvidenceDelivery({
+    requestText: "What is the current finding?",
+    result: initial(),
+    fetchBlob: async () => {
+      throw new Error("not expected");
+    },
+    stageBlob: async () => {
+      stages++;
+      return { blobId: "unexpected", sizeBytes: 1 };
+    },
+    oneShot: async (_system, prompt) => {
+      assert.equal(JSON.parse(prompt).cardRequired, false);
+      return JSON.stringify({ reply: `Current finding. ${suffix}`, card: null });
+    },
+  });
+  assert.equal(checked.repairAttempted, true);
+  assert.equal(checked.repaired, true);
+  assert.equal(checked.result.attachments, undefined);
+  assert.equal(stages, 0);
+});
+
+test("a simple lookup cannot stage a card that contradicts the runtime disposition", async () => {
+  let stages = 0;
+  const checked = await enforceAndRepairEvidenceDelivery({
+    requestText: "What is the current finding?",
+    result: initial(),
+    fetchBlob: async () => {
+      throw new Error("not expected");
+    },
+    stageBlob: async () => {
+      stages++;
+      return { blobId: "unexpected", sizeBytes: 1 };
+    },
+    oneShot: async () => JSON.stringify({ reply: `Current finding. ${suffix}`, card: validCard() }),
+  });
+  assert.equal(checked.repairAttempted, true);
+  assert.equal(checked.repaired, false);
+  assert.equal(checked.result.attachments, undefined);
+  assert.equal(stages, 0);
+});
+
+test("a substantial repair cannot omit the runtime-required card", async () => {
+  const checked = await enforceAndRepairEvidenceDelivery({
+    requestText: "Give me an ACME update",
+    result: initial(),
+    fetchBlob: async () => {
+      throw new Error("not expected");
+    },
+    stageBlob: async () => assert.fail("missing card must not stage a blob"),
+    oneShot: async () => JSON.stringify({ reply: `ACME is stable. ${suffix}`, card: null }),
+  });
+  assert.equal(checked.repairAttempted, true);
+  assert.equal(checked.repaired, false);
+  assert.equal(checked.result.attachments, undefined);
 });
 
 test("a failed repair is attempted exactly once and then fails safe", async () => {
