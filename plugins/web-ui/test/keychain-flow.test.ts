@@ -24,7 +24,7 @@ test("reset invalidates identity-bound loads and operations", () => {
   assert.equal(operations.beginMutation(), null);
   operations.finishMutation(currentMutation);
   assert.ok(operations.beginMutation());
-  assert.match(shellSource, /resetKeychainState\(\);\s*appState\.me =/);
+  assert.match(shellSource, /resetKeychainState\(\);\s*resetConnectorReadiness\(\);\s*appState\.me =/);
 });
 
 test("a reversed keychain load cannot overwrite the latest response", async () => {
@@ -129,7 +129,7 @@ test("keychain summary excludes expired grants and counts pending asks", () => {
 });
 
 test("keychain overview wires managed connector grants into account controls", () => {
-  assert.match(connectorsSource, /connectorCredentials\?: KeychainConnectorCredential\[\]/);
+  assert.match(connectorsSource, /parseKeychainOverview\(keys\.value\)/);
   assert.match(
     connectorsSource,
     /keychainConnectorCredentials\.filter\(\(credential\) => hosts\.has\(credential\.host\)\)/,
@@ -150,13 +150,41 @@ test("destructive controls settle duplicate attempts while a mutation is busy", 
 
 test("keychain rows reserve success badges for actionable states", () => {
   assert.doesNotMatch(connectorsSource, /Stored securely/);
-  assert.doesNotMatch(connectorsSource, />Connected<\/span>/);
+  assert.match(connectorsSource, /<span class="kc-state success">Connected<\/span>/);
+  assert.match(connectorsSource, /<span class="kc-state disabled">Disabled<\/span>/);
   assert.match(connectorsSource, /expired \? html`<span class="kc-state warning">Expired<\/span>` : ""/);
   assert.match(connectorsSource, /<span class="kc-state warning">Reconnect needed<\/span>/);
+  assert.match(connectorsSource, /parseConnectorProviders\(conn\.value\.providers\)/);
+  assert.doesNotMatch(connectorsSource, /Refresh failed: \$\{p\.refreshError\}/);
 });
 
 test("keychain actions keep secondary weight and compact mobile sizing", () => {
   assert.match(connectorsSource, /\$\{available \? html`<button class="btn" type="button"/);
   assert.doesNotMatch(shellCssSource, /\.kc-hero-actions \.btn\s*\{\s*flex:\s*1;/);
   assert.doesNotMatch(shellCssSource, /sidebar-closed \.kc-hero-copy/);
+});
+
+test("keychain load failures stay distinct from authoritative empty states", () => {
+  assert.match(connectorsSource, /connectorLoadFailed = true/);
+  assert.match(connectorsSource, /keychainLoadFailed = true/);
+  assert.match(connectorsSource, /Connection status unavailable/);
+  assert.match(connectorsSource, /Credential status unavailable/);
+  assert.match(connectorsSource, /const overview = parseKeychainOverview\(keys\.value\)/);
+  assert.match(connectorsSource, /notices\.push\("Credential status is unavailable\."\)/);
+  assert.match(
+    connectorsSource,
+    /if \(connectorLoadFailed\)\s*accountRows = html`<div class="kc-empty error" role="alert">/,
+  );
+  assert.match(
+    connectorsSource,
+    /if \(keychainLoadFailed\)\s*credentialRows = html`<div class="kc-empty error" role="alert">/,
+  );
+});
+
+test("auth gates and every successful boot invalidate prior-principal readiness", () => {
+  assert.match(
+    shellSource,
+    /export function renderAuthGate\(gate: AuthGate\): void \{\s*shellMounted = false;\s*resetKeychainState\(\);\s*resetConnectorReadiness\(\);/,
+  );
+  assert.match(shellSource, /resetKeychainState\(\);\s*resetConnectorReadiness\(\);\s*appState\.me =/);
 });

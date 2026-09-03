@@ -11,6 +11,8 @@ test("approval continuations attach their exact run while sibling cards stay ind
   assert.match(chat, /!chatState\.resolvingApprovals\.has\(approval\.requestId\)/);
   assert.match(chat, /await active\.waitForIdle\(\);[\s\S]{0,100}await syncPendingApprovals\(active\)/);
   assert.match(chat, /delete .*pendingApprovals;[\s\S]{0,100}attachPendingApprovals/);
-  assert.match(composer, /resolvingApprovals\.has\(a\.requestId\)/);
-  assert.doesNotMatch(composer, /const busy = ctx\.chat\.state\.resolvingApprovals\.size > 0/);
+  assert.match(composer, /const resolving = ctx\.chat\.state\.resolvingApprovals\.size > 0/);
+  assert.equal(composer.match(/\?disabled=\$\{resolving\}/g)?.length, 4);
+  assert.match(composer, /aria-busy=\$\{resolving \? "true" : "false"\}/);
+  assert.match(composer, /Applying your decision…/);
 });

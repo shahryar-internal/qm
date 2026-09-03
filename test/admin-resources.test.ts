@@ -199,7 +199,7 @@ test("branding governance validates, round-trips through surface-config, clears,
   const surfaceBranding = async () =>
     (
       (await (await fetch(`${srv.base}/v1/surface-config`)).json()) as {
-        branding?: { accent?: string; mark?: string; selfLabel?: string };
+        branding?: { accent?: string; mark?: string; selfLabel?: string; preset?: string };
       }
     ).branding;
   try {
@@ -232,11 +232,22 @@ test("branding governance validates, round-trips through surface-config, clears,
       400,
     );
     assert.equal(
+      (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ preset: "https://evil/logo.svg" }) }))
+        .status,
+      400,
+    );
+    assert.equal(
       (
         await fetch(url, {
           method: "PUT",
           headers: ADMIN,
-          body: JSON.stringify({ accent: "#6366f1", mark: "Q", selfLabel: "{{qm}}", orgName: "Acme Corp" }),
+          body: JSON.stringify({
+            accent: "#6366f1",
+            mark: "Q",
+            selfLabel: "{{qm}}",
+            orgName: "Acme Corp",
+            preset: "risely",
+          }),
         })
       ).status,
       200,
@@ -246,7 +257,7 @@ test("branding governance validates, round-trips through surface-config, clears,
     ).json()) as { branding?: { accent?: string; orgName?: string } };
     assert.equal(readBack.branding?.accent, "#6366f1");
     assert.equal(readBack.branding?.orgName, "Acme Corp");
-    assert.deepEqual(await surfaceBranding(), { accent: "#6366f1", mark: "Q", selfLabel: "qm" });
+    assert.deepEqual(await surfaceBranding(), { accent: "#6366f1", mark: "Q", selfLabel: "qm", preset: "risely" });
     assert.equal(
       (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ mark: "<b>xy" }) })).status,
       200,

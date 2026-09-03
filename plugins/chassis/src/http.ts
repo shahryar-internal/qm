@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { brandLogoSvg, type BrandPreset } from "./branding.ts";
 
 export class PayloadTooLargeError extends Error {
   constructor() {
@@ -35,9 +36,21 @@ export function escapeHtml(s: string): string {
   );
 }
 
-export function serveEmojiFavicon(res: ServerResponse, emoji: string, cacheControl: string): void {
+function serveEmojiFavicon(res: ServerResponse, emoji: string, cacheControl: string): void {
   res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": cacheControl });
   res.end(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90" text-anchor="middle" x="50">${emoji}</text></svg>`,
   );
+}
+
+export function serveBrandFavicon(
+  res: ServerResponse,
+  preset: BrandPreset | undefined,
+  fallbackEmoji: string,
+  cacheControl: string,
+): void {
+  const logo = brandLogoSvg(preset);
+  if (!logo) return serveEmojiFavicon(res, fallbackEmoji, cacheControl);
+  res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": cacheControl });
+  res.end(logo);
 }

@@ -32,7 +32,7 @@ import {
 import { applyRuntimeOptions } from "./model-options";
 import { errMessage, swallow } from "../../chassis/src/errors";
 import { brandMark, brandName, icon, initials } from "./ui";
-import { markConnectorConnected } from "./chat";
+import { refreshConnectorReadiness, resetConnectorReadiness } from "./chat";
 import { clearSkillsCache, resyncModelSelection, seedRuntimeConfig } from "./composer";
 import { ensureDeliveryStream, mainConversation, onExitCanvas } from "./conversations";
 import { clearAllDrafts, saveDraft, storedDraft } from "./drafts";
@@ -211,6 +211,7 @@ export async function signOut(): Promise<void> {
   resetMemoryState();
   resetContextsState();
   resetKeychainState();
+  resetConnectorReadiness();
   mainConversation().composer.resetComposer();
   updateDocumentTitle();
   if (!portal) {
@@ -407,6 +408,8 @@ export type AuthGate =
 
 export function renderAuthGate(gate: AuthGate): void {
   shellMounted = false;
+  resetKeychainState();
+  resetConnectorReadiness();
   const body = (() => {
     switch (gate.kind) {
       case "portal":
@@ -887,6 +890,7 @@ export async function boot(): Promise<void> {
     return;
   }
   resetKeychainState();
+  resetConnectorReadiness();
   appState.me = (await r.json()) as Me;
   authMode = appState.me.mode ?? "portal";
   clearPortalAttempt();
@@ -921,7 +925,7 @@ export async function boot(): Promise<void> {
     item: wantedItem,
   } = parseDeepLink(UI_BASE, location.pathname, location.search);
   const connectedProvider = params.get("status") === "connected" ? params.get("connector") : null;
-  if (connectedProvider) markConnectorConnected(connectedProvider);
+  void refreshConnectorReadiness();
   const viewIntent = isView(wanted) && wanted !== "chats";
   const entriesPrefetch =
     wantedSession && !viewIntent ? fetchTranscript(wantedSession, { tailTurns: TAIL_TURNS }).catch(() => null) : null;

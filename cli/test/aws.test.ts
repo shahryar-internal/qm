@@ -470,11 +470,23 @@ test("AWS environment derives identity, public URLs, private wiring, and MicroVM
   assert.equal(core.PORT, "8080");
 });
 
-test("a configured bot identity lands in the AWS core task env and only there", () => {
-  const branded = { ...config, botName: "straylight", orgName: "Straylight Industries" };
+test("a configured bot identity and safe preset reach the AWS core and first-render surfaces", () => {
+  const branded = {
+    ...config,
+    botName: "straylight",
+    orgName: "Straylight Industries",
+    brandPreset: "risely" as const,
+  };
   const core = serviceEnvironment(branded, "core");
   assert.equal(core.ORG_BRAND_SELF_LABEL, "straylight");
   assert.equal(core.ORG_BRAND_ORG_NAME, "Straylight Industries");
+  assert.equal(core.ORG_BRAND_PRESET, "risely");
+  const portal = serviceEnvironment(branded, "portal");
+  assert.equal(portal.PORTAL_BRAND_NAME, "straylight");
+  assert.equal(portal.PORTAL_BRAND_PRESET, "risely");
+  const auth = serviceEnvironment(branded, "auth");
+  assert.equal(auth.AUTH_BRAND_NAME, "straylight");
+  assert.equal(auth.AUTH_BRAND_PRESET, "risely");
   assert.equal(serviceEnvironment(branded, "web-ui").ORG_BRAND_SELF_LABEL, undefined);
   assert.equal(serviceEnvironment(config, "core").ORG_BRAND_SELF_LABEL, undefined);
 });

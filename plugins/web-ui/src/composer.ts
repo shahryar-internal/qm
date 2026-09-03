@@ -755,10 +755,16 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function composerApprovalPanel(approvals: PendingApproval[]): TemplateResult {
+    const resolving = ctx.chat.state.resolvingApprovals.size > 0;
     const decide = (decision: ApprovalDecision): void => {
       if (!ctx.chat.state.resolvingApprovals.has(decision.requestId)) ctx.chat.resolveCommandApproval(decision);
     };
-    return html`<div class="composer-approval-panel" role="group" aria-label="Command approval">
+    return html`<div
+      class="composer-approval-panel"
+      role="group"
+      aria-label="Command approval"
+      aria-busy=${resolving ? "true" : "false"}
+    >
       ${approvals.map(
         (a) =>
           html`<div class="composer-approval">
@@ -767,7 +773,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
               <button
                 class="approval-btn deny"
                 type="button"
-                ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                ?disabled=${resolving}
                 @click=${() => decide({ requestId: a.requestId, approved: false })}
               >
                 Deny
@@ -775,7 +781,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
               <button
                 class="approval-btn"
                 type="button"
-                ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                ?disabled=${resolving}
                 @click=${() => decide({ requestId: a.requestId, approved: true, scope: "once" })}
               >
                 Allow once
@@ -786,7 +792,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   : html`<button
                       class="approval-btn primary"
                       type="button"
-                      ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                      ?disabled=${resolving}
                       @click=${() => decide({ requestId: a.requestId, approved: true, scope: "session" })}
                     >
                       Allow for session
@@ -798,13 +804,14 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
                   : html`<button
                       class="approval-btn"
                       type="button"
-                      ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                      ?disabled=${resolving}
                       @click=${() => decide({ requestId: a.requestId, approved: true, scope: "always" })}
                     >
                       Allow always
                     </button>`
               }
             </div>
+            ${resolving ? html`<div class="approval-resolving" role="status">Applying your decision…</div>` : nothing}
           </div>`,
       )}
     </div>`;

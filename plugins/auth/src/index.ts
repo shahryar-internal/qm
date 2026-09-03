@@ -32,8 +32,11 @@ export async function startServer(): Promise<void> {
       signal: AbortSignal.timeout(2_000),
     });
     if (!r.ok) throw new Error(`surface-config ${r.status}`);
-    const b = ((await r.json()) as { branding?: { selfLabel?: unknown } }).branding;
-    return typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {};
+    const b = ((await r.json()) as { branding?: { selfLabel?: unknown; preset?: unknown } }).branding;
+    return {
+      ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
+      ...(b?.preset === "risely" ? { preset: b.preset } : {}),
+    };
   });
   const handle = createAuthHandler({
     cfg: CFG,
@@ -44,6 +47,10 @@ export async function startServer(): Promise<void> {
     brandName: () => {
       void branding.forRender();
       return branding.current().selfLabel || CFG.brandName;
+    },
+    brandPreset: () => {
+      void branding.forRender();
+      return branding.current().preset || CFG.brandPreset;
     },
   });
   const server = createServer((req, res) => {

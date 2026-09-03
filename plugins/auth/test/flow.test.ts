@@ -529,3 +529,20 @@ test("a live brandName accessor overrides the env default on pages and emails", 
   await requestLink(h);
   assert.match(h.mailer.sent[0]!.subject, /straylight/);
 });
+
+test("the first sign-in render and favicon carry the fixed Risely preset", async (t) => {
+  const h = await startHarness({ env: { AUTH_BRAND_NAME: "Risely", AUTH_BRAND_PRESET: "risely" } });
+  t.after(() => h.close());
+  const page = await (
+    await fetch(`${h.base}/authorize?${authorizeQuery({ code_challenge: pkcePair().challenge })}`)
+  ).text();
+  assert.match(page, /<html lang="en" data-brand-preset="risely">/);
+  assert.match(page, /<title>Sign in · Risely<\/title>/);
+  assert.match(page, /<div class="brand-lockup">[\s\S]*<svg class="brand-logo"/);
+  assert.match(page, /#5533E2/);
+  assert.match(page, /font-family:Inter, ui-sans-serif, system-ui/);
+  assert.match(page, /@media \(prefers-color-scheme:dark\)[\s\S]*#A78BFA/);
+  const favicon = await (await fetch(`${h.base}/favicon.svg`)).text();
+  assert.match(favicon, /viewBox="0 0 49 48"/);
+  assert.match(favicon, /M18\.1746 18\.3541H22\.1289/);
+});

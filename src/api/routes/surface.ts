@@ -1082,6 +1082,7 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
     ...(branding.accent ? { accent: branding.accent } : {}),
     ...(branding.mark ? { mark: branding.mark } : {}),
     ...(branding.selfLabel ? { selfLabel: branding.selfLabel } : {}),
+    ...(branding.preset ? { preset: branding.preset } : {}),
   };
   return sendJson(res, 200, {
     webuiModels: configuredPicker.length ? configuredPicker : allowed,

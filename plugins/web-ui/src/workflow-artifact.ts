@@ -128,8 +128,9 @@ export class WorkflowArtifactElement extends LitElement {
     article {
       overflow: hidden;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      background: var(--background);
+      border-radius: var(--radius-lg, 14px);
+      background: var(--card, var(--background));
+      box-shadow: var(--risely-shadow-sm, 0 1px 2px rgb(0 0 0 / 0.05));
     }
     header,
     section,
@@ -148,8 +149,14 @@ export class WorkflowArtifactElement extends LitElement {
       margin: 0;
     }
     h3 {
-      font-size: 15px;
+      font-size: 16px;
       line-height: 1.35;
+    }
+    .title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
     }
     h4 {
       margin-bottom: 8px;
@@ -167,7 +174,7 @@ export class WorkflowArtifactElement extends LitElement {
     }
     .status {
       display: inline-flex;
-      margin-top: 9px;
+      flex: 0 0 auto;
       padding: 3px 8px;
       border: 1px solid currentColor;
       border-radius: 999px;
@@ -179,12 +186,15 @@ export class WorkflowArtifactElement extends LitElement {
     }
     .status-success {
       color: var(--success, #18794e);
+      background: color-mix(in srgb, var(--success, #18794e) 8%, transparent);
     }
     .status-warning {
       color: var(--warning, #946200);
+      background: color-mix(in srgb, var(--warning, #946200) 8%, transparent);
     }
     .status-danger {
       color: var(--destructive);
+      background: color-mix(in srgb, var(--destructive) 8%, transparent);
     }
     dl {
       display: grid;
@@ -205,6 +215,11 @@ export class WorkflowArtifactElement extends LitElement {
       color: var(--primary);
       text-underline-offset: 2px;
       overflow-wrap: anywhere;
+    }
+    dd a {
+      display: inline-block;
+      max-width: 100%;
+      font-weight: 500;
     }
     .links {
       display: flex;
@@ -227,6 +242,10 @@ export class WorkflowArtifactElement extends LitElement {
       dl {
         grid-template-columns: 1fr;
         gap: 3px;
+      }
+      .title-row {
+        flex-direction: column;
+        gap: 8px;
       }
       dd + dt {
         margin-top: 6px;
@@ -320,9 +339,11 @@ export class WorkflowArtifactElement extends LitElement {
 
   private cardView(card: WorkflowArtifactCard): TemplateResult {
     return html`<header>
-        <h3>${card.heading}</h3>
+        <div class="title-row">
+          <h3>${card.heading}</h3>
+          ${card.status ? html`<span class="status status-${card.status.tone}">${card.status.label}</span>` : nothing}
+        </div>
         ${card.summary ? html`<p>${card.summary}</p>` : nothing}
-        ${card.status ? html`<span class="status status-${card.status.tone}">${card.status.label}</span>` : nothing}
       </header>
       ${(card.sections ?? []).map(
         (section) =>

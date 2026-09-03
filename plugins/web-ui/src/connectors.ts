@@ -7,13 +7,18 @@ import { appState, replacePanePreservingFocus } from "./shell";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "./keychain-state";
+import { connectorUiState, parseConnectorProviders, type ConnectorProviderStatus } from "./connector-readiness";
+import {
+  parseKeychainOverview,
+  type KeychainAsk,
+  type KeychainConnectorCredential,
+  type KeychainCredential,
+  type KeychainGrant,
+  type KeychainUsage,
+} from "./keychain-overview";
 
-interface ConnectorProvider {
-  connected?: boolean;
-  needsReconnect?: boolean;
+interface ConnectorProvider extends ConnectorProviderStatus {
   refreshError?: string;
-  available?: boolean;
-  hosts?: Array<{ host?: string } | string>;
 }
 
 const CONNECTOR_LABELS: Record<string, { name: string; hosts: string; desc?: string }> = {
@@ -79,54 +84,6 @@ function connectorLogo(id: string): TemplateResult {
   ></span>`;
 }
 
-interface KeychainCredential {
-  id: string;
-  service: string;
-  kind?: string;
-  envKey?: string;
-  accountLabel?: string;
-  host?: string;
-  fingerprint?: string;
-  expiresAt?: number;
-  createdAt?: number;
-}
-
-interface KeychainConnectorCredential {
-  credentialId: string;
-  host: string;
-  accountType?: string;
-  expiresAt?: number;
-  connected: boolean;
-  needsReconnect?: boolean;
-}
-
-interface KeychainGrant {
-  id: string;
-  credentialId: string;
-  audienceScopeId: string;
-  mode: "once" | "standing";
-  purpose: string;
-  status: "active" | "revoked" | "used";
-  expiresAt?: number;
-}
-
-interface KeychainAsk {
-  id: string;
-  credentialId: string;
-  requesterId: string;
-  requesterScopeId: string;
-  purpose: string;
-  requestedMode?: "once" | "standing";
-  expiresAt: number;
-}
-
-interface KeychainUsage {
-  credentialId: string;
-  ts: number;
-  scopeLabel: string;
-  status: string;
-}
-
 let connectorProviders: Record<string, ConnectorProvider> = {};
 let keychainCredentials: KeychainCredential[] = [];
 let keychainConnectorCredentials: KeychainConnectorCredential[] = [];
@@ -134,6 +91,8 @@ let keychainGrants: KeychainGrant[] = [];
 let keychainAsks: KeychainAsk[] = [];
 let keychainUsage: KeychainUsage[] = [];
 let keychainScopeNames: Record<string, string> = {};
+let connectorLoadFailed = false;
+let keychainLoadFailed = false;
 let connectorNotice = "";
 let addingCredential: { service: string; envKey: string; purpose: string } | null = null;
 let secureDropUrl: string | null = null;
@@ -150,6 +109,8 @@ export function resetKeychainState(): void {
   keychainAsks = [];
   keychainUsage = [];
   keychainScopeNames = {};
+  connectorLoadFailed = false;
+  keychainLoadFailed = false;
   connectorNotice = "";
   addingCredential = null;
   secureDropUrl = null;
@@ -450,9 +411,11 @@ function drawConnectors(loading = false): void {
       credentials.map((credential) => [credential.credentialId, { id: credential.credentialId, kind: "connector" }]),
     );
     const grants = keychainGrants.filter((grant) => isActiveGrant(grant, credentialsById.get(grant.credentialId)));
-    let connectionState: TemplateResult | string = html`<span class="kc-state neutral">Not connected</span>`;
-    if (needsReconnect) connectionState = html`<span class="kc-state warning">Reconnect needed</span>`;
-    else if (connected) connectionState = "";
+    const state = connectorUiState(p);
+    let connectionState: TemplateResult = html`<span class="kc-state neutral">Not connected</span>`;
+    if (state === "blocked") connectionState = html`<span class="kc-state warning">Reconnect needed</span>`;
+    else if (state === "connected") connectionState = html`<span class="kc-state success">Connected</span>`;
+    else if (state === "disabled") connectionState = html`<span class="kc-state disabled">Disabled</span>`;
     return html`
       <article class="kc-resource kc-account">
         <div class="kc-resource-main">
@@ -466,7 +429,7 @@ function drawConnectors(loading = false): void {
           </div>
         </div>
         ${meta.desc ? html`<p class="kc-resource-description">${meta.desc}</p>` : ""}
-        ${needsReconnect && p.refreshError ? html`<div class="kc-inline-warning" role="status">Refresh failed: ${p.refreshError}</div>` : ""}
+        ${needsReconnect ? html`<div class="kc-inline-warning" role="status">This account must be connected again before the agent can use it.</div>` : ""}
         ${
           grants.length
             ? html`<div class="kc-access-block">
@@ -499,6 +462,41 @@ function drawConnectors(loading = false): void {
       </article>
     `;
   });
+  let accountRows: TemplateResult | TemplateResult[] = connectorCards;
+  if (connectorLoadFailed)
+    accountRows = html`<div class="kc-empty error" role="alert">
+      ${icon(RefreshCw, 20)}
+      <div><strong>Connection status unavailable</strong><span>Refresh to check configured accounts again.</span></div>
+    </div>`;
+  else if (!connectorCards.length)
+    accountRows = html`<div class="kc-empty">
+      ${icon(Link, 20)}
+      <div>
+        <strong>No accounts available</strong><span>Your workspace has not configured any account providers yet.</span>
+      </div>
+    </div>`;
+  let credentialRows: TemplateResult | TemplateResult[] = keychainCredentials.map(credentialCard);
+  if (keychainLoadFailed)
+    credentialRows = html`<div class="kc-empty error" role="alert">
+      ${icon(RefreshCw, 20)}
+      <div><strong>Credential status unavailable</strong><span>Refresh to check stored credentials again.</span></div>
+    </div>`;
+  else if (!keychainCredentials.length)
+    credentialRows = html`<div class="kc-empty">
+      ${icon(KeyRound, 20)}
+      <div><strong>No stored credentials</strong><span>Add one without pasting a secret into chat.</span></div>
+      <button
+        class="btn"
+        type="button"
+        @click=${() => {
+          addingCredential = { service: "", envKey: "", purpose: "" };
+          secureDropUrl = null;
+          drawConnectors();
+        }}
+      >
+        Add credential
+      </button>
+    </div>`;
   if (!appState.mainEl) return;
   const host = document.createElement("div");
   host.className = scopedSession.active ? "pane keychain-page scoped-view" : "pane keychain-page";
@@ -541,11 +539,19 @@ function drawConnectors(loading = false): void {
           </div>
         </header>
         <div class="kc-summary" aria-label="Keychain summary">
-          <div><span>${loading ? "—" : summary.connected}</span><small>Connected accounts</small></div>
-          <div><span>${loading ? "—" : keychainCredentials.length}</span><small>Stored credentials</small></div>
-          <div><span>${loading ? "—" : summary.activeGrants}</span><small>Active grants</small></div>
+          <div>
+            <span>${loading || connectorLoadFailed ? "—" : summary.connected}</span><small>Connected accounts</small>
+          </div>
+          <div>
+            <span>${loading || keychainLoadFailed ? "—" : keychainCredentials.length}</span
+            ><small>Stored credentials</small>
+          </div>
+          <div>
+            <span>${loading || keychainLoadFailed ? "—" : summary.activeGrants}</span><small>Active grants</small>
+          </div>
           <div class=${summary.attention ? "needs-attention" : ""}>
-            <span>${loading ? "—" : summary.attention}</span><small>Need attention</small>
+            <span>${loading || connectorLoadFailed || keychainLoadFailed ? "—" : summary.attention}</span
+            ><small>Need attention</small>
           </div>
         </div>
         ${connectorNotice || loading ? html`<div class="kc-notice" role="status">${loading ? "Loading your keychain…" : connectorNotice}</div>` : ""}
@@ -558,19 +564,7 @@ function drawConnectors(loading = false): void {
             </div>
             <p>Provider APIs the agent can use as you.</p>
           </div>
-          <div class="kc-resource-list">
-            ${
-              connectorCards.length
-                ? connectorCards
-                : html`<div class="kc-empty">
-                    ${icon(Link, 20)}
-                    <div>
-                      <strong>No accounts available</strong
-                      ><span>Your workspace has not configured any account providers yet.</span>
-                    </div>
-                  </div>`
-            }
-          </div>
+          <div class="kc-resource-list">${accountRows}</div>
         </section>
         <section class="kc-section" aria-labelledby="kc-credentials-title">
           <div class="kc-section-head">
@@ -580,29 +574,7 @@ function drawConnectors(loading = false): void {
             </div>
             <p>API keys, tokens, and files you added through the one-time page.</p>
           </div>
-          <div class="kc-resource-list">
-            ${
-              keychainCredentials.length
-                ? keychainCredentials.map(credentialCard)
-                : html`<div class="kc-empty">
-                    ${icon(KeyRound, 20)}
-                    <div>
-                      <strong>No stored credentials</strong><span>Add one without pasting a secret into chat.</span>
-                    </div>
-                    <button
-                      class="btn"
-                      type="button"
-                      @click=${() => {
-                        addingCredential = { service: "", envKey: "", purpose: "" };
-                        secureDropUrl = null;
-                        drawConnectors();
-                      }}
-                    >
-                      Add credential
-                    </button>
-                  </div>`
-            }
-          </div>
+          <div class="kc-resource-list">${credentialRows}</div>
         </section>
       </div>
       ${confirmation ? confirmationCard() : ""}
@@ -617,36 +589,48 @@ export async function renderConnectors(): Promise<void> {
   if (appState.currentView !== "keychain") return;
   const seq = appState.viewRenderSeq;
   const load = keychainOperations.beginLoad();
+  connectorLoadFailed = false;
+  keychainLoadFailed = false;
   drawConnectors(true);
   const [conn, keys] = await Promise.allSettled([
     api<{ providers?: Record<string, ConnectorProvider> }>("/api/connectors"),
-    api<{
-      credentials?: KeychainCredential[];
-      connectorCredentials?: KeychainConnectorCredential[];
-      grants?: KeychainGrant[];
-      asks?: KeychainAsk[];
-      usage?: KeychainUsage[];
-      scopeNames?: Record<string, string>;
-    }>("/api/keychain/overview"),
+    api<unknown>("/api/keychain/overview"),
   ]);
   if (seq !== appState.viewRenderSeq || !keychainOperations.isCurrentLoad(load) || appState.currentView !== "keychain")
     return;
   const notices: string[] = [];
   if (conn.status === "fulfilled") {
-    connectorProviders = Object.fromEntries(
-      Object.entries(conn.value.providers ?? {}).filter(([, p]) => p.available || p.connected || p.needsReconnect),
-    );
+    try {
+      connectorProviders = parseConnectorProviders(conn.value.providers);
+    } catch {
+      connectorProviders = {};
+      connectorLoadFailed = true;
+      notices.push("Connection status is unavailable.");
+    }
   } else {
     connectorProviders = {};
+    connectorLoadFailed = true;
     notices.push(errMessage(conn.reason, "Failed to load connectors."));
   }
   if (keys.status === "fulfilled") {
-    keychainCredentials = (keys.value.credentials ?? []).slice().sort((a, b) => a.service.localeCompare(b.service));
-    keychainConnectorCredentials = keys.value.connectorCredentials ?? [];
-    keychainGrants = keys.value.grants ?? [];
-    keychainAsks = keys.value.asks ?? [];
-    keychainUsage = keys.value.usage ?? [];
-    keychainScopeNames = keys.value.scopeNames ?? {};
+    try {
+      const overview = parseKeychainOverview(keys.value);
+      keychainCredentials = overview.credentials.slice().sort((a, b) => a.service.localeCompare(b.service));
+      keychainConnectorCredentials = overview.connectorCredentials;
+      keychainGrants = overview.grants;
+      keychainAsks = overview.asks;
+      keychainUsage = overview.usage;
+      keychainScopeNames = overview.scopeNames;
+    } catch {
+      keychainCredentials = [];
+      keychainConnectorCredentials = [];
+      keychainGrants = [];
+      keychainAsks = [];
+      keychainUsage = [];
+      keychainScopeNames = {};
+      keychainLoadFailed = true;
+      notices.push("Credential status is unavailable.");
+    }
   } else {
     keychainCredentials = [];
     keychainConnectorCredentials = [];
@@ -654,6 +638,7 @@ export async function renderConnectors(): Promise<void> {
     keychainAsks = [];
     keychainUsage = [];
     keychainScopeNames = {};
+    keychainLoadFailed = true;
     notices.push(errMessage(keys.reason, "Failed to load stored keys."));
   }
   if (notices.length) connectorNotice = notices.join(" ");

@@ -16,6 +16,125 @@
   --brand-mark: "A";
 }
 
+html[data-brand-preset="risely"] {
+  --app-font: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --background: oklch(0.985 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --primary: #5533e2;
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: #5533e2;
+  --brand-accent: #5533e2;
+  --brand-soft: rgba(85, 51, 226, 0.1);
+  --brand-soft-strong: rgba(85, 51, 226, 0.16);
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --risely-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.05);
+  --risely-shadow: 0 1px 3px rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+}
+
+html.dark[data-brand-preset="risely"] {
+  --background: oklch(0.08 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.12 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --primary: #a78bfa;
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.18 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.18 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.18 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --border: oklch(0.2 0 0);
+  --input: oklch(0.2 0 0);
+  --ring: #a78bfa;
+  --brand-accent: #a78bfa;
+  --brand-soft: rgba(167, 139, 250, 0.12);
+  --brand-soft-strong: rgba(167, 139, 250, 0.18);
+  --risely-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --risely-shadow: 0 1px 3px rgb(0 0 0 / 0.4), 0 1px 2px -1px rgb(0 0 0 / 0.3);
+}
+
+html[data-brand-preset="risely"] .brand-logo {
+  display: block;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+}
+
+html[data-brand-preset="risely"] .sidebar {
+  background: color-mix(in srgb, var(--card) 92%, var(--background));
+}
+
+html[data-brand-preset="risely"] .navrow.active,
+html[data-brand-preset="risely"] .session.active,
+html[data-brand-preset="risely"] .session-row.active .session {
+  background: var(--brand-soft);
+  color: var(--brand-accent);
+}
+
+html[data-brand-preset="risely"] .navrow.active {
+  box-shadow: inset 2px 0 0 var(--brand-accent);
+}
+
+html[data-brand-preset="risely"] .new-chat:hover,
+html[data-brand-preset="risely"] .navrow:hover {
+  background: var(--brand-soft);
+}
+
+html[data-brand-preset="risely"] .btn.primary,
+html[data-brand-preset="risely"] .send-btn {
+  border-color: var(--brand-accent);
+  background: var(--brand-accent);
+  color: white;
+}
+
+html[data-brand-preset="risely"] .composer-wrap:focus-within {
+  border-color: color-mix(in srgb, var(--brand-accent) 60%, var(--border));
+  box-shadow:
+    0 0 0 3px var(--brand-soft),
+    var(--risely-shadow);
+}
+
+html[data-brand-preset="risely"] .card,
+html[data-brand-preset="risely"] .composer-wrap {
+  background: var(--card);
+  box-shadow: var(--risely-shadow-sm);
+}
+
+html[data-brand-preset="risely"] .card:hover {
+  border-color: color-mix(in srgb, var(--brand-accent) 22%, var(--border));
+  box-shadow: var(--risely-shadow);
+}
+
+html[data-brand-preset="risely"] .signin {
+  background: radial-gradient(circle at 50% 18%, var(--brand-soft-strong), transparent 34%), var(--background);
+}
+
+html[data-brand-preset="risely"] .signin-panel {
+  width: 390px;
+  padding: 30px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  box-shadow: var(--risely-shadow);
+}
+
+html[data-brand-preset="risely"] :is(button, a, input, textarea, select):focus-visible {
+  outline-color: var(--brand-accent);
+}
+
 html,
 body,
 #app {
@@ -1340,6 +1459,79 @@ a.chat-row-open {
   font-size: 15px;
   line-height: 1.55;
 }
+.welcome-eyebrow {
+  margin-bottom: 8px;
+  color: var(--brand-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.welcome-readiness {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 18px;
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--risely-shadow-sm, 0 1px 2px rgb(0 0 0 / 0.05));
+}
+.welcome-readiness-copy {
+  display: grid;
+  gap: 2px;
+}
+.welcome-readiness-copy strong {
+  font-size: 14px;
+}
+.welcome-readiness-copy span {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.welcome-readiness-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1;
+}
+.welcome-readiness > .btn {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+.welcome-readiness-state {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--secondary);
+  color: var(--foreground);
+  font-size: 11px;
+  font-weight: 600;
+}
+.welcome-readiness-state.success {
+  background: color-mix(in srgb, #1a7f37 12%, var(--background));
+  color: #18794e;
+}
+.welcome-readiness-state.warning {
+  background: color-mix(in srgb, #d99a21 14%, var(--background));
+  color: #946000;
+}
+.welcome-readiness-state.muted {
+  color: var(--muted-foreground);
+}
+@media (max-width: 620px) {
+  .welcome-readiness {
+    grid-template-columns: 1fr;
+  }
+  .welcome-readiness > .btn,
+  .welcome-readiness-states {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .welcome-readiness > .btn {
+    width: 100%;
+  }
+}
 .message-row {
   display: flex;
   min-width: 0;
@@ -2432,6 +2624,11 @@ a.chat-row-open {
   width: 100%;
   justify-content: flex-end;
 }
+.approval-resolving {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  text-align: right;
+}
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -3237,6 +3434,16 @@ a.chat-row-open {
 .connector-widget.connected .connector-widget-icon {
   color: #1a7f37;
 }
+.connector-widget.disabled,
+.connector-widget.checking {
+  cursor: default;
+}
+.connector-widget.disabled {
+  opacity: 0.78;
+}
+.connector-widget.checking .connector-widget-icon {
+  color: var(--muted-foreground);
+}
 .connector-widget-icon {
   display: inline-flex;
   flex: 0 0 auto;
@@ -3783,6 +3990,14 @@ a.chat-row-open {
 .kc-state.warning {
   background: color-mix(in srgb, #d99a21 14%, var(--background));
   color: #946000;
+}
+.kc-state.success {
+  background: color-mix(in srgb, #1a7f37 12%, var(--background));
+  color: #18794e;
+}
+.kc-state.disabled {
+  background: color-mix(in srgb, var(--muted-foreground) 10%, var(--background));
+  color: var(--muted-foreground);
 }
 .kc-resource-description {
   max-width: 700px;

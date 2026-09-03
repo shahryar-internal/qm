@@ -154,6 +154,7 @@ export interface QmConfig {
   sandbox?: SandboxConfig;
   botName?: string;
   orgName?: string;
+  brandPreset?: "risely";
   appPrefix?: string;
   region?: string;
   flyOrg?: string;
@@ -515,6 +516,7 @@ const VALID_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
   "sandbox",
   "botName",
   "orgName",
+  "brandPreset",
   "appPrefix",
   "region",
   "flyOrg",
@@ -739,6 +741,12 @@ function validate(raw: unknown, path: string): QmConfig {
   if (botName) out.botName = botName;
   const orgName = identityName("orgName", 40, "it is how the bot refers to your organization");
   if (orgName) out.orgName = orgName;
+  if (o["brandPreset"] !== undefined) {
+    if (o["brandPreset"] !== "risely") {
+      throw new CliError(`${path}: "brandPreset" must be "risely" when set`);
+    }
+    out.brandPreset = o["brandPreset"];
+  }
   if (typeof o["appPrefix"] === "string") out.appPrefix = o["appPrefix"];
   if (typeof o["region"] === "string") out.region = o["region"];
   if (typeof o["flyOrg"] === "string") out.flyOrg = o["flyOrg"];

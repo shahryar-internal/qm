@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readBody, PayloadTooLargeError, serveEmojiFavicon } from "../../chassis/src/http.ts";
+import { readBody, PayloadTooLargeError, serveBrandFavicon } from "../../chassis/src/http.ts";
+import type { BrandPreset } from "../../chassis/src/branding.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
 import { validEmail } from "./config.ts";
@@ -20,6 +21,7 @@ export interface AuthDeps {
   claims: ClaimStore;
   mailer: Mailer;
   brandName?: () => string;
+  brandPreset?: () => BrandPreset | undefined;
   now?: () => number;
   onBackgroundTask?: (task: Promise<void>) => void;
 }
@@ -104,6 +106,11 @@ function readAuthorizeRequest(
 export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { cfg, signer, claims, mailer, signingKey } = deps;
   const brandName = deps.brandName ?? ((): string => cfg.brandName);
+  const brandPreset = deps.brandPreset ?? ((): BrandPreset | undefined => cfg.brandPreset);
+  const pageBrand = (): { brandName: string; brandPreset?: BrandPreset } => {
+    const preset = brandPreset();
+    return { brandName: brandName(), ...(preset ? { brandPreset: preset } : {}) };
+  };
   const now = deps.now ?? Date.now;
   const notify = deps.onBackgroundTask ?? ((task: Promise<void>) => void task.catch(() => undefined));
   const formAction = `${cfg.publicPath}/authorize`;
@@ -123,7 +130,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
   };
 
   const problem = (res: ServerResponse, status: number, heading: string, msg: string, detail?: string): void =>
-    sendHtml(res, status, problemPage({ brandName: brandName(), heading, msg, ...(detail ? { detail } : {}) }));
+    sendHtml(res, status, problemPage({ ...pageBrand(), heading, msg, ...(detail ? { detail } : {}) }));
 
   const signInUrl = ((): string | undefined => {
     try {
@@ -138,7 +145,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       res,
       400,
       problemPage({
-        brandName: brandName(),
+        ...pageBrand(),
         heading: "This sign-in link no longer works",
         msg: "Sign-in links work once and expire quickly. Request a fresh one and open it right away.",
         ...(signInUrl ? { retryUrl: signInUrl } : {}),
@@ -156,11 +163,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         parsed.problem,
       );
     const sealed = await signer.sealRequest(parsed.request, cfg.requestTtlS, now());
-    return sendHtml(
-      res,
-      200,
-      emailFormPage({ brandName: brandName(), action: formAction, requestToken: sealed.token }),
-    );
+    return sendHtml(res, 200, emailFormPage({ ...pageBrand(), action: formAction, requestToken: sealed.token }));
   }
 
   async function sendLink(request: AuthRequest, email: string, ip: string): Promise<void> {
@@ -217,7 +220,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
         res,
         400,
         emailFormPage({
-          brandName: brandName(),
+          ...pageBrand(),
           action: formAction,
           requestToken: sealed.token,
           problem: "That doesn't look like an email address.",
@@ -225,7 +228,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       );
     }
     const ip = clientIpOf(req);
-    sendHtml(res, 200, linkSentPage({ brandName: brandName(), email, ttlMinutes: linkTtlMinutes }));
+    sendHtml(res, 200, linkSentPage({ ...pageBrand(), email, ttlMinutes: linkTtlMinutes }));
     background(() => sendLink(request, email, ip));
   }
 
@@ -233,7 +236,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
     return sendHtml(
       res,
       200,
-      confirmSignInPage({ brandName: brandName(), action: `${cfg.publicPath}/verify` }),
+      confirmSignInPage({ ...pageBrand(), action: `${cfg.publicPath}/verify` }),
       CONFIRM_PAGE_CSP,
     );
   }
@@ -374,7 +377,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
 
     if (method === "GET" && path === "/healthz") return sendJson(res, 200, { ok: true });
     if (method === "GET" && (path === "/favicon.ico" || path === "/favicon.svg")) {
-      return serveEmojiFavicon(res, "✉️", "max-age=86400");
+      return serveBrandFavicon(res, brandPreset(), "✉️", "max-age=86400");
     }
     if (method === "GET" && path === "/.well-known/jwks.json") {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "public, max-age=300" });

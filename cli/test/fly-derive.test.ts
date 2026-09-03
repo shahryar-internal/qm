@@ -28,13 +28,17 @@ test("web-ui serves at the root in both shapes — publicUrl IS the web-ui URL (
   assert.equal(orgEnv("admin", "acme", url, false).ADMIN_BASE_PATH, undefined);
 });
 
-test("brand env reaches core as ORG_BRAND_* and auth as AUTH_BRAND_NAME, and only when configured", () => {
+test("brand env reaches core plus first-render auth and portal surfaces only when configured", () => {
   const url = "https://acme-web-ui.fly.dev";
-  const brand = { botName: "straylight", orgName: "Acme Corp" };
+  const brand = { botName: "straylight", orgName: "Acme Corp", preset: "risely" as const };
   const core = orgEnv("core", "acme", url, false, brand);
   assert.equal(core.ORG_BRAND_SELF_LABEL, "straylight");
   assert.equal(core.ORG_BRAND_ORG_NAME, "Acme Corp");
+  assert.equal(core.ORG_BRAND_PRESET, "risely");
   assert.equal(orgEnv("auth", "acme", url, false, brand).AUTH_BRAND_NAME, "straylight");
+  assert.equal(orgEnv("auth", "acme", url, false, brand).AUTH_BRAND_PRESET, "risely");
+  assert.equal(orgEnv("portal", "acme", url, false, brand).PORTAL_BRAND_NAME, "straylight");
+  assert.equal(orgEnv("portal", "acme", url, false, brand).PORTAL_BRAND_PRESET, "risely");
   const bare = orgEnv("core", "acme", url, false);
   assert.equal(bare.ORG_BRAND_SELF_LABEL, undefined);
   assert.equal(bare.ORG_BRAND_ORG_NAME, undefined);
@@ -74,14 +78,24 @@ const exampleFlyConfig = (): QmConfig => ({
   imageOverrides: {},
 });
 
-test("a configured bot identity lands in the derived fly toml for core and auth only", () => {
-  const config = { ...exampleFlyConfig(), botName: "straylight", orgName: "Straylight Industries" };
+test("a configured bot identity and safe preset land in the derived Fly service configs", () => {
+  const config = {
+    ...exampleFlyConfig(),
+    botName: "straylight",
+    orgName: "Straylight Industries",
+    brandPreset: "risely" as const,
+  };
   config.services = ["core", "admin", "web-ui", "portal", "auth"];
   const core = derivedTomlFor(config, "core", repoRoot);
   assert.match(core, /^\s*ORG_BRAND_SELF_LABEL = "straylight"$/m);
   assert.match(core, /^\s*ORG_BRAND_ORG_NAME = "Straylight Industries"$/m);
+  assert.match(core, /^\s*ORG_BRAND_PRESET = "risely"$/m);
   const auth = derivedTomlFor(config, "auth", repoRoot);
   assert.match(auth, /^\s*AUTH_BRAND_NAME = "straylight"$/m);
+  assert.match(auth, /^\s*AUTH_BRAND_PRESET = "risely"$/m);
+  const portal = derivedTomlFor(config, "portal", repoRoot);
+  assert.match(portal, /^\s*PORTAL_BRAND_NAME = "straylight"$/m);
+  assert.match(portal, /^\s*PORTAL_BRAND_PRESET = "risely"$/m);
   const webUi = derivedTomlFor(config, "web-ui", repoRoot);
   assert.doesNotMatch(webUi, /ORG_BRAND_SELF_LABEL/);
   const bare = derivedTomlFor(exampleFlyConfig(), "core", repoRoot);

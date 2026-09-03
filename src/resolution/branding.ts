@@ -1,6 +1,7 @@
 import type { OrgBranding, ScopedConfigStore } from "./config-store.ts";
 import type { ScopeId } from "../types.ts";
 import { swallowAs } from "../util/errors.ts";
+import { brandPreset } from "../../plugins/chassis/src/branding.ts";
 
 const LABEL_STRIP = /[\u0000-\u001F\u007F-\u009F\u2028\u2029<>{}]/g;
 const ACCENT_RE = /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
@@ -15,6 +16,7 @@ export function sanitizeBranding(raw: {
   mark?: unknown;
   selfLabel?: unknown;
   orgName?: unknown;
+  preset?: unknown;
 }): OrgBranding | undefined {
   const accentRaw = (typeof raw.accent === "string" ? raw.accent : "").replace(LABEL_STRIP, "").trim();
   const accent = accentRaw && ACCENT_RE.test(accentRaw) ? accentRaw : undefined;
@@ -22,11 +24,13 @@ export function sanitizeBranding(raw: {
   const mark = cleanBrandingLabel(markRaw, 2);
   const selfLabel = cleanBrandingLabel(raw.selfLabel, 40);
   const orgName = cleanBrandingLabel(raw.orgName, 40);
+  const preset = brandPreset(raw.preset);
   const branding: OrgBranding = {
     ...(accent ? { accent } : {}),
     ...(mark ? { mark } : {}),
     ...(selfLabel ? { selfLabel } : {}),
     ...(orgName ? { orgName } : {}),
+    ...(preset ? { preset } : {}),
   };
   return Object.keys(branding).length ? branding : undefined;
 }
@@ -45,6 +49,7 @@ export async function resolveBranding(
       mark: stored?.mark ?? dflt?.mark,
       selfLabel: stored?.selfLabel ?? dflt?.selfLabel,
       orgName: stored?.orgName ?? dflt?.orgName,
+      preset: brandPreset(stored?.preset) ?? dflt?.preset,
     }) ?? {}
   );
 }

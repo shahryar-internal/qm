@@ -18,6 +18,8 @@ test("sanitizeBranding strips template braces and control characters from every 
     /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
   );
   assert.deepEqual(sanitizeBranding({ accent: "#6366f1" }), { accent: "#6366f1" });
+  assert.deepEqual(sanitizeBranding({ preset: "risely" }), { preset: "risely" });
+  assert.equal(sanitizeBranding({ preset: "<script>risely" }), undefined);
   assert.equal(sanitizeBranding({ accent: "#abcde" }), undefined);
   assert.equal(sanitizeBranding({ accent: "#aabbccddee" }), undefined);
   assert.equal(sanitizeBranding({}), undefined);
@@ -47,4 +49,12 @@ test("resolveBranding degrades to the default identity when the durable read fai
 test("resolveBranding sanitizes stored values that predate write-side sanitization", async () => {
   const config = { getBrandingDurable: async () => ({ selfLabel: "{{legacy}}", orgName: "Acme <{Corp}>" }) };
   assert.deepEqual(await resolveBranding(config, ORG), { selfLabel: "legacy", orgName: "Acme Corp" });
+});
+
+test("resolveBranding keeps the fixed deployment preset when a stored value is invalid", async () => {
+  const config = { getBrandingDurable: async () => ({ preset: "https://evil.test/logo.svg" as "risely" }) };
+  assert.deepEqual(await resolveBranding(config, ORG, { preset: "risely", selfLabel: "Risely" }), {
+    selfLabel: "Risely",
+    preset: "risely",
+  });
 });

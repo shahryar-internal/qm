@@ -18,8 +18,13 @@ const productionEnv = {
 test("ORG_BRAND_* parses into a validated branding default", () => {
   assert.equal(loadConfig({}).brandingDefault, undefined);
   assert.deepEqual(
-    loadConfig({ ORG_BRAND_ACCENT: "#6366f1", ORG_BRAND_MARK: "Q", ORG_BRAND_SELF_LABEL: "qm" }).brandingDefault,
-    { accent: "#6366f1", mark: "Q", selfLabel: "qm" },
+    loadConfig({
+      ORG_BRAND_ACCENT: "#6366f1",
+      ORG_BRAND_MARK: "Q",
+      ORG_BRAND_SELF_LABEL: "qm",
+      ORG_BRAND_PRESET: "risely",
+    }).brandingDefault,
+    { accent: "#6366f1", mark: "Q", selfLabel: "qm", preset: "risely" },
   );
   assert.equal(loadConfig({ ORG_BRAND_ACCENT: "#abcde" }).brandingDefault, undefined);
   assert.deepEqual(loadConfig({ ORG_BRAND_MARK: 'a"bc' }).brandingDefault, { mark: "ab" });
@@ -27,6 +32,7 @@ test("ORG_BRAND_* parses into a validated branding default", () => {
   assert.deepEqual(loadConfig({ ORG_BRAND_ORG_NAME: "Acme Corp" }).brandingDefault, { orgName: "Acme Corp" });
   assert.equal(loadConfig({ ORG_BRAND_ORG_NAME: "x".repeat(80) }).brandingDefault?.orgName?.length, 40);
   assert.deepEqual(loadConfig({ ORG_BRAND_SELF_LABEL: "{{straylight}}" }).brandingDefault, { selfLabel: "straylight" });
+  assert.equal(loadConfig({ ORG_BRAND_PRESET: "https://evil.test/logo.svg" }).brandingDefault, undefined);
 });
 
 test("AUTH_ALLOWED_EMAILS becomes a normalized email-auth principal set", () => {

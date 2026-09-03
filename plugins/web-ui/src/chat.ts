@@ -80,7 +80,7 @@ import {
   harnessSupportsEffort,
   harnessSupportsFastMode,
 } from "./model-options";
-import { browserRenderableImage, formatBytes, icon, relTime } from "./ui";
+import { brandName, browserRenderableImage, formatBytes, icon, relTime } from "./ui";
 import { appState, renderSidebarTop, switchView, syncUrlFromState } from "./shell";
 import { contextsState, scopeTitle } from "./contexts";
 import { openProjectPage, scopeToolCount, sessionTopbarTpl, setScopedSession } from "./session-scope";
@@ -101,6 +101,7 @@ import { newChatDraftKey, saveDraft, storedDraft } from "./drafts";
 import { createForkOriginController, forkOriginView } from "./fork-origin";
 import { WorkflowArtifactRegistry, createDefaultWorkflowArtifactRegistry } from "./workflow-artifact-registry.ts";
 import { deliveredFileBadge, fileChip, imageChip } from "./delivered-file.ts";
+import { ConnectorReadinessController, connectorReadinessSummary, connectorUiState } from "./connector-readiness.ts";
 
 installMarkdownSanitizer();
 
@@ -120,16 +121,23 @@ interface SettledRowKey {
   tpl: TemplateResult | typeof nothing;
 }
 const settledRowCache = new WeakMap<object, SettledRowKey>();
-const connectedConnectors = new Set<string>();
+const connectorReadiness = new ConnectorReadinessController();
 const redrawHooks = new Set<() => void>();
 let proactiveOpenerStarted = false;
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export function markConnectorConnected(provider: string): void {
-  if (!provider) return;
-  connectedConnectors.add(provider);
-  for (const hook of redrawHooks) hook();
+export function resetConnectorReadiness(): void {
+  connectorReadiness.reset();
+}
+
+export function refreshConnectorReadiness(): Promise<void> {
+  return connectorReadiness.refresh(
+    () => api("/api/connectors"),
+    () => {
+      for (const hook of redrawHooks) hook();
+    },
+  );
 }
 
 export function createChatSurface(
@@ -241,7 +249,7 @@ export function createChatSurface(
     chatState.rememberedSessionId = null;
     chatState.rememberedScopeId = null;
     chatState.rememberedContextName = null;
-    connectedConnectors.clear();
+    resetConnectorReadiness();
   }
 
   function newChat(context?: { scopeId: string; name: string | null }): string {
@@ -928,15 +936,46 @@ export function createChatSurface(
   }
 
   function welcomeGreeting(): TemplateResult {
+    if (connectorReadiness.state.kind === "idle") void refreshConnectorReadiness();
+    const readiness =
+      connectorReadiness.state.kind === "ready" ? connectorReadinessSummary(connectorReadiness.state.providers) : null;
+    let connectionStatus: TemplateResult;
+    if (connectorReadiness.state.kind === "loading" || connectorReadiness.state.kind === "idle") {
+      connectionStatus = html`<span class="welcome-readiness-state">Checking connected tools…</span>`;
+    } else if (connectorReadiness.state.kind === "error") {
+      connectionStatus = html`<span class="welcome-readiness-state warning">Tool status is unavailable</span>`;
+    } else if (!readiness?.total) {
+      connectionStatus = html`<span class="welcome-readiness-state muted">No tools are configured</span>`;
+    } else {
+      connectionStatus = html`
+        <span class="welcome-readiness-state success">${readiness.connected} connected</span>
+        ${
+          readiness.blocked
+            ? html`<span class="welcome-readiness-state warning">${readiness.blocked} need attention</span>`
+            : nothing
+        }
+        ${
+          readiness.disconnected
+            ? html`<span class="welcome-readiness-state muted">${readiness.disconnected} ready to connect</span>`
+            : nothing
+        }
+        ${readiness.disabled ? html`<span class="welcome-readiness-state muted">${readiness.disabled} disabled</span>` : nothing}
+      `;
+    }
     return html`
       <article class="message-row assistant-row welcome-greeting">
         <div class="assistant-body">
+          <div class="welcome-eyebrow">${brandName()} workspace</div>
           <div class="streaming-text">
-            ${markdown(
-              "Hi — I'm your AI teammate 👋\n\n" +
-                "I run tasks on a computer of my own and work across your connected tools — Slack, Google Workspace, GitHub, Linear, and the open web — and I remember what we work on together.\n\n" +
-                "Want to get set up? Tell me your name and what you're working on, and I'll take it from there — or just ask me anything to dive straight in.",
-            )}
+            ${markdown("Hi — I'm your AI teammate. Ask a question, prepare a brief, or work through a decision with me.")}
+          </div>
+          <div class="welcome-readiness" role="status" aria-live="polite">
+            <div class="welcome-readiness-copy">
+              <strong>Workspace readiness</strong>
+              <span>Only tools your workspace has configured and you have connected can be used.</span>
+            </div>
+            <div class="welcome-readiness-states">${connectionStatus}</div>
+            <button class="btn" type="button" @click=${() => switchView("keychain")}>Review connections</button>
           </div>
         </div>
       </article>
@@ -1445,7 +1484,13 @@ export function createChatSurface(
     const name =
       CONNECTOR_NAMES[link.provider] ??
       (link.provider ? link.provider[0]!.toUpperCase() + link.provider.slice(1) : "your account");
-    if (link.provider && connectedConnectors.has(link.provider)) {
+    if (connectorReadiness.state.kind === "idle") void refreshConnectorReadiness();
+    const provider =
+      link.provider && connectorReadiness.state.kind === "ready"
+        ? connectorReadiness.state.providers[link.provider]
+        : undefined;
+    const state = provider ? connectorUiState(provider) : null;
+    if (state === "connected") {
       return html`<div class="connector-widget connected" role="status">
         <span class="connector-widget-icon">${icon(Check, 18)}</span>
         <span class="connector-widget-text"
@@ -1453,10 +1498,37 @@ export function createChatSurface(
         >
       </div>`;
     }
+    if (state === "disabled") {
+      return html`<div class="connector-widget disabled" role="status">
+        <span class="connector-widget-icon">${icon(Ban, 18)}</span>
+        <span class="connector-widget-text"
+          ><strong>${name} is unavailable</strong><small>This connection is disabled by your workspace</small></span
+        >
+      </div>`;
+    }
+    if (!state && connectorReadiness.state.kind === "error") {
+      return html`<div class="connector-widget disabled" role="status">
+        <span class="connector-widget-icon">${icon(Ban, 18)}</span>
+        <span class="connector-widget-text"
+          ><strong>${name} status unavailable</strong><small>Open Keychain to retry the readiness check</small></span
+        >
+      </div>`;
+    }
+    if (!state) {
+      return html`<div class="connector-widget checking" role="status" aria-live="polite">
+        <span class="connector-widget-icon">${icon(RefreshCw, 18)}</span>
+        <span class="connector-widget-text"
+          ><strong>Checking ${name}</strong><small>Verifying the current connection state</small></span
+        >
+      </div>`;
+    }
     return html`<a class="connector-widget" href=${withReturnTo(link.url)} target="_blank" rel="noreferrer">
       <span class="connector-widget-icon">${icon(Plug, 18)}</span>
       <span class="connector-widget-text"
-        ><strong>Connect ${name}</strong><small>Authorize access in a new tab</small></span
+        ><strong>${state === "blocked" ? `Reconnect ${name}` : `Connect ${name}`}</strong
+        ><small
+          >${state === "blocked" ? "The current connection needs attention" : "Authorize access in a new tab"}</small
+        ></span
       >
       ${icon(ChevronRight, 16)}
     </a>`;

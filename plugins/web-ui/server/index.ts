@@ -18,7 +18,7 @@ import {
   readBody as readBodyCapped,
   cookie,
   PayloadTooLargeError,
-  serveEmojiFavicon,
+  serveBrandFavicon,
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
@@ -53,6 +53,7 @@ const brandingCache = createBrandingCache(async () => {
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
+    ...(b?.preset === "risely" ? { preset: b.preset } : {}),
   };
 });
 
@@ -2366,7 +2367,13 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
   if (method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
   if (method === "GET" && path === "/favicon.svg") {
-    return serveEmojiFavicon(res, process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "no-cache");
+    const branding = await brandingCache.forRender();
+    return serveBrandFavicon(
+      res,
+      branding.preset,
+      process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F",
+      "no-cache",
+    );
   }
 
   if (method === "POST" && path === "/signin") {

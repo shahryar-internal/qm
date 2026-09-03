@@ -561,6 +561,7 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
     mark: env.ORG_BRAND_MARK,
     selfLabel: env.ORG_BRAND_SELF_LABEL,
     orgName: env.ORG_BRAND_ORG_NAME,
+    preset: env.ORG_BRAND_PRESET,
   });
 }
 

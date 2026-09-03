@@ -82,11 +82,16 @@ export interface ServiceDef {
 export interface BrandEnv {
   botName?: string;
   orgName?: string;
+  preset?: "risely";
 }
 
-export const brandEnvOf = (c: { botName?: string; orgName?: string }): BrandEnv | undefined =>
-  c.botName || c.orgName
-    ? { ...(c.botName ? { botName: c.botName } : {}), ...(c.orgName ? { orgName: c.orgName } : {}) }
+export const brandEnvOf = (c: { botName?: string; orgName?: string; brandPreset?: "risely" }): BrandEnv | undefined =>
+  c.botName || c.orgName || c.brandPreset
+    ? {
+        ...(c.botName ? { botName: c.botName } : {}),
+        ...(c.orgName ? { orgName: c.orgName } : {}),
+        ...(c.brandPreset ? { preset: c.brandPreset } : {}),
+      }
     : undefined;
 
 export function orgEnv(
@@ -106,12 +111,24 @@ export function orgEnv(
       WEB_UI_PUBLIC_URL: webUiUrl,
       ...(brand?.botName ? { ORG_BRAND_SELF_LABEL: brand.botName } : {}),
       ...(brand?.orgName ? { ORG_BRAND_ORG_NAME: brand.orgName } : {}),
+      ...(brand?.preset ? { ORG_BRAND_PRESET: brand.preset } : {}),
     };
   }
   if (service === "web-ui") return { ...identity, WEB_UI_PUBLIC_URL: webUiUrl };
-  if (service === "portal") return { ...identity, PORTAL_PUBLIC_URL: base };
+  if (service === "portal")
+    return {
+      ...identity,
+      PORTAL_PUBLIC_URL: base,
+      ...(brand?.botName ? { PORTAL_BRAND_NAME: brand.botName } : {}),
+      ...(brand?.preset ? { PORTAL_BRAND_PRESET: brand.preset } : {}),
+    };
   if (service === "admin" && hasPortal) return { ...identity, ADMIN_BASE_PATH: "/admin" };
-  if (service === "auth") return { ...identity, ...(brand?.botName ? { AUTH_BRAND_NAME: brand.botName } : {}) };
+  if (service === "auth")
+    return {
+      ...identity,
+      ...(brand?.botName ? { AUTH_BRAND_NAME: brand.botName } : {}),
+      ...(brand?.preset ? { AUTH_BRAND_PRESET: brand.preset } : {}),
+    };
   return identity;
 }
 

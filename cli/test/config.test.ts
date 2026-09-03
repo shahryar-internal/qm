@@ -132,6 +132,15 @@ test("botName and orgName are optional trimmed strings with length caps", () => 
   }
 });
 
+test("brandPreset accepts only the fixed enumerated preset", () => {
+  withConfig({ brandPreset: "risely" }, ({ path }) => assert.equal(loadConfigAt(path).config.brandPreset, "risely"));
+  for (const brandPreset of ["", "Risely", "https://evil.test/logo.svg", 7]) {
+    withConfig({ brandPreset }, ({ path }) =>
+      assert.throws(() => loadConfigAt(path), /"brandPreset" must be "risely"/),
+    );
+  }
+});
+
 test("basePort must be a positive integer", () => {
   withConfig({ basePort: 9000 }, ({ path }) => assert.equal(loadConfigAt(path).config.basePort, 9000));
   withConfig({ basePort: -1 }, ({ path }) => assert.throws(() => loadConfigAt(path), /basePort/));

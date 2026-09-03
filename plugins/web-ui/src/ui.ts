@@ -1,6 +1,8 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { live } from "lit/directives/live.js";
+import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { Check, ChevronDown, createElement, type IconNode } from "lucide";
+import { brandLogoSvg, brandPreset as resolveBrandPreset } from "../../chassis/src/branding.ts";
 
 export function brandName(): string {
   if (typeof document === "undefined") return "QM";
@@ -8,6 +10,12 @@ export function brandName(): string {
 }
 
 export function brandMark(): TemplateResult {
+  const preset =
+    typeof document === "undefined"
+      ? undefined
+      : resolveBrandPreset(document.querySelector<HTMLMetaElement>('meta[name="brand-preset"]')?.content);
+  const logo = brandLogoSvg(preset);
+  if (logo) return html`${unsafeHTML(logo)}`;
   return html`<span class="brand-mark" aria-hidden="true"></span>`;
 }
 

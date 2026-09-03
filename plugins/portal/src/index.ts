@@ -41,7 +41,12 @@ import { signedHeaders, withSourceAuthNonce } from "../../chassis/src/core-clien
 import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
-import { json, escapeHtml, serveEmojiFavicon } from "../../chassis/src/http.ts";
+import { json, escapeHtml, serveBrandFavicon } from "../../chassis/src/http.ts";
+import {
+  brandAccent as presetAccent,
+  brandLogoSvg,
+  brandPreset as resolveBrandPreset,
+} from "../../chassis/src/branding.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -81,7 +86,10 @@ function playgroundIntEnv(name: string, fallback: number): number {
 const PLAYGROUND_MINTS_PER_IP = playgroundIntEnv("PORTAL_PLAYGROUND_MINTS_PER_IP", 30);
 const PLAYGROUND_MINT_WINDOW_S = playgroundIntEnv("PORTAL_PLAYGROUND_MINT_WINDOW_S", 3600);
 const NEUTRAL_ACCENT = "#4f46e5";
-let brandAccent = NEUTRAL_ACCENT;
+const BRAND_ACCENT = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+let brandName = process.env.PORTAL_BRAND_NAME?.trim() || "QM";
+let activeBrandPreset = resolveBrandPreset(process.env.PORTAL_BRAND_PRESET);
+let brandColor = presetAccent(activeBrandPreset) ?? NEUTRAL_ACCENT;
 let modelProviderConfigured: boolean | undefined;
 let surfaceConfigNextAt = 0;
 let surfaceConfigInflight: Promise<void> | null = null;
@@ -102,8 +110,17 @@ async function fetchSurfaceConfig(): Promise<void> {
       signal: AbortSignal.timeout(2_000),
     });
     if (r.ok) {
-      const body = (await r.json()) as { branding?: { accent?: unknown }; modelProviderConfigured?: unknown };
-      brandAccent = typeof body.branding?.accent === "string" ? body.branding.accent : NEUTRAL_ACCENT;
+      const body = (await r.json()) as {
+        branding?: { accent?: unknown; selfLabel?: unknown; preset?: unknown };
+        modelProviderConfigured?: unknown;
+      };
+      const preset = resolveBrandPreset(body.branding?.preset);
+      activeBrandPreset = preset ?? activeBrandPreset;
+      brandName = typeof body.branding?.selfLabel === "string" ? body.branding.selfLabel : brandName;
+      brandColor =
+        typeof body.branding?.accent === "string" && BRAND_ACCENT.test(body.branding.accent)
+          ? body.branding.accent
+          : (presetAccent(activeBrandPreset) ?? NEUTRAL_ACCENT);
       modelProviderConfigured =
         typeof body.modelProviderConfigured === "boolean" ? body.modelProviderConfigured : undefined;
       surfaceConfigNextAt = Date.now() + (modelProviderConfigured === false ? 5_000 : 30_000);
@@ -377,13 +394,19 @@ const CARD_STYLE = `<style>
   :root{
     --bg:#ffffff; --surface:#ffffff; --text:#0a0a0a; --muted:#737373;
     --border:#e5e5e5; --secondary:#f5f5f5; --warn:#b42318; --warn-bg:#fdeceb;
+    --brand:#4f46e5;
     --shadow:0 1px 3px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.05);
     --radius-md:10px; --radius-lg:16px;
   }
+  html[data-brand-preset=risely]{ --bg:oklch(0.985 0 0); --surface:oklch(1 0 0); --text:oklch(0.145 0 0);
+    --muted:oklch(0.556 0 0); --border:oklch(0.922 0 0); --secondary:oklch(0.97 0 0); --brand:#5533E2; }
+  html[data-brand-preset=risely] body{ font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
   @media (prefers-color-scheme:dark){
     :root{ --bg:#0a0a0a; --surface:#171717; --text:#fafafa; --muted:#a3a3a3;
       --border:#2a2a2a; --secondary:#262626; --warn:#ff8a80; --warn-bg:#2a1a1a;
       --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.4); }
+    html[data-brand-preset=risely]{ --bg:oklch(0.08 0 0); --surface:oklch(0.12 0 0); --text:oklch(0.985 0 0);
+      --muted:oklch(0.708 0 0); --border:oklch(0.2 0 0); --secondary:oklch(0.18 0 0); --brand:#A78BFA; }
   }
   *{ box-sizing:border-box; }
   html,body{ height:100%; }
@@ -398,6 +421,9 @@ const CARD_STYLE = `<style>
     border-radius:var(--radius-lg); box-shadow:var(--shadow); padding:34px 32px 30px; text-align:center;
   }
   .card.wide{ max-width:440px; }
+  .brand-lockup{ display:flex; align-items:center; justify-content:center; gap:10px; margin:0 auto 20px;
+    font-size:17px; font-weight:600; letter-spacing:-.01em; }
+  .brand-logo{ display:block; width:32px; height:32px; }
   .icon{ width:52px; height:52px; margin:0 auto 18px; border-radius:var(--radius-md); background:var(--secondary);
     display:grid; place-items:center; }
   .icon svg{ width:26px; height:26px; stroke:var(--text); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
@@ -418,7 +444,7 @@ const CARD_STYLE = `<style>
   .btn{ display:flex; align-items:center; justify-content:center; min-height:44px; padding:0 18px;
     text-decoration:none; font-weight:600; font-size:14px; border-radius:var(--radius-md); cursor:pointer;
     transition:opacity .12s ease, background .12s ease, color .12s ease; }
-  .btn.primary{ background:var(--text); color:var(--bg); border:1px solid var(--text); }
+  .btn.primary{ background:var(--brand); color:#fff; border:1px solid var(--brand); }
   .btn.primary:hover{ opacity:.9; }
   .btn.ghost{ background:none; color:var(--muted); border:1px solid var(--border); }
   .btn.ghost:hover{ background:var(--secondary); color:var(--text); }
@@ -442,16 +468,17 @@ function cardPage(o: {
   help: string;
 }): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="en"${activeBrandPreset ? ` data-brand-preset="${activeBrandPreset}"` : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(o.title)} · Portal</title>
+<title>${escapeHtml(o.title)} · ${escapeHtml(brandName)}</title>
 ${CARD_STYLE}
 </head>
 <body>
   <main>
     <section class="card${o.wide ? " wide" : ""}" aria-labelledby="t">
+      ${activeBrandPreset ? `<div class="brand-lockup">${brandLogoSvg(activeBrandPreset)}<span>${escapeHtml(brandName)}</span></div>` : ""}
       <div class="icon${o.warn ? " warn" : ""}" aria-hidden="true">
         ${o.icon}
       </div>
@@ -526,11 +553,24 @@ export function adminUnavailableHtml(): string {
 }
 
 const connectStyle = (): string => `<style>
-  :root{ --bg:#0a0a0a; --text:#fafafa; --muted:#a3a3a3; --border:#2a2a2a; --brand:${brandAccent}; --radius-md:10px; }
+  :root{ --bg:#ffffff; --surface:#ffffff; --text:#0a0a0a; --muted:#737373; --border:#e5e5e5;
+    --brand:${brandColor}; --radius-md:10px; }
+  html[data-brand-preset=risely]{ --bg:oklch(0.985 0 0); --surface:oklch(1 0 0); --text:oklch(0.145 0 0);
+    --muted:oklch(0.556 0 0); --border:oklch(0.922 0 0); }
+  html[data-brand-preset=risely] body{ font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#0a0a0a; --surface:#171717; --text:#fafafa; --muted:#a3a3a3; --border:#2a2a2a; }
+    html[data-brand-preset=risely]{ --bg:oklch(0.08 0 0); --surface:oklch(0.12 0 0); --text:oklch(0.985 0 0);
+      --muted:oklch(0.708 0 0); --border:oklch(0.2 0 0); --brand:#A78BFA; }
+  }
   html,body{ height:100%; margin:0; }
   body{ background:var(--bg); color:var(--text); display:grid; place-items:center; padding:40px 20px;
     font:14px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing:antialiased; }
-  .card{ max-width:440px; text-align:center; }
+  .card{ width:100%; max-width:440px; padding:34px 32px 30px; text-align:center; background:var(--surface);
+    border:1px solid var(--border); border-radius:16px; box-shadow:0 4px 12px rgba(0,0,0,.08); }
+  .brand-lockup{ display:flex; align-items:center; justify-content:center; gap:10px; margin:0 auto 20px;
+    font-size:17px; font-weight:600; }
+  .brand-logo{ display:block; width:32px; height:32px; }
   h1{ font-size:19px; margin:0 0 10px; }
   p{ color:var(--muted); margin:0 0 18px; }
   .btn{ display:inline-block; font-weight:600; min-height:40px; line-height:40px; padding:0 18px;
@@ -539,9 +579,9 @@ const connectStyle = (): string => `<style>
 </style>`;
 
 function connectPage(o: { title: string; body: string; action?: string }): string {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(o.title)} · Portal</title>${connectStyle()}</head>
-<body><div class="card"><h1>${escapeHtml(o.title)}</h1><p>${escapeHtml(o.body)}</p>${o.action ?? ""}</div></body></html>`;
+  return `<!doctype html><html lang="en"${activeBrandPreset ? ` data-brand-preset="${activeBrandPreset}"` : ""}><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(o.title)} · ${escapeHtml(brandName)}</title>${connectStyle()}</head>
+<body><div class="card">${activeBrandPreset ? `<div class="brand-lockup">${brandLogoSvg(activeBrandPreset)}<span>${escapeHtml(brandName)}</span></div>` : ""}<h1>${escapeHtml(o.title)}</h1><p>${escapeHtml(o.body)}</p>${o.action ?? ""}</div></body></html>`;
 }
 
 function providerLabel(provider: string): string {
@@ -870,7 +910,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
 
   if (method === "GET" && (pathname === "/favicon.ico" || pathname === "/favicon.svg")) {
-    return serveEmojiFavicon(res, process.env.PORTAL_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "max-age=86400");
+    return serveBrandFavicon(
+      res,
+      activeBrandPreset,
+      process.env.PORTAL_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F",
+      "max-age=86400",
+    );
   }
 
   if (pathname === "/auth/login" && method === "GET") return authLogin(req, res, url);

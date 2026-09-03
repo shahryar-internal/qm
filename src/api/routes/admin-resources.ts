@@ -561,11 +561,20 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     apply: async (ctx, _actor, scope) => {
       const bad = orgOnly(scope, "branding is org-wide");
       if (bad) return bad;
-      const body = (ctx.body ?? {}) as { accent?: unknown; mark?: unknown; selfLabel?: unknown; orgName?: unknown };
+      const body = (ctx.body ?? {}) as {
+        accent?: unknown;
+        mark?: unknown;
+        selfLabel?: unknown;
+        orgName?: unknown;
+        preset?: unknown;
+      };
       const accentInput = typeof body.accent === "string" ? body.accent.trim() : "";
       const value = sanitizeBranding(body);
       if (accentInput && !value?.accent) {
         return { error: "branding accent must be a hex color (e.g. #4f46e5)" };
+      }
+      if (body.preset !== undefined && body.preset !== "" && !value?.preset) {
+        return { error: 'branding preset must be "risely" when set' };
       }
       ctx.deps.config!.setBranding(scope, value ?? null);
       return { ok: true };

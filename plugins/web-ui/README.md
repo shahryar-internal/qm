@@ -141,6 +141,20 @@ and `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled).
 
 ## Notes
 
+### Production state contracts
+
+The browser does not infer readiness from a redirect, a prior render, or a product preset. Each visible state is tied to a server-owned contract:
+
+| Surface state                                                      | Read seam                                                                  | Action seam                                                                                     |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| AI account required, loading, connected, or failed                 | `GET /api/user-model-auth/status`                                          | The existing server-side Claude/ChatGPT start, poll, complete, and disconnect routes            |
+| Connector connected, disconnected, disabled, or reconnect-required | `GET /api/connectors` → core `GET /v1/connectors/oauth/status`             | Existing provider start/revoke routes; tokens never enter browser state                         |
+| Credential and grant readiness                                     | `GET /api/keychain/overview`                                               | Existing encrypted drop, revoke, and delete routes                                              |
+| Pending native approval                                            | `GET /api/sessions/:id/approvals` and run activity                         | One decision to `POST /api/approvals/:requestId`; the core owns replay and once-only resolution |
+| Evidence card loading, ready, or unavailable                       | Authenticated same-origin file content for the delivered workflow artifact | No action authority; `qm.card.v1` links are inert and validated by the shared card contract     |
+
+An OAuth callback triggers a fresh status read before chat can call a provider connected. A configured product preset changes only fixed logos and design tokens; it never changes readiness, connector availability, permissions, or approval authority.
+
 - **No browser-side model keys.** The real agent loop (model +
   the three primitives + memory + audit) runs server-side in the core's sandbox. The model
   picker only expresses a _preference_ the core honors within its policy floor — keys, egress,

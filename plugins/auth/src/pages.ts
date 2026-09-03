@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { escapeHtml } from "../../chassis/src/http.ts";
+import { brandLogoSvg, type BrandPreset } from "../../chassis/src/branding.ts";
 
 const CONFIRM_SCRIPT = `(function () {
   var key = "qm.signin.token";
@@ -32,10 +33,17 @@ const STYLE = `<style>
     --shadow:0 1px 3px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.05);
     --radius-md:10px; --radius-lg:16px;
   }
+  html[data-brand-preset=risely]{
+    --bg:oklch(0.985 0 0); --surface:oklch(1 0 0); --text:oklch(0.145 0 0); --muted:oklch(0.556 0 0);
+    --border:oklch(0.922 0 0); --secondary:oklch(0.97 0 0); --brand:#5533E2;
+  }
+  html[data-brand-preset=risely] body{ font-family:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
   @media (prefers-color-scheme:dark){
     :root{ --bg:#0a0a0a; --surface:#171717; --text:#fafafa; --muted:#a3a3a3;
       --border:#2a2a2a; --secondary:#262626; --warn:#ff8a80; --warn-bg:#2a1a1a;
       --shadow:0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.4); }
+    html[data-brand-preset=risely]{ --bg:oklch(0.08 0 0); --surface:oklch(0.12 0 0); --text:oklch(0.985 0 0);
+      --muted:oklch(0.708 0 0); --border:oklch(0.2 0 0); --secondary:oklch(0.18 0 0); --brand:#A78BFA; }
   }
   *{ box-sizing:border-box; }
   html,body{ height:100%; }
@@ -49,6 +57,9 @@ const STYLE = `<style>
     width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border);
     border-radius:var(--radius-lg); box-shadow:var(--shadow); padding:34px 32px 30px; text-align:center;
   }
+  .brand-lockup{ display:flex; align-items:center; justify-content:center; gap:10px; margin:0 auto 20px;
+    font-size:17px; font-weight:600; letter-spacing:-.01em; }
+  .brand-logo{ display:block; width:32px; height:32px; }
   .icon{ width:52px; height:52px; margin:0 auto 18px; border-radius:var(--radius-md); background:var(--secondary);
     display:grid; place-items:center; }
   .icon svg{ width:26px; height:26px; stroke:var(--text); fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
@@ -67,7 +78,7 @@ const STYLE = `<style>
   input[type=email]:focus-visible{ outline:2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset:1px; }
   .btn{ display:flex; align-items:center; justify-content:center; min-height:44px; padding:0 18px; width:100%;
     text-decoration:none; font:inherit; font-weight:600; border-radius:var(--radius-md); cursor:pointer;
-    background:var(--text); color:var(--bg); border:1px solid var(--text); }
+    background:var(--brand,var(--text)); color:#fff; border:1px solid var(--brand,var(--text)); }
   .btn:hover{ opacity:.9; }
   .help{ color:var(--muted); font-size:12.5px; margin:20px 0 0; }
   .who{ display:block; margin:0 auto 22px; font-size:13px; color:var(--text); background:var(--secondary);
@@ -82,6 +93,7 @@ const LOCK_ICON = `<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height
 function page(o: {
   title: string;
   brandName: string;
+  brandPreset?: BrandPreset;
   icon: string;
   warn?: boolean;
   heading: string;
@@ -90,7 +102,7 @@ function page(o: {
   help: string;
 }): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="en"${o.brandPreset ? ` data-brand-preset="${o.brandPreset}"` : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -101,6 +113,7 @@ ${STYLE}
 <body>
   <main>
     <section class="card" aria-labelledby="t">
+      ${o.brandPreset ? `<div class="brand-lockup">${brandLogoSvg(o.brandPreset)}<span>${escapeHtml(o.brandName)}</span></div>` : ""}
       <div class="icon${o.warn ? " warn" : ""}" aria-hidden="true">${o.icon}</div>
       <h1 id="t">${escapeHtml(o.heading)}</h1>
       <p class="msg">${escapeHtml(o.msg)}</p>
@@ -114,6 +127,7 @@ ${STYLE}
 
 export function emailFormPage(o: {
   brandName: string;
+  brandPreset?: BrandPreset;
   action: string;
   requestToken: string;
   email?: string;
@@ -122,6 +136,7 @@ export function emailFormPage(o: {
   return page({
     title: "Sign in",
     brandName: o.brandName,
+    ...(o.brandPreset ? { brandPreset: o.brandPreset } : {}),
     icon: MAIL_ICON,
     heading: `Sign in to ${o.brandName}`,
     msg: "Enter your work email and we'll send you a one-time sign-in link.",
@@ -136,10 +151,16 @@ export function emailFormPage(o: {
   });
 }
 
-export function linkSentPage(o: { brandName: string; email: string; ttlMinutes: number }): string {
+export function linkSentPage(o: {
+  brandName: string;
+  brandPreset?: BrandPreset;
+  email: string;
+  ttlMinutes: number;
+}): string {
   return page({
     title: "Check your email",
     brandName: o.brandName,
+    ...(o.brandPreset ? { brandPreset: o.brandPreset } : {}),
     icon: SENT_ICON,
     heading: "Check your email",
     msg: `If that address can sign in, a one-time link is on its way. Open it in this browser — it works once and expires in ${o.ttlMinutes} minutes.`,
@@ -148,10 +169,11 @@ export function linkSentPage(o: { brandName: string; email: string; ttlMinutes: 
   });
 }
 
-export function confirmSignInPage(o: { brandName: string; action: string }): string {
+export function confirmSignInPage(o: { brandName: string; brandPreset?: BrandPreset; action: string }): string {
   return page({
     title: "Finish signing in",
     brandName: o.brandName,
+    ...(o.brandPreset ? { brandPreset: o.brandPreset } : {}),
     icon: LOCK_ICON,
     heading: `Finish signing in to ${o.brandName}`,
     msg: "Confirm below to complete sign-in. Your link is spent the moment you confirm, so do it in the browser you want to be signed in to.",
@@ -168,6 +190,7 @@ export function confirmSignInPage(o: { brandName: string; action: string }): str
 
 export function problemPage(o: {
   brandName: string;
+  brandPreset?: BrandPreset;
   heading: string;
   msg: string;
   detail?: string;
@@ -179,6 +202,7 @@ export function problemPage(o: {
   return page({
     title: "Sign-in problem",
     brandName: o.brandName,
+    ...(o.brandPreset ? { brandPreset: o.brandPreset } : {}),
     icon: ALERT_ICON,
     warn: true,
     heading: o.heading,

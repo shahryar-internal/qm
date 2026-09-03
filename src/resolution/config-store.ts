@@ -99,6 +99,7 @@ export interface OrgBranding {
   mark?: string;
   selfLabel?: string;
   orgName?: string;
+  preset?: "risely";
 }
 export interface PersistedBranding {
   scopeId: ScopeId;

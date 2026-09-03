@@ -7,6 +7,11 @@ import { testEnv } from "./helpers.ts";
 const problemsFor = (over: Record<string, string | undefined>, isProd = true): string =>
   bootProblems(readConfig(testEnv(over)), isProd).join(" | ");
 
+test("the sign-in brand preset is an enum with a neutral fallback", () => {
+  assert.equal(readConfig(testEnv({ AUTH_BRAND_PRESET: "risely" })).brandPreset, "risely");
+  assert.equal(readConfig(testEnv({ AUTH_BRAND_PRESET: "https://evil.test/logo.svg" })).brandPreset, undefined);
+});
+
 test("a complete broker configuration boots", () => {
   const signing = { CORE_SIGNING_SECRET: "a".repeat(48) };
   assert.deepEqual(bootProblems(readConfig(testEnv(signing)), true), []);

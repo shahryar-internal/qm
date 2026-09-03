@@ -4,7 +4,12 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
-let coreBranding = { accent: "#f0652f", mark: "Y", selfLabel: "QM" };
+let coreBranding: { accent: string; mark: string; selfLabel: string; preset?: "risely" } = {
+  accent: "#5533E2",
+  mark: "R",
+  selfLabel: "Risely",
+  preset: "risely",
+};
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -40,19 +45,24 @@ test.after(() => {
 
 test("cold start: the FIRST shell render already carries the org branding", async () => {
   const html = await (await fetch(`${base}/`)).text();
-  assert.match(html, /--brand-accent:#f0652f/, "accent style injected on the first render");
+  assert.match(html, /--brand-accent:#5533E2/, "accent style injected on the first render");
   assert.match(
     html,
-    /<meta name="brand-self-label" content="QM"\s*\/?>/,
+    /<meta name="brand-self-label" content="Risely"\s*\/?>/,
     "self-label meta injected regardless of the shell's formatting",
   );
-  assert.match(html, /--brand-mark:"Y"/, "brand mark variable injected for the badge");
-  assert.match(html, /<title>QM Admin<\/title>/, "tab title carries the configured label");
+  assert.match(html, /--brand-mark:"R"/, "mark variable remains available as fallback");
+  assert.match(html, /<title>Risely Admin<\/title>/, "tab title carries the configured label");
+  assert.match(html, /<html data-brand-preset="risely"/);
+  assert.match(html, /<svg class="brand-logo"[\s\S]*#5533E2/);
+  assert.match(html, /font-family:\s*Inter,\s*ui-sans-serif,\s*system-ui/);
+  assert.doesNotMatch(html, /<span class="brand-mark" data-brand-logo/);
 });
 
 test("the shell's badge and product name are branding-driven, not hardcoded", () => {
   const shell = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
-  assert.match(shell, /content:\s*var\(--brand-mark,\s*"A"\)/, "badge glyph reads --brand-mark");
+  assert.match(shell, /\.brand-mark::before\s*\{[\s\S]*content:\s*var\(--brand-mark,\s*"A"\)/);
+  assert.match(shell, /<span class="brand-mark" data-brand-logo aria-hidden="true"><\/span\s*>/);
   assert.match(shell, /id="brand-product"/, "header product name is script-addressable");
 });
 
