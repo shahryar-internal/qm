@@ -22,11 +22,14 @@ const PUBLIC_RESEARCH =
   /\b(?:deep research|public research|market research|competitive (?:research|analysis)|research (?:the )?(?:market|competitors?|industry))\b/i;
 const ACCOUNT_SYNTHESIS =
   /\b(?:(?:account|customer) (?:health|brief|overview)|what should I know about (?:the )?(?:account|customer))\b/i;
+const MEETING_PREPARATION = /\b(?:meeting prep(?:aration)?|prepare me for (?:my |the |an? )?meeting)\b/i;
 
 export function strategicThinkingLevel(text: string | undefined): typeof STRATEGIC_THINKING_LEVEL | undefined {
   const bounded = text?.slice(0, 8_192) ?? "";
   if (!bounded) return undefined;
-  if (PUBLIC_RESEARCH.test(bounded) || ACCOUNT_SYNTHESIS.test(bounded)) return STRATEGIC_THINKING_LEVEL;
+  if (PUBLIC_RESEARCH.test(bounded) || ACCOUNT_SYNTHESIS.test(bounded) || MEETING_PREPARATION.test(bounded)) {
+    return STRATEGIC_THINKING_LEVEL;
+  }
   if (!STRATEGIC_INTENT.test(bounded)) return undefined;
   const sourceCount = new Set((bounded.match(MULTI_SOURCE_HINT) ?? []).map((value) => value.toLowerCase())).size;
   return sourceCount >= 2 || EXPLICIT_MULTI_SOURCE.test(bounded) ? STRATEGIC_THINKING_LEVEL : undefined;
