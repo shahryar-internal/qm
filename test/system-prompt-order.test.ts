@@ -312,6 +312,8 @@ test("Slack turns get the terse-response style instruction; other surfaces do no
   assert.match(slack.reply ?? "", /This is Slack: keep each reply to a couple of sentences/);
   assert.match(slack.reply ?? "", /separate internal evidence from public evidence/);
   assert.match(slack.reply ?? "", /qm\.card\.v1/);
+  assert.match(slack.reply ?? "", /account-health brief/);
+  assert.match(slack.reply ?? "", /MUST also deliver/);
   assert.match(slack.reply ?? "", /Do not expose raw JSON or arrays/);
 
   const nonSlack = await orch.handleTurn(dm("dm:U1:non-slack-style", "!sysprompt"));
