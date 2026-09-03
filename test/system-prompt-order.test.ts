@@ -316,6 +316,8 @@ test("Slack turns get the terse-response style instruction; other surfaces do no
   assert.match(slack.reply ?? "", /MUST also deliver/);
   assert.match(slack.reply ?? "", /every evidence-based answer and card/);
   assert.match(slack.reply ?? "", /source type, observed or as-of time/);
+  assert.match(slack.reply ?? "", /current-run checked\/as-of time/);
+  assert.match(slack.reply ?? "", /publication or update date/);
   assert.match(slack.reply ?? "", /access-controlled deep link supplied by Notion, Clarify, Gmail, Calendar/);
   assert.match(slack.reply ?? "", /never construct or guess one/);
   assert.match(slack.reply ?? "", /link `unavailable` explicitly/);
