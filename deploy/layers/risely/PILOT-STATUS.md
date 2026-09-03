@@ -52,7 +52,7 @@ Do not open a pull request or add the bot to operating or customer channels unti
 
 ## Scheduled-loop gate
 
-The current upstream core's `pg-boss` cron queue does not receive QM's RDS CA configuration. It refuses an unencrypted database connection and safely falls back to interval ticks. Interactive chat and manual workflows are unaffected, but durable production automation loops remain gated on an upstream TLS-aware cron-queue fix or a reviewed QM release containing one.
+The live pilot's current `pg-boss` cron queue does not receive QM's RDS CA configuration. It refuses an unencrypted database connection and safely falls back to interval ticks. Interactive chat and manual workflows are unaffected. This unreleased private candidate merges the public scheduler successor `311bd82c5aceb4eb7ebe45029b9d3337d0be3b18`, which passes the existing verified CA configuration to `pg-boss` without changing connection-string TLS semantics and pins the required wiring order in a static regression test. Local custom-CA PostgreSQL coverage proves encrypted queue transport, multi-instance deduplication, restart replay, and cancellation, but this candidate has not been pushed, released, deployed, or tested against live RDS. Durable production automation loops remain gated on fresh review, official CI, a source-pinned private release, guarded deployment, and live RDS verification.
 
 The committed Gemini 3.7 cost metadata uses Google's introductory `$0.75` input and `$3.75` output rates per million tokens through December 31, 2026. Review and update them to Google's published `$1.50` and `$7.50` rates before January 1, 2027.
 
